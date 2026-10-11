@@ -1,5 +1,5 @@
 // The MCP and skills adapters, as the README combines them with an agent.
-import { createFxAgent, type FxChatgptCredentials } from "libfx";
+import { createFxAgent, type FxProviderCredentials } from "libfx";
 import {
   completeDeviceSignIn,
   finishSignIn,
@@ -82,15 +82,15 @@ export async function skills(): Promise<void> {
 
 // Sign in with ChatGPT on a website: start in one request, finish in another.
 declare const sessionStore: { put(value: ChatgptSignIn): void; take(): ChatgptSignIn };
-export async function chatgptSignIn(pastedAddress: string): Promise<FxChatgptCredentials> {
+export async function chatgptSignIn(pastedAddress: string): Promise<FxProviderCredentials> {
   const signIn = await startSignIn();
   sessionStore.put(signIn);
   const credentials = await finishSignIn(sessionStore.take(), pastedAddress);
   // @ts-expect-error finishSignIn() needs the sign-in startSignIn() returned
   await finishSignIn({ url: signIn.url }, pastedAddress);
   const device: ChatgptDeviceSignIn = await startDeviceSignIn();
-  const polled: FxChatgptCredentials | null = await pollDeviceSignIn(device);
-  const waited: FxChatgptCredentials = await completeDeviceSignIn(device, { signal: AbortSignal.timeout(900_000) });
+  const polled: FxProviderCredentials | null = await pollDeviceSignIn(device);
+  const waited: FxProviderCredentials = await completeDeviceSignIn(device, { signal: AbortSignal.timeout(900_000) });
   const code: ChatgptSignInErrorCode = "LIBFX_CHATGPT_SIGN_IN_EXPIRED";
   void polled; void waited; void code;
   return refreshCredentials(credentials);

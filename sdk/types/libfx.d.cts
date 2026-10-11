@@ -458,8 +458,8 @@ export type FxEngineStorage =
     checkpoint?: FxBytes;
   };
 
-/** ChatGPT credentials for a Codex agent. `accountId` and `expiresAt` default to the access token's own claims. */
-export interface FxChatgptCredentials {
+/** A subscription provider's credentials, such as a ChatGPT plan's for Codex. For Codex, `accountId` and `expiresAt` default to the access token's own claims. */
+export interface FxProviderCredentials {
   accessToken: string;
   /** Lets libfx refresh the access token near expiry and once after a rejection. */
   refreshToken?: string;
@@ -471,17 +471,17 @@ export interface FxChatgptCredentials {
 /** Runs on AI Gateway, the default. */
 export interface FxGatewayProvider {
   provider?: "gateway" | undefined;
-  chatgpt?: undefined;
-  onChatgptCredentials?: undefined;
+  credentials?: undefined;
+  onCredentials?: undefined;
 }
 
 /** Runs on a ChatGPT plan through Codex instead of AI Gateway. */
 export interface FxCodexProvider {
   provider: "codex";
-  /** Credentials for Codex requests, asked for in whichever process runs the turn. `sessionId` is set for model requests and absent for the model list. */
-  chatgpt: (request: { sessionId?: string }) => FxChatgptCredentials | Promise<FxChatgptCredentials>;
+  /** Credentials for the provider's requests, asked for in whichever process runs the turn. `sessionId` is set for model requests and absent for the model list. */
+  credentials: (request: { provider: "codex"; sessionId?: string }) => FxProviderCredentials | Promise<FxProviderCredentials>;
   /** Receives credentials libfx refreshed, so the host can save them. */
-  onChatgptCredentials?: (credentials: FxChatgptCredentials, info: { sessionId?: string }) => void | Promise<void>;
+  onCredentials?: (credentials: FxProviderCredentials, info: { provider: "codex"; sessionId?: string }) => void | Promise<void>;
 }
 
 /** Options for `createFxEngine()`. */

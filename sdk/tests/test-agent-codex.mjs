@@ -95,7 +95,7 @@ const assertNoSecrets = (value, secrets) => {
   const asked = [];
   const { result, text, events } = await runTurn({
     fetch: world.fetch,
-    chatgpt: (request) => { asked.push(request); return { accessToken: access, refreshToken: "rt-1" }; },
+    credentials: (request) => { asked.push(request); return { accessToken: access, refreshToken: "rt-1" }; },
   });
   assert.equal(result.stopReason, "end_turn");
   assert.equal(text, "libfx ok");
@@ -120,7 +120,8 @@ const assertNoSecrets = (value, secrets) => {
     assert.equal(models.headers.get("authorization"), `Bearer ${access}`, "the model list uses the same credentials");
     assert.equal(models.headers.get("chatgpt-account-id"), accountId);
   }
-  assert.ok(asked.some((request) => request.sessionId === sessionId), "chatgpt() learns which session the request is for");
+  assert.ok(asked.some((request) => request.sessionId === sessionId), "credentials() learns which session the request is for");
+  assert.ok(asked.length > 0 && asked.every((request) => request.provider === "codex"), "credentials() learns the provider");
   assertNoSecrets(events, [access, "rt-1"]);
 }
 
@@ -132,8 +133,8 @@ const assertNoSecrets = (value, secrets) => {
   const saved = [];
   const { result, text, events } = await runTurn({
     fetch: world.fetch,
-    chatgpt: () => ({ accessToken: first, refreshToken: "rt-1" }),
-    onChatgptCredentials: (credentials, info) => { saved.push({ credentials, info }); },
+    credentials: () => ({ accessToken: first, refreshToken: "rt-1" }),
+    onCredentials: (credentials, info) => { saved.push({ credentials, info }); },
   });
   assert.equal(result.stopReason, "end_turn");
   assert.equal(text, "libfx ok");
@@ -147,6 +148,7 @@ const assertNoSecrets = (value, secrets) => {
   assert.equal(replies[1].body, replies[0].body, "the resent request is unchanged");
   assert.equal(saved.length, 1, "the host receives the refreshed credentials once");
   assert.equal(saved[0].credentials.accessToken, second);
+  assert.equal(saved[0].info.provider, "codex", "onCredentials learns the provider");
   assert.equal(saved[0].credentials.refreshToken, "rt-2");
   assert.equal(saved[0].credentials.accountId, accountId);
   assert.ok(saved[0].credentials.expiresAt > Date.now() + 9 * 24 * 3600 * 1000);
@@ -158,7 +160,7 @@ const assertNoSecrets = (value, secrets) => {
   const expiring = jwt("expiring", 60);
   const fresh = jwt("fresh", tenDays);
   const world = codexWorld({ refreshedToken: fresh });
-  const { result } = await runTurn({ fetch: world.fetch, chatgpt: () => ({ accessToken: expiring, refreshToken: "rt-1" }) });
+  const { result } = await runTurn({ fetch: world.fetch, credentials: () => ({ accessToken: expiring, refreshToken: "rt-1" }) });
   assert.equal(result.stopReason, "end_turn");
   assert.equal(world.log.filter((entry) => entry.url === "https://auth.openai.com/oauth/token").length, 1);
   for (const entry of world.log.filter((entry) => entry.url.startsWith("https://chatgpt.com/"))) {
@@ -177,7 +179,7 @@ const assertNoSecrets = (value, secrets) => {
     provider: "codex",
     model: "gpt-6.1-sol",
     fetch: world.fetch,
-    chatgpt: (request) => { asked.push(request.sessionId); return { accessToken: access, refreshToken: "rt-1" }; },
+    credentials: (request) => { asked.push(request.sessionId); return { accessToken: access, refreshToken: "rt-1" }; },
   });
   try {
     const turn = agent.session().prompt("say ok");
@@ -186,7 +188,7 @@ const assertNoSecrets = (value, secrets) => {
     for await (const event of turn) if (event.type === "text_delta") text += event.delta;
     assert.equal((await turn.result).stopReason, "end_turn");
     assert.equal(text, "libfx ok");
-    assert.ok(asked.includes(sessionId), "chatgpt() is asked for the durable session's own credentials");
+    assert.ok(asked.includes(sessionId), "credentials() is asked for the durable session's own credentials");
     assert.equal(replyRequests(world.log)[0].headers.get("session-id"), sessionId);
     assert.equal(world.log.some((entry) => entry.url.includes("ai-gateway.vercel.sh")), false);
   } finally {
@@ -195,9 +197,10 @@ const assertNoSecrets = (value, secrets) => {
 }
 
 // 4. Options are checked before anything starts.
-await assert.rejects(createFxEngine({ ...backendOptions, provider: "codex", model: "gpt-6.1-sol" }), /needs a chatgpt\(\) credentials function/);
+await assert.rejects(createFxEngine({ ...backendOptions, provider: "codex", model: "gpt-6.1-sol" }), /needs a credentials\(\) function/);
 await assert.rejects(createFxEngine({ ...backendOptions, provider: "grok", apiKey: "key" }), /provider must be "gateway" or "codex"/);
-await assert.rejects(createFxEngine({ ...backendOptions, apiKey: "key", chatgpt: () => ({}) }), /chatgpt needs provider "codex"/);
+await assert.rejects(createFxEngine({ ...backendOptions, apiKey: "key", credentials: () => ({}) }), /credentials needs provider "codex"/);
+await assert.rejects(createFxEngine({ ...backendOptions, apiKey: "key", onCredentials: () => {} }), /onCredentials needs provider "codex"/);
 await assert.rejects(createFxEngine({ ...backendOptions }), /apiKey is required/);
 
 console.log(`${process.versions.bun ? "Bun" : "Node"} ${backend} Codex agent passed`);

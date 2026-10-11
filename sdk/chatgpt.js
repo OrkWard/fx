@@ -1,6 +1,6 @@
 // ChatGPT (Codex) credentials for libfx agents. The engine sends Codex requests
 // without credentials; this module adds them at the fetch edge, from the host's
-// `chatgpt` callback, refreshing near expiry and once after a rejection.
+// `credentials` callback, refreshing near expiry and once after a rejection.
 // Credentials never enter the engine or a session's saved records.
 
 export const chatgptIssuer = "https://auth.openai.com";
@@ -53,7 +53,7 @@ export function jwtClaims(token) {
  */
 export function normalizeChatgptCredentials(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("chatgpt() must return { accessToken, refreshToken?, accountId?, expiresAt? }");
+    throw new TypeError("credentials() must return { accessToken, refreshToken?, accountId?, expiresAt? }");
   }
   const accessToken = tokenString(value.accessToken, "accessToken", true);
   const refreshToken = tokenString(value.refreshToken, "refreshToken", false);
@@ -109,14 +109,15 @@ export async function refreshChatgptCredentials(credentials, { fetch, signal } =
 }
 
 /**
- * The fetch edge for Codex requests. `chatgpt({ sessionId })` supplies
- * credentials; `onCredentials(next, { sessionId })` receives refreshed ones,
- * with the session whose request needed them, so the host can save them.
+ * The fetch edge for Codex requests. `credentials({ provider, sessionId })`
+ * supplies credentials; `onCredentials(next, { provider, sessionId })` receives
+ * refreshed ones, with the session whose request needed them, so the host can
+ * save them.
  */
-export function createChatgptAuthorizer({ chatgpt, onCredentials, fetch, now = Date.now }) {
-  if (typeof chatgpt !== "function") throw new TypeError("provider \"codex\" needs a chatgpt() credentials function");
+export function createChatgptAuthorizer({ credentials, onCredentials, fetch, now = Date.now }) {
+  if (typeof credentials !== "function") throw new TypeError("provider \"codex\" needs a credentials() function");
   if (onCredentials !== undefined && typeof onCredentials !== "function") {
-    throw new TypeError("onChatgptCredentials must be a function");
+    throw new TypeError("onCredentials must be a function");
   }
   // Each access token the host supplied maps to the newest credentials refreshed
   // from it, so sessions on one account share a refresh and a host that has not
@@ -136,7 +137,7 @@ export function createChatgptAuthorizer({ chatgpt, onCredentials, fetch, now = D
     const task = (async () => {
       const next = await refreshChatgptCredentials(credentials, { fetch, signal });
       remember(supplied, next);
-      await onCredentials?.(next, { sessionId });
+      await onCredentials?.(next, { provider: "codex", sessionId });
       return next;
     })().finally(() => refreshing.delete(credentials.refreshToken));
     refreshing.set(credentials.refreshToken, task);
@@ -144,7 +145,7 @@ export function createChatgptAuthorizer({ chatgpt, onCredentials, fetch, now = D
   };
 
   const current = async (sessionId, signal) => {
-    const supplied = normalizeChatgptCredentials(await chatgpt({ sessionId }));
+    const supplied = normalizeChatgptCredentials(await credentials({ provider: "codex", sessionId }));
     const best = descendants.get(supplied.accessToken) ?? supplied;
     const used = needsRefresh(best, now()) ? await refresh(supplied, best, sessionId, signal) : best;
     return { supplied, used };

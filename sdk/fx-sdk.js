@@ -150,12 +150,14 @@ export function normalizeAgentOptions(value) {
   const codex = options.provider === "codex";
   // A Codex agent runs on the host's ChatGPT credentials; Gateway needs its key.
   options.apiKey = boundedString(options.apiKey, "apiKey", maxApiKeyBytes, !codex);
-  if (codex && typeof options.chatgpt !== "function") {
-    throw new TypeError("provider \"codex\" needs a chatgpt() credentials function");
+  if (codex && typeof options.credentials !== "function") {
+    throw new TypeError("provider \"codex\" needs a credentials() function");
   }
-  if (!codex && options.chatgpt !== undefined) throw new TypeError("chatgpt needs provider \"codex\"");
-  if (options.onChatgptCredentials !== undefined && typeof options.onChatgptCredentials !== "function") {
-    throw new TypeError("onChatgptCredentials must be a function");
+  for (const name of ["credentials", "onCredentials"]) {
+    if (!codex && options[name] !== undefined) throw new TypeError(`${name} needs provider "codex"`);
+  }
+  if (options.onCredentials !== undefined && typeof options.onCredentials !== "function") {
+    throw new TypeError("onCredentials must be a function");
   }
   Object.assign(options, normalizeModelChoice(options));
   validateGatewayChatUrl(options.gatewayChatUrl);
@@ -2410,7 +2412,7 @@ export async function createFxEngine(options = {}) {
   };
   const hostFetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
   const codexAuth = options.provider === "codex"
-    ? createChatgptAuthorizer({ chatgpt: options.chatgpt, onCredentials: options.onChatgptCredentials, fetch: hostFetch })
+    ? createChatgptAuthorizer({ credentials: options.credentials, onCredentials: options.onCredentials, fetch: hostFetch })
     : null;
   const transportFetch = async (input, init = {}) => {
     const method = String(init.method ?? input?.method ?? "GET").toUpperCase();

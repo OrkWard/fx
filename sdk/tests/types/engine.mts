@@ -10,7 +10,7 @@ import {
   listModels,
   fxSdkApiVersion,
   supportsJspi,
-  type FxChatgptCredentials,
+  type FxProviderCredentials,
   type FxEngine,
   type FxEngineEvent,
   type FxEngineTurn,
@@ -228,20 +228,22 @@ export async function events(): Promise<void> {
 
 // A Codex engine on the host's ChatGPT credentials.
 declare const tokenStore: {
-  load(sessionId?: string): Promise<FxChatgptCredentials>;
-  save(credentials: FxChatgptCredentials): Promise<void>;
+  load(provider: "codex", sessionId?: string): Promise<FxProviderCredentials>;
+  save(provider: "codex", credentials: FxProviderCredentials): Promise<void>;
 };
 export async function codexEngine(): Promise<FxEngine> {
   const engine = await createFxEngine({
     provider: "codex",
     model: "gpt-6.1-sol",
-    chatgpt: ({ sessionId }) => tokenStore.load(sessionId),
-    onChatgptCredentials: (credentials) => tokenStore.save(credentials),
+    credentials: ({ provider, sessionId }) => tokenStore.load(provider, sessionId),
+    onCredentials: (credentials, { provider }) => tokenStore.save(provider, credentials),
   });
-  // @ts-expect-error a Codex engine needs chatgpt()
+  // @ts-expect-error a Codex engine needs credentials()
   await createFxEngine({ provider: "codex", model });
-  // @ts-expect-error chatgpt() needs provider "codex"
-  await createFxEngine({ apiKey, model, chatgpt: () => tokenStore.load() });
+  // @ts-expect-error credentials() needs provider "codex"
+  await createFxEngine({ apiKey, model, credentials: () => tokenStore.load("codex") });
+  // @ts-expect-error onCredentials needs provider "codex"
+  await createFxEngine({ apiKey, model, onCredentials: () => {} });
   // @ts-expect-error a Gateway engine needs apiKey
   await createFxEngine({ provider: "gateway", model });
   // @ts-expect-error libfx runs Gateway or Codex

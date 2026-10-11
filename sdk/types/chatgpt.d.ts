@@ -1,5 +1,5 @@
 // `libfx/chatgpt` (chatgpt-sign-in.js): sign in with ChatGPT for a Codex agent.
-import type { FxChatgptCredentials, FxFetch } from "./libfx.cjs";
+import type { FxProviderCredentials, FxFetch } from "./libfx.cjs";
 
 /** Options every network step accepts. */
 export interface ChatgptRequestOptions {
@@ -43,16 +43,16 @@ export type ChatgptSignInErrorCode =
 export declare function startSignIn(): Promise<ChatgptSignIn>;
 
 /** Finishes a sign-in from the pasted address, its query, or either wrapped in quotes or backticks. */
-export declare function finishSignIn(signIn: ChatgptSignIn, address: string, options?: ChatgptRequestOptions): Promise<FxChatgptCredentials>;
+export declare function finishSignIn(signIn: ChatgptSignIn, address: string, options?: ChatgptRequestOptions): Promise<FxProviderCredentials>;
 
 /** Starts a device code sign-in. The account or workspace must allow device code sign-in. */
 export declare function startDeviceSignIn(options?: ChatgptRequestOptions): Promise<ChatgptDeviceSignIn>;
 
 /** Checks once: credentials after the user entered the code, otherwise null. */
-export declare function pollDeviceSignIn(device: ChatgptDeviceSignIn, options?: ChatgptRequestOptions): Promise<FxChatgptCredentials | null>;
+export declare function pollDeviceSignIn(device: ChatgptDeviceSignIn, options?: ChatgptRequestOptions): Promise<FxProviderCredentials | null>;
 
 /** Waits until the user enters the code, polling at OpenAI's interval. */
-export declare function completeDeviceSignIn(device: ChatgptDeviceSignIn, options?: ChatgptRequestOptions): Promise<FxChatgptCredentials>;
+export declare function completeDeviceSignIn(device: ChatgptDeviceSignIn, options?: ChatgptRequestOptions): Promise<FxProviderCredentials>;
 
 /** Refreshes credentials. Codex agents refresh on their own; this is for hosts. */
-export declare function refreshCredentials(credentials: FxChatgptCredentials, options?: ChatgptRequestOptions): Promise<FxChatgptCredentials>;
+export declare function refreshCredentials(credentials: FxProviderCredentials, options?: ChatgptRequestOptions): Promise<FxProviderCredentials>;

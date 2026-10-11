@@ -362,5 +362,5 @@ export const wake: (request: Request) => Promise<Response> = agent.wakeHandler()
 export const codexAgent: FxAgent = createFxAgent({
   provider: "codex",
   model: "gpt-6.1-sol",
-  chatgpt: async ({ sessionId }) => ({ accessToken: sessionId ?? "token", refreshToken: "refresh" }),
+  credentials: async ({ sessionId }) => ({ accessToken: sessionId ?? "token", refreshToken: "refresh" }),
 });

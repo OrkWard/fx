@@ -2,7 +2,7 @@
 // A durable Codex session survives a SIGKILL. A child process runs a turn on a
 // local() durability and is killed during the model's reply or during a tool
 // call; a fresh agent here resumes the turn on the credentials its own
-// chatgpt() supplies. No ChatGPT token reaches the saved session. No network.
+// credentials() supplies. No ChatGPT token reaches the saved session. No network.
 //
 //   node test-durable-codex-crash.mjs [native|wasm]
 import { strict as assert } from "node:assert";
@@ -95,7 +95,7 @@ function agentOptions(dir, { fetch, token, asked, lookupRuns, lookupStarted, eve
     provider: "codex",
     model: "gpt-6.1-sol",
     fetch,
-    chatgpt: (request) => { asked?.push(request.sessionId); return { accessToken: token, refreshToken: "rt-crash" }; },
+    credentials: (request) => { asked?.push(request.sessionId); return { accessToken: token, refreshToken: "rt-crash" }; },
     tools: [{
       name: "lookup",
       description: "Looks up an order",
@@ -207,7 +207,7 @@ async function crashAndResume(phase) {
       assert.equal(reply.headers.get("chatgpt-account-id"), accountId);
       assert.equal(reply.headers.get("session-id"), sessionId, "the resumed requests belong to the crashed session");
     }
-    assert.ok(asked.includes(sessionId), "chatgpt() is asked for the crashed session's credentials");
+    assert.ok(asked.includes(sessionId), "credentials() is asked for the crashed session's credentials");
     assert.equal(fake.log.some((entry) => entry.url.includes("ai-gateway.vercel.sh")), false);
     const history = JSON.stringify(JSON.parse(replies.at(-1).body).input);
     if (phase === "reply") {

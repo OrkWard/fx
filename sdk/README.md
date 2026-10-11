@@ -217,12 +217,12 @@ An agent can run on a user's ChatGPT plan through Codex instead of AI Gateway. S
 const agent = createFxAgent({
   provider: "codex",
   model: "gpt-6.1-sol",
-  chatgpt: ({ sessionId }) => tokens.load(sessionId),
-  onChatgptCredentials: (credentials, { sessionId }) => tokens.save(sessionId, credentials),
+  credentials: ({ provider, sessionId }) => tokens.load(provider, sessionId),
+  onCredentials: (credentials, { provider, sessionId }) => tokens.save(provider, sessionId, credentials),
 });
 ```
 
-libfx calls `chatgpt()` before Codex requests, in whichever process runs the turn, and adds the credentials to those requests itself, so they never reach the engine or a saved session. It refreshes them shortly before they expire and once after a rejected request, then passes the new ones to `onChatgptCredentials` for you to save. Codex doesn't accept requests from web pages, so these turns run on your server.
+libfx calls `credentials()` before Codex requests, in whichever process runs the turn, and adds the credentials to those requests itself, so they never reach the engine or a saved session. It refreshes them shortly before they expire and once after a rejected request, then passes the new ones to `onCredentials` for you to save. Codex doesn't accept requests from web pages, so these turns run on your server.
 
 To sign a user in, use `libfx/chatgpt`:
 

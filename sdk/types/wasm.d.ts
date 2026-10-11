@@ -15,7 +15,6 @@ export {
 
 export type {
   FxBytes,
-  FxChatgptCredentials,
   FxCheckpointMeta,
   FxCodexProvider,
   FxEffort,
@@ -42,6 +41,7 @@ export type {
   FxOnAmbiguous,
   FxPromptBlock,
   FxPromptInput,
+  FxProviderCredentials,
   FxProviderTool,
   FxResizedImage,
   FxResourceBlock,
