@@ -5588,10 +5588,10 @@ test "legacy import preserves the active retained tail and complete archive" {
     defer initial.deinit(alloc);
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
     var images = [_]types.ToolImage{.{ .data = @constCast(png), .mime_type = @constCast("image/png") }};
-    var calls = [_]types.ToolCall{.{ .id = "image-call", .name = "mcp_browser", .arguments_json = "{}" }};
+    var calls = [_]types.ToolCall{.{ .id = "image-call", .name = "browser_tool", .arguments_json = "{}" }};
     var results = [_]types.PersistedToolResult{.{
         .tool_call_id = @constCast("image-call"),
-        .tool_name = @constCast("mcp_browser"),
+        .tool_name = @constCast("browser_tool"),
         .status = .success,
         .output = @constCast(""),
         .output_bytes = 0,

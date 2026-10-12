@@ -871,24 +871,12 @@ pub fn requestToolPermissionTraced(
     local_grants: []const PermissionGrant,
     live_authority: ?runtime_tool_contracts.LiveToolAuthority,
     revalidation: ?runtime_tool_contracts.LivePermissionRevalidation,
-    advertised_dynamic_tool_names: []const []const u8,
-    advertised_dynamic_tools: []const @import("../stream_provider.zig").DynamicFunctionTool,
     workspace_root: []const u8,
     ctx: TraceContext,
 ) !command_admission.PermissionOutcome {
-    const target_class = classifyPermissionTarget(hooks, arena, call, advertised_dynamic_tool_names, workspace_root);
+    const target_class = classifyPermissionTarget(hooks, arena, call, workspace_root);
     tracePermissionRequest(call, mode, local_grants.len, target_class, ctx);
-    const review_schema = schema: {
-        for (advertised_dynamic_tools) |tool| {
-            if (!std.mem.eql(u8, tool.name, call.name)) continue;
-            var input: std.Io.Writer.Allocating = .init(arena);
-            defer input.deinit();
-            try std.json.Stringify.value(tool.input_schema, .{}, &input.writer);
-            break :schema try @import("../../tooling/model_tool_schema.zig").dynamicFunctionSchemaJsonAlloc(arena, tool.name, tool.description, input.written());
-        }
-        break :schema null;
-    };
-    const outcome = hooks.request_tool_permission(hooks.ctx, arena, call, review_turn, mode, local_grants, live_authority, revalidation, advertised_dynamic_tool_names, review_schema) catch |err| {
+    const outcome = hooks.request_tool_permission(hooks.ctx, arena, call, review_turn, mode, local_grants, live_authority, revalidation) catch |err| {
         return permissionErrorOutcome(arena, call, mode, err, target_class, ctx);
     };
     tracePermissionOutcome(call, mode, local_grants.len, target_class, ctx, outcome);
@@ -904,11 +892,10 @@ pub fn requestPreparedFileMutationPermissionTraced(
     mode: PermissionMode,
     local_grants: []const PermissionGrant,
     live_authority: ?runtime_tool_contracts.LiveToolAuthority,
-    advertised_dynamic_tool_names: []const []const u8,
     workspace_root: []const u8,
     ctx: TraceContext,
 ) !command_admission.PermissionOutcome {
-    const target_class = classifyPermissionTarget(hooks, arena, call, advertised_dynamic_tool_names, workspace_root);
+    const target_class = classifyPermissionTarget(hooks, arena, call, workspace_root);
     tracePermissionRequest(call, mode, local_grants.len, target_class, ctx);
     const request = hooks.request_prepared_file_mutation_permission orelse {
         return permissionErrorOutcome(
@@ -920,7 +907,7 @@ pub fn requestPreparedFileMutationPermissionTraced(
             ctx,
         );
     };
-    const outcome = request(hooks.ctx, arena, call, prepared, review_turn, mode, local_grants, live_authority, advertised_dynamic_tool_names) catch |err| {
+    const outcome = request(hooks.ctx, arena, call, prepared, review_turn, mode, local_grants, live_authority) catch |err| {
         return permissionErrorOutcome(arena, call, mode, err, target_class, ctx);
     };
     tracePermissionOutcome(call, mode, local_grants.len, target_class, ctx, outcome);
@@ -972,9 +959,9 @@ fn tracePermissionOutcome(
     }
 }
 
-fn classifyPermissionTarget(hooks: *const AgentRuntimeDeps, arena: Allocator, call: ToolCall, advertised_dynamic_tool_names: []const []const u8, workspace_root: []const u8) []const u8 {
+fn classifyPermissionTarget(hooks: *const AgentRuntimeDeps, arena: Allocator, call: ToolCall, workspace_root: []const u8) []const u8 {
     if (file_mutation_contract.isToolName(call.name)) return "unknown";
-    const target = hooks.permission_target_for_call(hooks.ctx, arena, call, advertised_dynamic_tool_names) catch |err| {
+    const target = hooks.permission_target_for_call(hooks.ctx, arena, call) catch |err| {
         return if (err == error.PathOutsideWorkspace) "true" else "unknown";
     };
     const path_part = if (std.mem.find(u8, target, "::")) |sep| target[0..sep] else target;

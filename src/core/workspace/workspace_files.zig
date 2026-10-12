@@ -877,7 +877,7 @@ test "workspace file provider falls back when git is skipped" {
 }
 
 test "workspace file provider treats empty successful git result as authoritative" {
-    if (comptime @import("builtin").target.os.tag == .windows or @import("builtin").target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -927,8 +927,6 @@ test "workspace file provider walks a Git worktree when no trusted Git executabl
 }
 
 test "workspace file provider does not recurse after a selected Git executable fails" {
-    if (comptime builtin.target.os.tag == .wasi) return error.SkipZigTest;
-
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeTestFile(tmp.dir, ".git", "gitdir: /missing\n");
@@ -953,7 +951,7 @@ test "workspace file provider does not recurse after a selected Git executable f
 }
 
 test "workspace file provider git result contains tracked files only" {
-    if (comptime @import("builtin").target.os.tag == .windows or @import("builtin").target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -982,7 +980,7 @@ test "workspace file provider git result contains tracked files only" {
 }
 
 test "workspace directory provider uses Git ignores without collapsing nested empty directories" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1028,7 +1026,7 @@ test "workspace file provider cancellable fallback stops before traversal" {
 }
 
 test "workspace file provider cancellation terminates an active child" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     var stop_requested = std.atomic.Value(bool).init(false);
     const RequestStop = struct {

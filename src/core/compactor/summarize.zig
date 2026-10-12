@@ -232,7 +232,7 @@ fn foldable(previous: Compacted) bool {
 
 /// Saves `previous` whole as the next ledger and returns what stays of it:
 /// its rules, status and open entries still in force, word for word, the
-/// skills and MCP tools used, and of a turn it left in progress the user
+/// skills used, and of a turn it left in progress the user
 /// messages and exact text. `arena` owns the result.
 fn foldPrevious(arena: Allocator, previous: Compacted, store: compacted_records.Store) error{ StoreFailed, OutOfMemory }!struct { earlier: Compacted, fold: Fold } {
     const number = previous.ledger_count + 1;
@@ -893,7 +893,7 @@ fn userMessagesByTurn(alloc: Allocator, turns: []const Prepared) Allocator.Error
     return messages.items;
 }
 
-/// Every tool call of `turns`, for the list of skills and MCP tools used.
+/// Every tool call of `turns`, for the list of skills used.
 fn toolCalls(alloc: Allocator, turns: []const Prepared) Allocator.Error![]const ledger.Call {
     var calls: std.ArrayList(ledger.Call) = .empty;
     for (turns) |turn| for (turn.tools) |tool| {
@@ -1655,7 +1655,7 @@ test "the model reads the new turns as they are and is asked only for their note
     try testing.expect(std.mem.endsWith(u8, seen, "Write only these notes."));
 }
 
-test "the skills and MCP tools used are listed from the tool calls" {
+test "the skills used are listed from the tool calls" {
     var model = FakeModel{};
     defer model.deinit();
     var store = MemoryStore{ .alloc = testing.allocator };
@@ -1663,14 +1663,14 @@ test "the skills and MCP tools used are listed from the tool calls" {
     const turns = [_]Turn{.{ .user = "check the issue", .items = &.{
         .{ .tool_call = .{ .id = "a", .name = "skill", .arguments = "{\"location\":\"skill:ab:4/fx-conventions\"}" } },
         .{ .tool_result = .{ .call_id = "a", .name = "skill", .output = "Conventions." } },
-        .{ .tool_call = .{ .id = "b", .name = "mcp_linear_get_issue", .arguments = "{\"id\":\"FX-1\"}" } },
-        .{ .tool_result = .{ .call_id = "b", .name = "mcp_linear_get_issue", .output = "FX-1: crash" } },
+        .{ .tool_call = .{ .id = "b", .name = "skill", .arguments = "{\"location\":\"skill:ab:4/zig\"}" } },
+        .{ .tool_result = .{ .call_id = "b", .name = "skill", .output = "FX-1: crash" } },
         .{ .assistant = "FX-1 is a crash." },
     } }};
     var result = try compact(testing.allocator, .{ .model = "m", .turns = &turns }, model.model(), store.store());
     defer result.deinit();
     try testing.expectEqual(@as(usize, 2), result.compacted.used.len);
-    try testing.expect(std.mem.find(u8, result.text, "Skills and MCP tools used:\n- skill skill:ab:4/fx-conventions: 1 call, T1\n- MCP tool mcp_linear_get_issue: 1 call, T2\n") != null);
+    try testing.expect(std.mem.find(u8, result.text, "Skills used:\n- skill skill:ab:4/fx-conventions: 1 call, T1\n- skill skill:ab:4/zig: 1 call, T2\n") != null);
 }
 
 test "each turn and each tool call is saved word for word under its ID" {
@@ -2364,7 +2364,7 @@ test "compaction survives every allocation failure" {
             const lines = [_]checkpoint.Tool{.{ .number = 1, .line = "shell a (1 bytes)", .why = "w" }};
             const open_lines = [_]checkpoint.Tool{.{ .number = 2, .line = "shell b (1 bytes)", .why = "w" }};
             const earliers = [_]Compacted{
-                .{ .entries = &.{.{ .id = "R1", .text = "R1 (M1): \"u\"" }}, .used = &.{.{ .kind = .mcp, .name = "mcp_a_b" }}, .turns = &.{.{ .number = 1, .users = &.{"u"}, .work = "w", .final = "f", .first_tool = 1, .last_tool = 1, .tools = &lines }}, .open = .{ .text = "t", .work = "w", .first_tool = 2, .last_tool = 2, .tools = &open_lines }, .turn_count = 1, .tool_count = 2 },
+                .{ .entries = &.{.{ .id = "R1", .text = "R1 (M1): \"u\"" }}, .used = &.{.{ .kind = .skill, .name = "skill:a/b" }}, .turns = &.{.{ .number = 1, .users = &.{"u"}, .work = "w", .final = "f", .first_tool = 1, .last_tool = 1, .tools = &lines }}, .open = .{ .text = "t", .work = "w", .first_tool = 2, .last_tool = 2, .tools = &open_lines }, .turn_count = 1, .tool_count = 2 },
                 .{ .earlier = "e", .turns = &.{.{ .number = 1, .users = &.{"u"}, .work = "w", .final = "f" }}, .open = .{ .text = "t", .work = "w" }, .turn_count = 1 },
             };
             for (earliers) |earlier| {

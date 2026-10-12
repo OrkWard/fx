@@ -172,7 +172,6 @@ test "router keeps direct grammar on the safer route for every shell source" {
     const sources = [_]command_admission.ShellAuthorizationSource{
         .configured_rule,
         .session_grant,
-        .js_host,
         .interactive_once,
         .interactive_always,
         .auto_mode,

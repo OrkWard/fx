@@ -138,7 +138,7 @@ test "built-in Herdr hooks report only interactive lifecycle state" {
         .outcome = .completed,
     });
     view.runAttentionRequired(.{
-        .invocation = testInvocation(.acp),
+        .invocation = testInvocation(.subagent),
         .kind = .permission,
     });
     view.runAttentionRequired(.{

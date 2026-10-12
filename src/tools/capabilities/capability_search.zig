@@ -4,7 +4,6 @@ const lexical_relevance = @import("../../core/shared/lexical_relevance.zig");
 const result_store = @import("../../core/session/result_store.zig");
 const capability_retrieval = @import("../../core/tooling/capability_retrieval.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
-const tool_mcp_runtime = @import("../../core/tooling/tool_mcp_runtime.zig");
 const tool_result_limits = @import("../../core/tooling/tool_result_limits.zig");
 const skill_search = @import("../skills/skill_search.zig");
 
@@ -12,19 +11,15 @@ const Allocator = std.mem.Allocator;
 const Input = struct {
     query: []u8,
     prepared: lexical_relevance.PreparedQuery,
-    server: ?[]u8,
 
     fn deinit(self: *Input, alloc: Allocator) void {
         alloc.free(self.query);
-        if (self.server) |server| alloc.free(server);
         self.* = undefined;
     }
 
     fn request(self: *const Input) capability_retrieval.Request {
         return .{
             .query = &self.prepared,
-            .kind = if (self.server == null) .all else .mcp,
-            .server = self.server,
             .limit = capability_retrieval.default_limit,
             .relevance_policy = .intent,
         };
@@ -56,31 +51,16 @@ pub fn decode(
         return failure(ctx.allocator, "capability_search query must not exceed 4096 bytes");
     }
 
-    const server_value = parsed.value.object.get("server");
-    if (server_value) |value| {
-        if (value != .string) {
-            return failure(ctx.allocator, "capability_search field \"server\" must be a string");
-        }
-        if (value.string.len == 0) {
-            return failure(ctx.allocator, "capability_search field \"server\" must not be empty");
-        }
-    }
     const query = try ctx.allocator.dupe(u8, query_value.string);
     errdefer ctx.allocator.free(query);
     const prepared = lexical_relevance.prepare(query) catch |err| switch (err) {
         error.QueryTooLong => unreachable,
     };
-    const server = if (server_value) |value|
-        try ctx.allocator.dupe(u8, value.string)
-    else
-        null;
-    errdefer if (server) |owned| ctx.allocator.free(owned);
     const input = try ctx.allocator.create(Input);
     errdefer ctx.allocator.destroy(input);
     input.* = .{
         .query = query,
         .prepared = prepared,
-        .server = server,
     };
     return .{ .input = .{ .ptr = input, .deinit_fn = inputDeinit } };
 }
@@ -92,18 +72,6 @@ pub fn validate(
     return null;
 }
 
-pub fn presentation(args: std.json.ObjectMap) ?tool_dispatch.CallPresentation {
-    const server = args.get("server") orelse return null;
-    if (server != .string or server.string.len == 0) return null;
-    return .{
-        .activity_kind = .read,
-        .action_label = "Searching capabilities",
-        .completed_action_label = "Searched capabilities",
-        .label_arg_kind = .server,
-        .label_arg_default = "MCP server",
-    };
-}
-
 pub fn call(
     ctx: tool_dispatch.DispatchContext,
     erased: tool_dispatch.ToolInput,
@@ -113,41 +81,17 @@ pub fn call(
         ctx.max_tool_result_bytes,
         result_store.large_result_threshold_bytes,
     );
-    const request = input.request();
-    const searches_skills = request.includes(.skill);
-    const searches_mcp = request.includes(.mcp);
-    const domain_cap = if (searches_skills and searches_mcp and output_cap > 512)
-        (output_cap - 512) / 2
-    else
-        output_cap;
-    var skill_result: ?skill_search.SearchResult = null;
-    if (searches_skills) {
-        skill_result = skill_search.searchRequest(ctx, request, domain_cap) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return executionFailure(ctx.allocator, "skill", err),
-        };
-    }
-    defer if (skill_result) |*result| result.deinit(ctx.allocator);
-
-    var mcp_result: tool_mcp_runtime.SearchResult = if (searches_mcp)
-        try searchMcp(ctx, request, domain_cap)
-    else
-        .{ .model_output = try ctx.allocator.dupe(u8, "{\"tools\":[],\"count\":0,\"total_matches\":0,\"more_available\":false,\"next_cursor\":null}") };
-    defer mcp_result.deinit(ctx.allocator);
-    if (mcp_result.notice) |notice| try tool_dispatch.reportContextNotice(ctx, notice);
-
-    const combined = combineProjected(
-        ctx.allocator,
-        if (skill_result) |*result| result else null,
-        mcp_result.model_output,
-        output_cap,
-    ) catch |err| switch (err) {
+    var skill_result = skill_search.searchRequest(ctx, input.request(), output_cap) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return executionFailure(ctx.allocator, "combined", err),
+        else => return executionFailure(ctx.allocator, "skill", err),
     };
-    errdefer ctx.allocator.free(combined);
-    for (mcp_result.selected_tools) |selected| try tool_dispatch.reportSelectedDynamicTool(ctx, selected.name, selected.schema_json, selected.mcp_binding);
-    return .{ .success = combined };
+    defer skill_result.deinit(ctx.allocator);
+
+    const output = renderProjected(ctx.allocator, &skill_result, output_cap) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return executionFailure(ctx.allocator, "skill", err),
+    };
+    return .{ .success = output };
 }
 
 pub fn readsOnly(_: tool_dispatch.ToolInput) bool {
@@ -179,130 +123,39 @@ fn executionFailure(
     ) };
 }
 
-fn searchMcp(
-    ctx: tool_dispatch.DispatchContext,
-    request: capability_retrieval.Request,
-    max_bytes: usize,
-) tool_dispatch.DispatchError!tool_mcp_runtime.SearchResult {
-    const runtime_context = ctx.mcp_ctx orelse
-        return .{ .model_output = try ctx.allocator.dupe(u8, "{\"tools\":[],\"count\":0,\"state\":\"unavailable\"}") };
-    const search_tools = ctx.mcp_search_tools orelse
-        return .{ .model_output = try ctx.allocator.dupe(u8, "{\"tools\":[],\"count\":0,\"state\":\"unavailable\"}") };
-    var limits = ctx.context_limits;
-    if (max_bytes < limits.mcp_search_result_bytes.effectiveBytes()) {
-        limits.mcp_search_result_bytes.value = .{ .bytes = max_bytes };
-    }
-    return search_tools(
-        runtime_context,
-        ctx.allocator,
-        request,
-        ctx.mcp_permission_rules,
-        limits,
-        ctx.mcp_access,
-        ctx.cancel_flag,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.Cancelled => return error.Cancelled,
-        else => return .{ .model_output = try ctx.allocator.print("{{\"tools\":[],\"count\":0,\"error\":\"{s}\"}}", .{@errorName(err)}) },
-    };
-}
-
-fn combineProjected(
+fn renderProjected(
     alloc: Allocator,
-    skill_result: ?*const skill_search.SearchResult,
-    mcp_output: []const u8,
+    skill_result: *const skill_search.SearchResult,
     max_bytes: usize,
 ) ![]u8 {
-    var mcp_parsed = try std.json.parseFromSlice(std.json.Value, alloc, mcp_output, .{});
-    defer mcp_parsed.deinit();
-    if (mcp_parsed.value != .object) return error.InvalidCapabilitySearchResult;
-    const mcp_tools_value = mcp_parsed.value.object.get("tools") orelse
-        return error.InvalidCapabilitySearchResult;
-    if (mcp_tools_value != .array) return error.InvalidCapabilitySearchResult;
-    const mcp_items = mcp_tools_value.array.items;
-
-    const combined = renderCombined(
+    const output = renderSkills(
         alloc,
-        if (skill_result) |result| result.itemsJson() else "",
-        if (skill_result) |result| result.count else 0,
-        mcp_items,
-        if (skill_result) |result| result.total_matches else 0,
-        objectNonNegativeCount(mcp_parsed.value, "total_matches"),
-        mcp_parsed.value.object.get("authentication_required"),
-        mcp_parsed.value.object.get("state"),
-        mcp_parsed.value.object.get("error"),
-        mcp_parsed.value.object.get("context_limit"),
+        skill_result.itemsJson(),
+        skill_result.count,
+        skill_result.total_matches,
     ) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
         else => return err,
     };
-    if (combined.len <= max_bytes) return combined;
-    alloc.free(combined);
+    if (output.len <= max_bytes) return output;
+    alloc.free(output);
     return error.CapabilitySearchResultLimitTooSmall;
 }
 
-fn renderCombined(
+fn renderSkills(
     alloc: Allocator,
     skills_json: []const u8,
-    skill_count: usize,
-    mcp_tools: []const std.json.Value,
-    skill_total_matches: usize,
-    mcp_total_matches: usize,
-    authentication_required: ?std.json.Value,
-    mcp_state: ?std.json.Value,
-    mcp_error: ?std.json.Value,
-    mcp_context_limit: ?std.json.Value,
+    count: usize,
+    total_matches: usize,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     try out.writer.writeAll("{\"skills\":[");
     try out.writer.writeAll(skills_json);
-    try out.writer.writeAll("],\"mcp_tools\":[");
-    for (mcp_tools, 0..) |value, index| {
-        if (index > 0) try out.writer.writeByte(',');
-        try std.json.Stringify.value(value, .{}, &out.writer);
-    }
-    try out.writer.print(
-        "],\"counts\":{{\"skills\":{d},\"mcp_tools\":{d}}},\"total_matches\":{{\"skills\":{d},\"mcp_tools\":{d}}}",
-        .{
-            skill_count,
-            mcp_tools.len,
-            skill_total_matches,
-            mcp_total_matches,
-        },
-    );
-    if (skill_total_matches == 0 and
-        mcp_total_matches == 0 and
-        authentication_required == null and
-        mcp_state == null and
-        mcp_error == null)
-    {
-        try out.writer.writeAll(",\"state\":\"no_match\"");
-    }
-    if (authentication_required) |value| {
-        try out.writer.writeAll(",\"authentication_required\":");
-        try std.json.Stringify.value(value, .{}, &out.writer);
-    }
-    if (mcp_state) |value| {
-        try out.writer.writeAll(",\"mcp_state\":");
-        try std.json.Stringify.value(value, .{}, &out.writer);
-    }
-    if (mcp_error) |value| {
-        try out.writer.writeAll(",\"mcp_error\":");
-        try std.json.Stringify.value(value, .{}, &out.writer);
-    }
-    if (mcp_context_limit) |value| {
-        try out.writer.writeAll(",\"mcp_context_limit\":");
-        try std.json.Stringify.value(value, .{}, &out.writer);
-    }
+    try out.writer.print("],\"count\":{d},\"total_matches\":{d}", .{ count, total_matches });
+    if (total_matches == 0) try out.writer.writeAll(",\"state\":\"no_match\"");
     try out.writer.writeByte('}');
     return out.toOwnedSlice();
-}
-
-fn objectNonNegativeCount(value: std.json.Value, field: []const u8) usize {
-    const candidate = value.object.get(field) orelse return 0;
-    if (candidate != .integer or candidate.integer < 0) return 0;
-    return std.math.cast(usize, candidate.integer) orelse 0;
 }
 
 test "capability search decoder owns one bounded prepared query" {
@@ -318,27 +171,6 @@ test "capability search decoder owns one bounded prepared query" {
             const value = input.as(Input);
             try std.testing.expectEqualStrings("send an email", value.prepared.raw);
             try std.testing.expectEqual(@as(usize, 3), value.prepared.token_count);
-        },
-    }
-}
-
-test "capability search decoder accepts optional exact server scope" {
-    const alloc = std.testing.allocator;
-    const decoded = try decode(
-        .{ .allocator = alloc },
-        "{\"query\":\"list production monitors\",\"server\":\"datadog\"}",
-    );
-    switch (decoded) {
-        .failure => |message| {
-            defer alloc.free(message);
-            return error.TestUnexpectedResult;
-        },
-        .input => |input| {
-            defer input.deinit(alloc);
-            const value = input.as(Input);
-            try std.testing.expectEqualStrings("list production monitors", value.query);
-            try std.testing.expectEqualStrings("datadog", value.server.?);
-            try std.testing.expectEqual(capability_retrieval.Kind.mcp, value.request().kind);
         },
     }
 }
@@ -360,41 +192,22 @@ test "capability search decoder rejects a missing or empty task" {
     }
 }
 
-test "capability search presents exact server scope" {
-    var parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        std.testing.allocator,
-        "{\"server\":\"clerk\",\"query\":\"list sdk snippets\"}",
-        .{},
-    );
-    defer parsed.deinit();
-    const resolved = presentation(parsed.value.object).?;
-    try std.testing.expectEqual(tool_dispatch.LabelArgKind.server, resolved.label_arg_kind);
-    try std.testing.expectEqualStrings("clerk", tool_dispatch.presentationLabelValue(resolved, parsed.value.object).?);
-}
-
-test "capability search combines bounded skill and MCP results" {
+test "capability search projects bounded skill results" {
     const alloc = std.testing.allocator;
     const skills =
         "{\"skills\":[{\"name\":\"mail-helper\",\"description\":\"Send email\",\"location\":\"/skills/mail-helper\"}],\"count\":1,\"total_matches\":2,\"more_available\":true,\"next_cursor\":\"c1:s:1:1:1\"}";
-    const mcp =
-        "{\"tools\":[{\"name\":\"mcp_mail_send\",\"server\":\"mail\",\"description\":\"Send email\"}],\"count\":1,\"total_matches\":3,\"more_available\":true,\"next_cursor\":\"c1:m:1:1:1\",\"authentication_required\":{\"server\":\"TOKEN=runtime-auth-secret\",\"message\":\"authenticate\"}}";
     const skill_result = testSkillResult(skills, 1, 2);
-    const output = try combineProjected(alloc, &skill_result, mcp, 4096);
+    const output = try renderProjected(alloc, &skill_result, 4096);
     defer alloc.free(output);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, output, .{});
     defer parsed.deinit();
     const skill_items = parsed.value.object.get("skills").?.array.items;
-    const mcp_items = parsed.value.object.get("mcp_tools").?.array.items;
     try std.testing.expectEqual(@as(usize, 1), skill_items.len);
     try std.testing.expectEqualStrings("mail-helper", skill_items[0].object.get("name").?.string);
-    try std.testing.expectEqual(@as(usize, 1), mcp_items.len);
-    try std.testing.expectEqualStrings("mcp_mail_send", mcp_items[0].object.get("name").?.string);
-    try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("total_matches").?.object.get("skills").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("total_matches").?.integer);
     try std.testing.expect(parsed.value.object.get("more_available") == null);
-    try std.testing.expect(parsed.value.object.get("next_cursors") == null);
-    try std.testing.expect(parsed.value.object.get("authentication_required") != null);
+    try std.testing.expect(parsed.value.object.get("next_cursor") == null);
 
     const projected_again = try tool_result_limits.prepareModelOutput(
         alloc,
@@ -407,19 +220,17 @@ test "capability search combines bounded skill and MCP results" {
 
     try std.testing.expectError(
         error.CapabilitySearchResultLimitTooSmall,
-        combineProjected(alloc, &skill_result, mcp, output.len - 1),
+        renderProjected(alloc, &skill_result, output.len - 1),
     );
 }
 
-test "capability search combined projection releases every allocation failure" {
+test "capability search projection releases every allocation failure" {
     const Case = struct {
         fn run(alloc: Allocator) !void {
             const skills =
                 "{\"skills\":[{\"name\":\"mail-helper\",\"description\":\"Send email\",\"location\":\"/skills/mail-helper\"}],\"count\":1,\"total_matches\":1,\"more_available\":false,\"next_cursor\":null}";
-            const mcp =
-                "{\"tools\":[{\"name\":\"mcp_mail_send\",\"server\":\"mail\",\"description\":\"Send email\"}],\"count\":1,\"total_matches\":1,\"more_available\":false,\"next_cursor\":null}";
             const skill_result = testSkillResult(skills, 1, 1);
-            const output = try combineProjected(alloc, &skill_result, mcp, 1024);
+            const output = try renderProjected(alloc, &skill_result, 1024);
             alloc.free(output);
         }
     };
@@ -430,10 +241,8 @@ test "capability search marks an empty search as terminal" {
     const alloc = std.testing.allocator;
     const skills =
         "{\"skills\":[],\"count\":0,\"total_matches\":0,\"more_available\":false,\"next_cursor\":null}";
-    const mcp =
-        "{\"tools\":[],\"count\":0,\"total_matches\":0,\"more_available\":false,\"next_cursor\":null}";
     const skill_result = testSkillResult(skills, 0, 0);
-    const output = try combineProjected(alloc, &skill_result, mcp, 4096);
+    const output = try renderProjected(alloc, &skill_result, 4096);
     defer alloc.free(output);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, output, .{});
@@ -442,7 +251,7 @@ test "capability search marks an empty search as terminal" {
         "no_match",
         parsed.value.object.get("state").?.string,
     );
-    try std.testing.expectEqual(@as(usize, 5), parsed.value.object.count());
+    try std.testing.expectEqual(@as(usize, 4), parsed.value.object.count());
 }
 
 fn testSkillResult(output: []const u8, count: usize, total_matches: usize) skill_search.SearchResult {

@@ -2,22 +2,11 @@ const std = @import("std");
 
 const UpdateChannel = enum { stable, dev };
 
-const WasmSurface = enum {
-    none,
-    core,
-    term,
-};
-
 const PgsoArtifact = enum {
     fx,
     file_index,
     ui_activity,
     approval_review,
-};
-
-const NapiSurface = enum {
-    none,
-    core,
 };
 
 pub fn build(b: *std.Build) void {
@@ -28,16 +17,6 @@ pub fn build(b: *std.Build) void {
         "pgso-artifact",
         "Emit ReleaseSafe LLVM bitcode for one PGO/PGSO artifact",
     );
-    const wasm_surface = b.option(
-        WasmSurface,
-        "wasm-surface",
-        "Build a WASI WebAssembly surface for JavaScript hosts (core or term)",
-    ) orelse .none;
-    const napi_surface = b.option(
-        NapiSurface,
-        "napi-surface",
-        "Build a Node-API addon surface (core)",
-    ) orelse .none;
 
     const git_commit = readGitCommit(b);
     const app_version = readAppVersion(b);
@@ -47,7 +26,6 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "git_commit", git_commit);
     build_options.addOption([]const u8, "app_version", app_version);
     build_options.addOption([]const u8, "update_channel", @tagName(update_channel));
-    build_options.addOption(WasmSurface, "wasm_surface", .none);
 
     const exe = b.addExecutable(.{
         .name = "fx",
@@ -98,48 +76,6 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_session_manager_tests.step);
-
-    if (wasm_surface != .none) {
-        addWasmArtifact(b, wasm_surface, git_commit, app_version, update_channel);
-    }
-    if (napi_surface != .none) {
-        addNapiArtifact(b, napi_surface, target, git_commit, app_version, update_channel);
-    }
-
-    const mcp_test_exports = b.createModule(.{
-        .root_source_file = b.path("src/mcp_test_exports.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    mcp_test_exports.addImport("build_options", build_options.createModule());
-    const mcp_dispatcher_e2e = b.addExecutable(.{
-        .name = "mcp-stdio-dispatcher-driver",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(
-                "tests/e2e/fixtures/mcp-stdio-dispatcher-driver.zig",
-            ),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    mcp_dispatcher_e2e.root_module.addImport(
-        "mcp_test_exports",
-        mcp_test_exports,
-    );
-    const run_mcp_dispatcher_e2e = b.addRunArtifact(mcp_dispatcher_e2e);
-    run_mcp_dispatcher_e2e.addPassthruArgs();
-    const mcp_dispatcher_e2e_step = b.step(
-        "run-mcp-stdio-dispatcher-e2e",
-        "Run the MCP stdio dispatcher E2E driver",
-    );
-    mcp_dispatcher_e2e_step.dependOn(&run_mcp_dispatcher_e2e.step);
-    const build_mcp_dispatcher_e2e_step = b.step(
-        "build-mcp-stdio-dispatcher-e2e",
-        "Build the MCP stdio dispatcher E2E driver",
-    );
-    build_mcp_dispatcher_e2e_step.dependOn(&mcp_dispatcher_e2e.step);
 
     // --- file_index search benchmark ---
     const benchmark_exports_mod = b.createModule(.{
@@ -299,129 +235,6 @@ pub fn build(b: *std.Build) void {
         );
         pgso_ir_step.dependOn(&missing_artifact.step);
     }
-}
-
-fn addWasmArtifact(
-    b: *std.Build,
-    surface: WasmSurface,
-    git_commit: []const u8,
-    app_version: []const u8,
-    update_channel: UpdateChannel,
-) void {
-    const wasm_target = b.resolveTargetQuery(.{
-        .cpu_arch = .wasm32,
-        .os_tag = .wasi,
-    });
-    const name = switch (surface) {
-        .core => "fx-core",
-        .term => "fx-term",
-        .none => unreachable,
-    };
-    const description = switch (surface) {
-        .core => "Build the headless fx WebAssembly artifact",
-        .term => "Build the terminal fx WebAssembly artifact",
-        .none => unreachable,
-    };
-
-    const wasm_options = b.addOptions();
-    wasm_options.addOption([]const u8, "git_commit", git_commit);
-    wasm_options.addOption([]const u8, "app_version", app_version);
-    wasm_options.addOption([]const u8, "update_channel", @tagName(update_channel));
-    wasm_options.addOption(WasmSurface, "wasm_surface", surface);
-
-    const wasm_root = switch (surface) {
-        .core => "src/wasm_core_main.zig",
-        .term => "src/wasm_term_main.zig",
-        .none => unreachable,
-    };
-    const wasm_exe = b.addExecutable(.{
-        .name = name,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(wasm_root),
-            .target = wasm_target,
-            .optimize = .small,
-            .single_threaded = true,
-            .link_libc = true,
-            .stack_check = false,
-            .stack_protector = false,
-            .omit_frame_pointer = true,
-            .unwind_tables = .none,
-            .error_tracing = false,
-            .strip = true,
-        }),
-    });
-    if (surface == .core) wasm_exe.stack_size = 1024 * 1024;
-    wasm_exe.root_module.addImport("build_options", wasm_options.createModule());
-    _ = addSessionManager(b, wasm_exe.root_module, wasm_target, .small, true);
-
-    const install_wasm = b.addInstallArtifact(wasm_exe, .{});
-    const wasm_step = b.step(name ++ "-wasm", description);
-    wasm_step.dependOn(&install_wasm.step);
-    b.getInstallStep().dependOn(&install_wasm.step);
-}
-
-fn addNapiArtifact(
-    b: *std.Build,
-    surface: NapiSurface,
-    target: std.Build.ResolvedTarget,
-    git_commit: []const u8,
-    app_version: []const u8,
-    update_channel: UpdateChannel,
-) void {
-    const napi_options = b.addOptions();
-    napi_options.addOption([]const u8, "git_commit", git_commit);
-    napi_options.addOption([]const u8, "app_version", app_version);
-    napi_options.addOption([]const u8, "update_channel", @tagName(update_channel));
-    napi_options.addOption(NapiSurface, "napi_surface", surface);
-
-    const root = switch (surface) {
-        .core => "src/napi_core_main.zig",
-        .none => unreachable,
-    };
-    const lib = b.addLibrary(.{
-        .name = "libfx",
-        .linkage = .dynamic,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(root),
-            .target = target,
-            .optimize = .safe,
-            .link_libc = true,
-            .strip = true,
-        }),
-    });
-    lib.root_module.addImport("build_options", napi_options.createModule());
-    _ = addSessionManager(b, lib.root_module, target, .safe, null);
-    const node_include = b.option(
-        []const u8,
-        "node-include-dir",
-        "Directory containing node_api.h for the N-API addon",
-    ) orelse discoverNodeIncludeDir(b);
-    const node_api = b.addTranslateC(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ node_include, "node_api.h" }) },
-        .target = target,
-        .optimize = .safe,
-    });
-    node_api.addSystemIncludePath(.{ .cwd_relative = node_include });
-    lib.root_module.addImport("node_api", node_api.createModule());
-    lib.linker_allow_shlib_undefined = true;
-
-    const install = b.addInstallArtifact(lib, .{ .dest_sub_path = "libfx.node" });
-    const step = b.step("libfx-napi", "Build the libfx Node-API core addon");
-    step.dependOn(&install.step);
-    b.getInstallStep().dependOn(&install.step);
-}
-
-fn discoverNodeIncludeDir(b: *std.Build) []const u8 {
-    const out = switch (b.runFallible(
-        &.{ "node", "-p", "require('node:path').join(require('node:path').dirname(process.execPath), '..', 'include', 'node')" },
-        .{ .stderr_behavior = .ignore },
-    )) {
-        .success => |stdout| stdout,
-        .spawn_failed, .crashed => std.process.fatal("Node.js is required to locate node_api.h; pass -Dnode-include-dir=<path>", .{}),
-        .bad_exit_code => std.process.fatal("could not locate node_api.h; pass -Dnode-include-dir=<path>", .{}),
-    };
-    const trimmed = std.mem.trim(u8, out, " \t\r\n");
-    return b.allocator.dupe(u8, trimmed) catch std.process.fatal("could not allocate Node include path", .{});
 }
 
 fn readGitCommit(b: *std.Build) []const u8 {

@@ -51,27 +51,7 @@ fn parallelSubagentPrefixLen(registry: tool_dispatch.Registry, calls: []const To
     return len;
 }
 
-/// Host tool calls that may run together, up to the first writer. A build
-/// without threads runs them one at a time.
-fn isConcurrentHostCall(registry: tool_dispatch.Registry, call: ToolCall) bool {
-    if (builtin.single_threaded) return false;
-    if (call.provider_result != null) return false;
-    const tool = registry.lookup(call.name) orelse return false;
-    return tool.executor_kind == .host and tool.host_concurrent;
-}
-
-/// Each running host call holds one of the host's pending requests, which
-/// journal barriers and permission prompts share, so a group stays well
-/// below that limit. Later calls form the next group.
-const max_parallel_host_calls = 16;
-
-fn parallelHostPrefixLen(registry: tool_dispatch.Registry, calls: []const ToolCall) usize {
-    var len: usize = 0;
-    while (len < calls.len and len < max_parallel_host_calls and isConcurrentHostCall(registry, calls[len])) : (len += 1) {}
-    return len;
-}
-
-pub const GroupKind = enum { none, read_only, subagent, host };
+pub const GroupKind = enum { none, read_only, subagent };
 
 pub const LeadingGroup = struct {
     kind: GroupKind = .none,
@@ -86,8 +66,6 @@ pub fn leadingParallelGroup(
     if (read_only_len > 0) return .{ .kind = .read_only, .len = read_only_len };
     const subagent_len = parallelSubagentPrefixLen(registry, calls);
     if (subagent_len > 0) return .{ .kind = .subagent, .len = subagent_len };
-    const host_len = parallelHostPrefixLen(registry, calls);
-    if (host_len > 0) return .{ .kind = .host, .len = host_len };
     return .{};
 }
 
@@ -121,7 +99,6 @@ pub const ParallelHookExecContext = struct {
     current_turn_messages: []const ChatMessage,
     session_grants: []const PermissionGrant,
     permission_mode: types.PermissionMode,
-    advertised_dynamic_tool_names: []const []const u8,
     max_tool_result_bytes: usize,
     classification_complete: []const bool = &.{},
 };
@@ -365,7 +342,6 @@ pub fn parallelHookExecute(ctx: *anyopaque, alloc: Allocator, call: ToolCall, in
         .root_user_intent_context = exec_ctx.root_user_intent_context,
         .current_turn_messages = exec_ctx.current_turn_messages,
         .session_grants = exec_ctx.session_grants,
-        .advertised_dynamic_tool_names = exec_ctx.advertised_dynamic_tool_names,
         .max_tool_result_bytes = exec_ctx.max_tool_result_bytes,
         .classification_complete = index < exec_ctx.classification_complete.len and
             exec_ctx.classification_complete[index],
@@ -386,8 +362,6 @@ fn duplicateParallelToolResult(alloc: Allocator, call: ToolCall, execution: Tool
 
     if (execution.diff_entry != null or
         execution.finish_turn or
-        execution.selected_dynamic_tools.len != 0 or
-        execution.retired_dynamic_tool_names.len != 0 or
         execution.tool_result_memory_prepared or
         execution.committed_file_handoff != null or
         execution.deferred_tool_completion != null)
@@ -658,51 +632,6 @@ test "parallel classifier keeps only a leading safe read-only group" {
     try std.testing.expect(!isReadOnlyCall(registry, calls[2]));
 }
 
-test "host calls run together until a writer, which runs alone" {
-    const host_tool_runtime = @import("../../tooling/host_tool_runtime.zig");
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\[{"name":"list","description":"List","inputSchema":{}},
-        \\ {"name":"read","description":"Read","inputSchema":{},"writes":false},
-        \\ {"name":"write","description":"Write","inputSchema":{},"writes":true}]
-    , .{});
-    defer parsed.deinit();
-    var host = try host_tool_runtime.Runtime.init(std.testing.allocator, parsed.value);
-    defer host.deinit();
-    const registry = host.toolSet().registry;
-    const calls = [_]ToolCall{
-        toolCall("call_1", "list", "{}"),
-        toolCall("call_2", "read", "{}"),
-        toolCall("call_3", "write", "{}"),
-        toolCall("call_4", "read", "{}"),
-    };
-
-    const expected_first: LeadingGroup = if (builtin.single_threaded) .{} else .{ .kind = .host, .len = 2 };
-    try std.testing.expectEqual(expected_first, leadingParallelGroup(registry, &calls));
-    // The writer is a fence: no group includes it, and the call after it
-    // starts a new group.
-    try std.testing.expectEqual(LeadingGroup{}, leadingParallelGroup(registry, calls[2..]));
-    const expected_last: LeadingGroup = if (builtin.single_threaded) .{} else .{ .kind = .host, .len = 1 };
-    try std.testing.expectEqual(expected_last, leadingParallelGroup(registry, calls[3..]));
-}
-
-test "a host group holds at most max_parallel_host_calls calls" {
-    const host_tool_runtime = @import("../../tooling/host_tool_runtime.zig");
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\[{"name":"read","description":"Read","inputSchema":{}}]
-    , .{});
-    defer parsed.deinit();
-    var host = try host_tool_runtime.Runtime.init(std.testing.allocator, parsed.value);
-    defer host.deinit();
-    const registry = host.toolSet().registry;
-    var calls: [max_parallel_host_calls + 4]ToolCall = undefined;
-    for (&calls) |*call| call.* = toolCall("call", "read", "{}");
-
-    const expected: LeadingGroup = if (builtin.single_threaded) .{} else .{ .kind = .host, .len = max_parallel_host_calls };
-    try std.testing.expectEqual(expected, leadingParallelGroup(registry, &calls));
-    const rest: LeadingGroup = if (builtin.single_threaded) .{} else .{ .kind = .host, .len = 4 };
-    try std.testing.expectEqual(rest, leadingParallelGroup(registry, calls[max_parallel_host_calls..]));
-}
-
 test "parallel classifier keeps one leading registered subagent group" {
     const builtin_tools = @import("../../../builtins/tools.zig");
     const tools = [_]tool_dispatch.Tool{
@@ -750,11 +679,10 @@ test "parallel classifier admits installed skill reads" {
     try std.testing.expect(isReadOnlyCall(registry, calls[0]));
 }
 
-test "parallel classifier rejects prompts approvals dynamic tools and mutations" {
+test "parallel classifier rejects prompts approvals unknown tools and mutations" {
     const builtin_tools = @import("../../../builtins/tools.zig");
     const tools = [_]tool_dispatch.Tool{
         builtin_tools.ask_user_question,
-        builtin_tools.mcp_select_tool,
         builtin_tools.subagent,
         builtin_tools.install_skill,
         builtin_tools.shell,
@@ -763,12 +691,11 @@ test "parallel classifier rejects prompts approvals dynamic tools and mutations"
     const registry = tool_dispatch.Registry{ .tools = &tools };
     const cases = [_]ToolCall{
         toolCall("ask_1", "ask_user_question", "{\"questions\":[]}"),
-        toolCall("mcp_1", "mcp_select_tool", "{\"name\":\"tool\"}"),
         toolCall("subagent_1", "subagent", "{\"command\":{\"inspect\":{\"id\":\"01J00000000000000000000000\",\"sections\":[\"status\"]}}}"),
         toolCall("skill_1", "install_skill", "{\"source\":\"repo\"}"),
         toolCall("browser_1", "browser_snapshot", "{}"),
         toolCall("command_1", "run_command", "{\"command\":\"git status --short\"}"),
-        toolCall("unknown_1", "dynamic_mcp_tool", "{}"),
+        toolCall("unknown_1", "unknown_tool", "{}"),
     };
 
     for (cases) |call| {

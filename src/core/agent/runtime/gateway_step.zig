@@ -88,7 +88,7 @@ pub fn streamModelCompletion(
                 completed.completion,
                 completed.usage,
             );
-            if (comptime @import("builtin").target.os.tag != .wasi) {
+            {
                 if (std.meta.activeTag(completed.usage) == .deferred) if (usage) |ledger| {
                     if (request.credential.secret()) |credential| {
                         ledger.startDeferredReconciliation(
@@ -362,73 +362,6 @@ test "projectToolImageMessages leaves image free history untouched" {
     const projected = try projectToolImageMessages(alloc, &messages, .unknown, false, 1024);
     try std.testing.expect(!projected.stripped);
     try std.testing.expect(projected.messages.ptr == (&messages).ptr);
-}
-
-pub fn snapshotDynamicTools(alloc: Allocator, deps: *const @import("deps.zig").AgentRuntimeDeps, selected: *std.ArrayList(agent_stream_provider.DynamicFunctionTool)) ![]const agent_stream_provider.DynamicFunctionTool {
-    var offered: std.ArrayList(agent_stream_provider.DynamicFunctionTool) = .empty;
-    errdefer offered.deinit(alloc);
-    const count = selected.items.len;
-    for (0..count) |index| {
-        const tool = selected.items[index];
-        if (tool.mcp_binding) |binding| {
-            const snapshot = deps.snapshot_mcp_definition orelse continue;
-            switch (try snapshot(deps.ctx, alloc, tool.name, binding)) {
-                .current => {},
-                .unavailable => continue,
-                .updated => |definition| {
-                    if (!std.mem.eql(u8, definition.name, tool.name) or definition.mcp_binding == null) return error.InvalidToolSchema;
-                    try recordSelectedDynamicTool(alloc, selected, definition);
-                    try offered.append(alloc, selected.items[index]);
-                    continue;
-                },
-            }
-        }
-        try offered.append(alloc, tool);
-    }
-    return offered.toOwnedSlice(alloc);
-}
-
-pub fn recordSelectedDynamicTools(alloc: Allocator, tools: *std.ArrayList(agent_stream_provider.DynamicFunctionTool), execution: ToolExecutionResult) !void {
-    for (execution.retired_dynamic_tool_names) |name| {
-        for (tools.items, 0..) |tool, index| {
-            if (std.mem.eql(u8, name, tool.name)) {
-                _ = tools.orderedRemove(index);
-                break;
-            }
-        }
-    }
-    for (execution.selected_dynamic_tools) |selected| try recordSelectedDynamicTool(alloc, tools, selected);
-}
-
-/// Adds or replaces one selected MCP definition. The parsed schema is
-/// allocated in `alloc`, which must outlive every step that advertises it.
-pub fn recordSelectedDynamicTool(alloc: Allocator, tools: *std.ArrayList(agent_stream_provider.DynamicFunctionTool), selected: @import("../../tooling/tool_mcp_runtime.zig").SelectedTool) !void {
-    const name = selected.name;
-    const schema_json = selected.schema_json;
-    const schema = try std.json.parseFromSliceLeaky(
-        std.json.Value,
-        alloc,
-        schema_json,
-        .{},
-    );
-    if (schema != .object) return error.InvalidToolSchema;
-    const schema_name = schema.object.get("name") orelse return error.InvalidToolSchema;
-    const description = schema.object.get("description") orelse return error.InvalidToolSchema;
-    const input_schema = schema.object.get("inputSchema") orelse return error.InvalidToolSchema;
-    if (schema_name != .string or description != .string or input_schema != .object or
-        !std.mem.eql(u8, schema_name.string, name))
-    {
-        return error.InvalidToolSchema;
-    }
-    for (tools.items) |*existing| {
-        if (std.mem.eql(u8, existing.name, name)) {
-            existing.description = description.string;
-            existing.input_schema = input_schema;
-            existing.mcp_binding = selected.mcp_binding;
-            return;
-        }
-    }
-    try tools.append(alloc, .{ .name = name, .description = description.string, .input_schema = input_schema, .mcp_binding = selected.mcp_binding });
 }
 
 pub fn gatewayHttpErrorDetail(
@@ -811,35 +744,6 @@ test "provider-local exact usage reaches session accounting" {
     try std.testing.expectEqualStrings("codex/gpt-test", snapshot.models[0].model);
     try std.testing.expectEqual(@as(usize, 0), snapshot.pending.len);
     try std.testing.expectEqual(@as(usize, 0), snapshot.publication_backlog.len);
-}
-
-test "selected MCP schemas replace old definitions without duplicate names" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var tools: std.ArrayList(agent_stream_provider.DynamicFunctionTool) = .empty;
-    try recordSelectedDynamicTools(alloc, &tools, .{
-        .model_output = "selected",
-        .selected_dynamic_tools = &.{
-            .{ .name = "mcp_fixture_lookup", .schema_json =
-            \\{"name":"mcp_fixture_lookup","description":"Lookup","inputSchema":{"type":"object","properties":{"old_value":{"type":"string"}}}}
-            },
-            .{ .name = "mcp_fixture_other", .schema_json =
-            \\{"name":"mcp_fixture_other","description":"Other","inputSchema":{"type":"object"}}
-            },
-        },
-    });
-    try recordSelectedDynamicTools(alloc, &tools, .{
-        .model_output = "selected",
-        .selected_dynamic_tools = &.{.{ .name = "mcp_fixture_lookup", .schema_json =
-        \\{"name":"mcp_fixture_lookup","description":"Updated lookup","inputSchema":{"type":"object","properties":{"new_value":{"type":"string"}}}}
-        }},
-    });
-    try std.testing.expectEqual(@as(usize, 2), tools.items.len);
-    try std.testing.expectEqualStrings("Updated lookup", tools.items[0].description);
-    const properties = tools.items[0].input_schema.object.get("properties").?.object;
-    try std.testing.expect(properties.contains("new_value"));
-    try std.testing.expect(!properties.contains("old_value"));
 }
 
 test "invalid writer at provider completion prevents delivery of executable tool calls" {

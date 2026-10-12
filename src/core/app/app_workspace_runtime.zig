@@ -1,5 +1,4 @@
 const std = @import("std");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
 const file_index = @import("../workspace/file_index.zig");
 const path_completion = @import("../workspace/path_completion.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
@@ -50,25 +49,22 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn reconcileDirectoryCompletion(app: *App, eligible: bool) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             app.workspace.directory_completion.reconcile(std.heap.c_allocator, &app.input_runtime.picker.file_completion, eligible);
         }
 
         pub fn prepareDirectoryCompletion(app: *App) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             app.workspace.directory_completion.schedule(std.heap.c_allocator, app.alloc, &app.input_runtime.picker.file_completion, app.workspace_root, io_mod.getenv("HOME"));
             app.shell.render_requests.request(.footer);
         }
 
         pub fn harvestDirectoryCompletion(app: *App, eligible: bool) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             if (app.workspace.directory_completion.harvest(std.heap.c_allocator, app.alloc, &app.input_runtime.picker.file_completion, eligible)) {
                 app.shell.render_requests.request(.footer);
             }
         }
 
         pub fn requestStop(app: *App) void {
-            if (comptime runtime_profile.allows(App, .file_index)) app.workspace.directory_completion.stop(std.heap.c_allocator);
+            app.workspace.directory_completion.stop(std.heap.c_allocator);
         }
 
         pub fn fileCompletionRevision(app: *const App) file_index.ReadableRevision {
@@ -125,12 +121,6 @@ pub fn Runtime(comptime App: type) type {
 
         /// Installs `replacement` and clears it after taking ownership.
         pub fn install(app: *App, replacement: *Access) bool {
-            if (comptime !runtime_profile.allows(App, .file_index)) {
-                app.workspace.access.deinit(app.alloc);
-                app.workspace.access = replacement.*;
-                replacement.* = .{};
-                return true;
-            }
             const runtime_changed = !app.workspace.access.eql(replacement);
             app.workspace.access.deinit(app.alloc);
             app.workspace.access = replacement.*;
@@ -152,7 +142,6 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn refreshAvailability(app: *App) workspace_access.Error!bool {
-            if (comptime !runtime_profile.allows(App, .file_index)) return false;
             var replacement = (try app.workspace.access.stageAvailabilityRefresh(
                 app.alloc,
                 app.workspace_root,
@@ -162,7 +151,7 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn deinit(app: *App) void {
-            if (comptime runtime_profile.allows(App, .file_index)) app.workspace.directory_completion.deinit(std.heap.c_allocator);
+            app.workspace.directory_completion.deinit(std.heap.c_allocator);
             app.workspace.access.deinit(app.alloc);
             app.workspace = .{};
         }

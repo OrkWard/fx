@@ -72,17 +72,16 @@ class DetectMacosNeedTests(unittest.TestCase):
         output_path.unlink()
         return result.returncode, outputs, result.stdout + result.stderr
 
-    def assert_needed(self, *, sdk_native: bool = False, **env: str) -> str:
+    def assert_needed(self, **env: str) -> str:
         code, outputs, text = self.detect(**env)
         self.assertEqual(0, code, text)
         self.assertEqual("true", outputs.get("needed"), text)
-        self.assertEqual("true" if sdk_native else "false", outputs.get("sdk_native"), text)
         return text
 
     def assert_not_needed(self) -> None:
         code, outputs, text = self.detect()
         self.assertEqual(0, code, text)
-        self.assertEqual({"needed": "false", "sdk_native": "false"}, outputs, text)
+        self.assertEqual({"needed": "false"}, outputs, text)
 
     def test_change_without_platform_behavior_skips_macos(self) -> None:
         self.write("README.md", "fx docs\n")
@@ -137,18 +136,10 @@ class DetectMacosNeedTests(unittest.TestCase):
                 self.assertIn(path, self.assert_needed())
                 self.base = self.git("rev-parse", "HEAD")
 
-    def test_native_sdk_changes_also_check_the_addon(self) -> None:
-        for path in ("src/napi_core_main.zig", "sdk/node.js", "sdk/tests/test-node-napi.mjs"):
-            with self.subTest(path=path):
-                self.write(path, f"// {path}\n")
-                self.commit(path)
-                self.assertIn(path, self.assert_needed(sdk_native=True))
-                self.base = self.git("rev-parse", "HEAD")
-
     def test_macos_check_inputs_need_macos(self) -> None:
         self.write(".github/workflows/macos.yml", "name: macOS\n")
         self.commit("workflow")
-        self.assert_needed(sdk_native=True)
+        self.assert_needed()
         self.base = self.git("rev-parse", "HEAD")
 
         for path in (
@@ -195,7 +186,6 @@ class DetectMacosNeedTests(unittest.TestCase):
 
     def test_requests_force_the_checks(self) -> None:
         self.assertIn("ci:macos label", self.assert_needed(MACOS_REQUESTED="ci:macos label"))
-        self.assert_needed(sdk_native=True, SDK_NATIVE_REQUESTED="true")
 
     def test_unreadable_revision_fails_instead_of_skipping(self) -> None:
         code, outputs, text = self.detect(base="does-not-exist")

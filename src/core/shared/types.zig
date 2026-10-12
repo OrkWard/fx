@@ -922,23 +922,6 @@ pub const ToolArgumentDiagnostic = struct {
     }
 };
 
-/// Identifies the server and catalog offered to one model step.
-pub const McpToolBinding = struct {
-    runtime_generation: u64,
-    connection_generation: u64,
-    catalog_generation: u64,
-    auth_generation: u64,
-    authority_id: u64 = 0,
-    definition_digest: [32]u8 = @splat(0),
-
-    /// Transport renewal may change epochs without changing the advertised action.
-    pub fn sameDefinition(self: McpToolBinding, other: McpToolBinding) bool {
-        return self.runtime_generation == other.runtime_generation and
-            self.authority_id == other.authority_id and
-            std.mem.eql(u8, &self.definition_digest, &other.definition_digest);
-    }
-};
-
 pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
@@ -1488,7 +1471,7 @@ pub const ImageAttachment = struct {
     snapshot_path: ?[]u8 = null,
     snapshot_sha256: ?[]u8 = null,
     /// Owned decoded image bytes for sessions without a filesystem snapshot
-    /// backend (libfx kernel sessions on native and wasm). When set, the
+    /// backend. When set, the
     /// attachment loads from memory instead of `snapshot_path`, and durable
     /// serializers embed the bytes so checkpoint/restore round-trips them.
     inline_data: ?[]u8 = null,

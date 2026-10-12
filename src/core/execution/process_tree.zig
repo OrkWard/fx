@@ -740,7 +740,7 @@ fn shouldSignalProcess(
 }
 
 fn inspectProcessGroup(pid: std.posix.pid_t) ProcessGroupState {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return .unavailable;
     }
     const process_group = getpgid(pid);
@@ -754,7 +754,7 @@ fn inspectProcessGroup(pid: std.posix.pid_t) ProcessGroupState {
 extern "c" fn getpgid(pid: std.posix.pid_t) std.posix.pid_t;
 
 fn inspectSession(pid: std.posix.pid_t) SessionState {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return .unavailable;
     }
     const session = getsid(pid);

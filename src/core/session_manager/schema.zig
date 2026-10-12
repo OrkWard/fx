@@ -93,7 +93,7 @@ fn isKindChar(c: u8) bool {
 // Kind fields: the bytes between `kind` and `crc`
 
 pub const Role = enum { root, child };
-pub const Host = enum { app, ask, acp, sdk, child };
+pub const Host = enum { app, ask, child };
 /// Hosts end a turn with `cancel` or `failed` (D21); the manager writes
 /// `closed` on close and `crash` on reopen.
 pub const Reason = enum { cancel, failed, closed, crash };
@@ -101,13 +101,12 @@ pub const Reason = enum { cancel, failed, closed, crash };
 pub const Outcome = enum { ok, failed, cancelled, interrupted, lost };
 /// `language` is the conversation language fx keeps per session, a JSON
 /// string such as `"es"` or `"und-Latn"` (D18); the index lists it.
-/// `client_prompt` (a JSON string) and `tool_identities` are an ACP
-/// client's settings (D46). `moved_files` records a session moved off fx's
+/// `moved_files` records a session moved off fx's
 /// side folder: its value names the blob that maps old handles to blobs,
 /// and its line lists every moved blob (D47). `compaction_records` names
 /// the blob that maps fx's compactor record names to blobs, and its line
 /// lists the map and the records it adds (D50).
-pub const SetKey = enum { prefs, title, permissions, usage, workspace, language, client_prompt, tool_identities, moved_files, compaction_records };
+pub const SetKey = enum { prefs, title, permissions, usage, workspace, language, moved_files, compaction_records };
 
 pub const ForkOrigin = struct { id: []const u8, seq: u64 };
 
@@ -704,7 +703,7 @@ test "every kind's fields round trip, raw values byte for byte" {
         .id = "abc",
         .workspace = "/Users/me/my \"project\"\n",
         .role = .child,
-        .host = .acp,
+        .host = .ask,
         .parent = "p1",
         .forked_from = .{ .id = "src", .seq = 9 },
     } })).session_created;
@@ -838,7 +837,7 @@ test "Fields fast paths decode exactly what the full parse decodes" {
     };
     for ([_][]const u8{ "0", "7", "18446744073709551615", "18446744073709551616", "01", "-1", "1.5", "1e3", "" }) |raw| try Cases.check(u64, arena, raw);
     for ([_][]const u8{ "true", "false", "null", "1" }) |raw| try Cases.check(bool, arena, raw);
-    for ([_][]const u8{ "\"app\"", "\"ask\"", "\"sdk\"", "\"a\\u0070p\"", "3" }) |raw| try Cases.check(E, arena, raw);
+    for ([_][]const u8{ "\"app\"", "\"ask\"", "\"web\"", "\"a\\u0070p\"", "3" }) |raw| try Cases.check(E, arena, raw);
     for ([_][]const u8{ "\"plain\"", "\"\"", "\"with \\\"quote\\\" inside\"", "\"tab\\t\"", "\"caf\u{e9}\"" }) |raw| try Cases.check([]const u8, arena, raw);
     // Every fast answer above was checked; these must take the fast path.
     try std.testing.expectEqual(@as(?u64, 42), fastValue(u64, "42"));

@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const app_process_runtime = @import("app_process_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const auto_upgrade = @import("../upgrade/auto_upgrade.zig");
-const acp_runner = @import("../cli/acp_runner.zig");
 const cli_surface = @import("../cli/cli_surface.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
@@ -11,7 +10,6 @@ const process_provider = @import("../execution/process_provider.zig");
 const gateway_provider = @import("../gateway/gateway_provider.zig");
 const provider_set = @import("../gateway/provider_set.zig");
 const host = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const io_mod = @import("../shared/io.zig");
 const prompt_policy = @import("../config/prompt_policy.zig");
 const session_adapter = @import("../session/session_adapter.zig");
@@ -19,11 +17,6 @@ const skill_contract = @import("../skills/skill_contract.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
 const context_contract = @import("../workspace/context_contract.zig");
 const mode_registry = @import("../modes/mode_registry.zig");
-const mcp_contract = @import("../mcp/mcp_contract.zig");
-const mcp_command_provider = @import("../mcp/command_provider.zig");
-const mcp_health = @import("../mcp/health.zig");
-const mcp_runtime = @import("../mcp/mcp_runtime.zig");
-const mcp_host = @import("../mcp_host/host.zig");
 const tool_set_contract = @import("../tooling/tool_set.zig");
 const update_target = @import("../upgrade/update_target.zig");
 const test_builtin_gateway = if (builtin.is_test)
@@ -37,13 +30,7 @@ else
 
 const Allocator = std.mem.Allocator;
 
-const GracefulExitSigintGuard = if (host_target.is_wasm) struct {
-    fn install(_: bool) @This() {
-        return .{};
-    }
-
-    fn deinit(_: *@This()) void {}
-} else struct {
+const GracefulExitSigintGuard = struct {
     saved_action: ?std.posix.Sigaction = null,
 
     fn install(enabled: bool) @This() {
@@ -95,16 +82,6 @@ pub const Config = struct {
     context_registry: context_contract.Registry,
     mode_registry: mode_registry.Registry,
     tool_set: tool_set_contract.ToolSet,
-    inspect_mcp_profile_config: mcp_contract.InspectProfileConfigFn,
-    inspect_mcp_local_config: mcp_health.InspectLocalConfigFn =
-        mcp_health.inspectLocalConfigUnavailable,
-    load_mcp_runtime: mcp_runtime.LoadRuntimeFn,
-    load_mcp_host: ?mcp_host.LoadFn = null,
-    add_mcp_profile_server: mcp_command_provider.AddProfileServerFn =
-        mcp_command_provider.addProfileServerUnavailable,
-    remove_mcp_profile_server: mcp_command_provider.RemoveProfileServerFn =
-        mcp_command_provider.removeProfileServerUnavailable,
-    acp_runner: acp_runner.Runner,
 };
 
 pub const RunOutcome = union(enum) {
@@ -130,10 +107,7 @@ const ReplaceProcessFn = *const fn (
 ) std.process.ReplaceError;
 const RunDeps = struct {
     cli_ctx: ?*anyopaque = null,
-    run_if_requested: RunIfRequestedFn = if (host_target.is_wasm)
-        unavailableCliDispatch
-    else
-        runIfRequestedDefault,
+    run_if_requested: RunIfRequestedFn = runIfRequestedDefault,
     env_ctx: ?*anyopaque = null,
     getenv: GetenvFn = getenvDefault,
     stderr_ctx: ?*anyopaque = null,
@@ -159,7 +133,7 @@ fn runWithDeps(comptime App: type, alloc: Allocator, args: []const [:0]const u8,
     }
 
     var app: App = undefined;
-    return runInteractiveWithDeps(App, false, &app, alloc, &launch, cfg.auth_mode, deps);
+    return runInteractiveWithDeps(App, &app, alloc, &launch, cfg.auth_mode, deps);
 }
 
 pub fn runBeforeInteractive(alloc: Allocator, args: []const [:0]const u8, cfg: Config) !BeforeInteractiveResult {
@@ -213,21 +187,10 @@ fn benchEnabled() bool {
 /// exits: interactive shutdown stops background threads without joining them,
 /// so they can still reach the app after this returns.
 pub fn runInteractive(comptime App: type, app: *App, alloc: Allocator, launch: *cli_surface.InteractiveLaunch, auth_mode: credentials.AuthMode) !RunOutcome {
-    return runInteractiveWithDeps(App, false, app, alloc, launch, auth_mode, .{});
+    return runInteractiveWithDeps(App, app, alloc, launch, auth_mode, .{});
 }
 
-/// Runs the interactive product without native CLI dispatch, process replacement,
-/// or a worker thread. Single-threaded hosts must arrange cooperative prompt work.
-pub fn runInteractiveCooperative(comptime App: type, alloc: Allocator, launch: *cli_surface.InteractiveLaunch, auth_mode: credentials.AuthMode) !RunOutcome {
-    var app: App = undefined;
-    return runInteractiveWithDeps(App, true, &app, alloc, launch, auth_mode, .{});
-}
-
-fn unavailableCliDispatch(_: ?*anyopaque, _: Allocator, _: []const [:0]const u8, _: cli_surface.Config) anyerror!cli_surface.RunResult {
-    return error.UnknownCliCommand;
-}
-
-fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, app: *App, alloc: Allocator, launch: *cli_surface.InteractiveLaunch, auth_mode: credentials.AuthMode, deps: RunDeps) !RunOutcome {
+fn runInteractiveWithDeps(comptime App: type, app: *App, alloc: Allocator, launch: *cli_surface.InteractiveLaunch, auth_mode: credentials.AuthMode, deps: RunDeps) !RunOutcome {
     const resume_requested = launch.requested_resume != null;
     app.* = App.init(alloc, launch, auth_mode) catch |err| {
         switch (err) {
@@ -304,80 +267,60 @@ fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, app: *
             },
         }
     };
-    if (comptime !cooperative) {
-        if (@hasDecl(App, "startMcpDiscovery")) app.startMcpDiscovery();
-        if (@hasDecl(App, "rebindAfterInit")) app.rebindAfterInit();
-    }
+    if (@hasDecl(App, "rebindAfterInit")) app.rebindAfterInit();
     var app_needs_deinit = true;
     defer if (app_needs_deinit) {
-        if (comptime cooperative) {
-            app.deinit();
-        } else {
-            var shutdown = app.shutdownForProcessExit();
-            defer shutdown.deinit(alloc);
-            if (shutdown.failure) |err| reportShutdownFailure(deps, err);
-        }
+        var shutdown = app.shutdownForProcessExit();
+        defer shutdown.deinit(alloc);
+        if (shutdown.failure) |err| reportShutdownFailure(deps, err);
     };
-    if (comptime !cooperative and @hasField(App, "session") and
+    if (comptime @hasField(App, "session") and
         @hasDecl(@TypeOf(app.session), "attachProfileUsagePublisher"))
     {
         app.session.attachProfileUsagePublisher(app.alloc);
     }
-    if (comptime !cooperative) {
-        if (resume_requested) app.startResumedSessionReconciliation();
-        if (@hasDecl(App, "configureNotifications")) try app.configureNotifications();
-        if (@hasDecl(App, "playStartupSound")) app.playStartupSound();
-        if (@hasDecl(App, "startAutoUpgrade")) app.startAutoUpgrade();
-        if (@hasDecl(App, "startFileIndex")) app.startFileIndex();
-        startWorkerThread(App, app, deps) catch |err| {
-            app.releaseTerminal();
-            reportUnexpectedInteractiveError(deps, err);
-            return err;
-        };
-        app.startModelCacheWarmup();
-        if (@hasDecl(App, "startSessionCatalogPreload")) app.startSessionCatalogPreload();
-    }
+    if (resume_requested) app.startResumedSessionReconciliation();
+    if (@hasDecl(App, "configureNotifications")) try app.configureNotifications();
+    if (@hasDecl(App, "playStartupSound")) app.playStartupSound();
+    if (@hasDecl(App, "startAutoUpgrade")) app.startAutoUpgrade();
+    if (@hasDecl(App, "startFileIndex")) app.startFileIndex();
+    startWorkerThread(App, app, deps) catch |err| {
+        app.releaseTerminal();
+        reportUnexpectedInteractiveError(deps, err);
+        return err;
+    };
+    app.startModelCacheWarmup();
+    if (@hasDecl(App, "startSessionCatalogPreload")) app.startSessionCatalogPreload();
 
     app.run() catch |err| {
         app.releaseTerminal();
         if (err == error.TerminalInputClosed) {
             app_needs_deinit = false;
-            if (comptime cooperative) {
-                app.deinit();
-            } else {
-                var shutdown = app.shutdownForProcessExit();
-                defer shutdown.deinit(alloc);
-                if (shutdown.failure) |failure| {
-                    reportShutdownFailure(deps, failure);
-                    return .{ .exit = 1 };
-                }
+            var shutdown = app.shutdownForProcessExit();
+            defer shutdown.deinit(alloc);
+            if (shutdown.failure) |failure| {
+                reportShutdownFailure(deps, failure);
+                return .{ .exit = 1 };
             }
             return .returned;
         }
         reportUnexpectedInteractiveError(deps, err);
         return err;
     };
-    const relaunch_request: ?auto_upgrade.RelaunchRequest = if (comptime cooperative)
-        null
-    else if (comptime @hasDecl(App, "takeUpgradeRelaunchRequest"))
+    const relaunch_request: ?auto_upgrade.RelaunchRequest = if (comptime @hasDecl(App, "takeUpgradeRelaunchRequest"))
         app.takeUpgradeRelaunchRequest()
     else
         null;
-    const resume_handoff_columns: u16 = if (comptime cooperative)
-        0
-    else if (comptime @hasDecl(App, "resumeHandoffColumns"))
+    const resume_handoff_columns: u16 = if (comptime @hasDecl(App, "resumeHandoffColumns"))
         app.resumeHandoffColumns()
     else
         0;
     var graceful_exit_sigint_guard = GracefulExitSigintGuard.install(
-        !cooperative and relaunch_request == null,
+        relaunch_request == null,
     );
     defer graceful_exit_sigint_guard.deinit();
     app_needs_deinit = false;
-    const shutdown: app_session_runtime.ShutdownOutcome = if (comptime cooperative) blk: {
-        app.deinit();
-        break :blk .{};
-    } else app.shutdownForProcessExit();
+    const shutdown: app_session_runtime.ShutdownOutcome = app.shutdownForProcessExit();
     const handoff_value = shutdown.handoff;
     if (shutdown.failure) |err| {
         if (handoff_value) |value| {
@@ -501,13 +444,6 @@ fn cliSurfaceConfig(cfg: Config) cli_surface.Config {
         .context_registry = cfg.context_registry,
         .mode_registry = cfg.mode_registry,
         .tool_set = cfg.tool_set,
-        .inspect_mcp_profile_config = cfg.inspect_mcp_profile_config,
-        .inspect_mcp_local_config = cfg.inspect_mcp_local_config,
-        .load_mcp_runtime = cfg.load_mcp_runtime,
-        .load_mcp_host = cfg.load_mcp_host,
-        .add_mcp_profile_server = cfg.add_mcp_profile_server,
-        .remove_mcp_profile_server = cfg.remove_mcp_profile_server,
-        .acp_runner = cfg.acp_runner,
     };
 }
 
@@ -594,20 +530,6 @@ const test_entry_context_registry = context_contract.Registry{ .default_provider
     .append_transient_fn = appendNoopTransientContextForTest,
 } };
 
-fn noMcpRuntimeForTest(_: Allocator, _: []const u8, _: @import("../mcp/elicitation.zig").Capabilities) !?*mcp_runtime.McpRuntime {
-    return null;
-}
-
-fn noMcpConfigInspectionForTest(
-    _: Allocator,
-) error{OutOfMemory}!mcp_contract.ProfileConfigDiagnostic {
-    return .clear;
-}
-
-fn unexpectedAcpRunForTest(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-    return error.TestUnexpectedAcpRun;
-}
-
 fn testConfig() Config {
     return .{
         .version = "0.2.10",
@@ -633,9 +555,6 @@ fn testConfig() Config {
         .max_history_turns = 32,
         .context_registry = test_entry_context_registry,
         .mode_registry = .{ .default_mode_id = "entry" },
-        .inspect_mcp_profile_config = noMcpConfigInspectionForTest,
-        .load_mcp_runtime = noMcpRuntimeForTest,
-        .acp_runner = .{ .run_fn = unexpectedAcpRunForTest },
         .tool_set = .{
             .registry = .{ .tools = &.{} },
             .order = &.{"entry_test_tool"},
@@ -881,10 +800,6 @@ const TestApp = struct {
         appendTestEvent("file-index");
     }
 
-    pub fn startMcpDiscovery(_: *TestApp) void {
-        appendTestEvent("mcp-discovery");
-    }
-
     pub fn rebindAfterInit(_: *TestApp) void {
         appendTestEvent("rebind-after-init");
     }
@@ -930,8 +845,6 @@ test "app entry returns after handled CLI success without initializing app" {
     try std.testing.expect(capture.seen_config.?.url_opener.open_fn == cfg.url_opener.open_fn);
     try std.testing.expect(capture.seen_config.?.secret_store.context == cfg.secret_store.context);
     try std.testing.expect(capture.seen_config.?.secret_store.load_fn == cfg.secret_store.load_fn);
-    try std.testing.expect(capture.seen_config.?.inspect_mcp_profile_config == noMcpConfigInspectionForTest);
-    try std.testing.expect(capture.seen_config.?.load_mcp_runtime == noMcpRuntimeForTest);
     try std.testing.expectEqual(@as(usize, 0), test_event_count);
 }
 
@@ -987,7 +900,7 @@ test "app entry runs interactive startup callbacks in active order" {
 
     try std.testing.expectEqual(RunOutcome.returned, outcome);
     try std.testing.expectEqual(@as(usize, 0), capture.stdout_calls);
-    try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
+    try expectEvents(&.{ "init:none", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
 }
 
 test "app entry reports persistence failure after teardown instead of a successful handoff" {
@@ -1023,7 +936,6 @@ test "app entry writes exact resume handoff after interactive teardown" {
     try std.testing.expectEqualStrings("", capture.stderr.written());
     try expectEvents(&.{
         "init:none",
-        "mcp-discovery",
         "rebind-after-init",
         "auto-upgrade",
         "file-index",
@@ -1121,7 +1033,6 @@ test "app entry relaunches only after teardown with the validated handoff" {
     ) != null);
     try expectEvents(&.{
         "init:none",
-        "mcp-discovery",
         "rebind-after-init",
         "auto-upgrade",
         "file-index",
@@ -1224,7 +1135,7 @@ test "app entry releases terminal before reporting worker start errors" {
     try std.testing.expectError(error.TestWorkerStartFailed, runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps()));
     try std.testing.expectEqualStrings("fx: TestWorkerStartFailed\n", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
-    try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "terminal-release", "stderr-attempt", "deinit" });
+    try expectEvents(&.{ "init:none", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "terminal-release", "stderr-attempt", "deinit" });
 }
 
 test "app entry releases terminal before reporting initial context failures exactly" {
@@ -1255,7 +1166,6 @@ test "app entry releases terminal before reporting initial context failures exac
         try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
         try expectEvents(&.{
             "init:none",
-            "mcp-discovery",
             "rebind-after-init",
             "auto-upgrade",
             "file-index",
@@ -1280,7 +1190,7 @@ test "app entry reports run errors before deinit and outer cleanup" {
     try std.testing.expectEqualStrings("fx: TestRunFailed\n", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
     try std.testing.expectEqual(@as(usize, 0), capture.stdout_calls);
-    try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "stderr-attempt", "deinit", "outer-defer" });
+    try expectEvents(&.{ "init:none", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "stderr-attempt", "deinit", "outer-defer" });
 }
 
 test "app entry treats terminal input closure as abnormal cleanup without stderr" {
@@ -1305,7 +1215,6 @@ test "app entry treats terminal input closure as abnormal cleanup without stderr
     try std.testing.expectEqual(@as(usize, 0), capture.stdout_calls);
     try expectEvents(&.{
         "init:none",
-        "mcp-discovery",
         "rebind-after-init",
         "auto-upgrade",
         "file-index",
@@ -1327,7 +1236,7 @@ test "app entry preserves run errors when fatal formatting fails" {
     try std.testing.expectError(error.TestRunFailed, runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps()));
     try std.testing.expectEqualStrings("", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 0), capture.stderr_calls);
-    try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
+    try expectEvents(&.{ "init:none", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
 }
 
 test "app entry preserves run errors when fatal writer fails" {
@@ -1341,7 +1250,7 @@ test "app entry preserves run errors when fatal writer fails" {
     try std.testing.expectError(error.TestRunFailed, runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps()));
     try std.testing.expectEqualStrings("", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
-    try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "stderr-attempt", "deinit" });
+    try expectEvents(&.{ "init:none", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "stderr-attempt", "deinit" });
 }
 
 test "app entry passes requested resume into app init" {
@@ -1352,7 +1261,7 @@ test "app entry passes requested resume into app init" {
     const outcome = try runWithDeps(TestApp, alloc, &.{ @constCast("resume"), @constCast("session-123") }, testConfig(), capture.deps());
 
     try std.testing.expectEqual(RunOutcome.returned, outcome);
-    try expectEvents(&.{ "init:session-123", "mcp-discovery", "rebind-after-init", "resume-reconciliation", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
+    try expectEvents(&.{ "init:session-123", "rebind-after-init", "resume-reconciliation", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "deinit" });
 }
 
 test "app entry maps noninteractive terminal startup to exit one" {

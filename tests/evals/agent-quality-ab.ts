@@ -173,7 +173,7 @@ function rowPredicate(row: AgentQualityMatrixRow, result: HeadlessResult): boole
         (output.includes("src/core/slash_commands") && output.includes("command_specs.zig")) ||
         output.includes("slash_commands/command_specs.zig");
     case "unfamiliar-feature-inspect-before-question":
-      return output.includes("mcp");
+      return output.includes("hook");
     case "github-handle-not-needed":
       return output.includes("changelog");
     case "github-changelog-local-first":

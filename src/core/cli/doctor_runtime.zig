@@ -5,7 +5,6 @@ const io_mod = @import("../shared/io.zig");
 const agent_steps = @import("../config/agent_steps.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const host = @import("../hosts/host.zig");
-const mcp_contract = @import("../mcp/mcp_contract.zig");
 const session_store = @import("../session/session_store.zig");
 const session_adapter = @import("../session/session_adapter.zig");
 const types = @import("../shared/types.zig");
@@ -57,7 +56,6 @@ pub fn collect(
     secret_store: host.SecretStore,
     default_model: []const u8,
     default_agent_step_limit: usize,
-    mcp_config_diagnostic: mcp_contract.ProfileConfigDiagnostic,
     sessions_v2: bool,
 ) !Snapshot {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
@@ -95,7 +93,6 @@ pub fn collect(
         // Settings are unreadable, so no remembered choice is available to honour.
         snapshot.auth = try auth_runtime.loadStatusSnapshot(alloc, secret_store, null);
         try appendConfigLoadFailureCheck(&checks, alloc, "config", "failed to load config", err);
-        try appendMcpConfigCheck(&checks, alloc, mcp_config_diagnostic);
         try appendAuthCheck(&checks, alloc, snapshot.auth);
         try appendConfigLoadFailureCheck(&checks, alloc, "startup", "failed to resolve startup settings", err);
         try appendStateChecks(&checks, alloc, snapshot.workspace_root, sessions_v2);
@@ -117,7 +114,6 @@ pub fn collect(
 
     try appendConfigCheck(&checks, alloc, paths, detailed.diagnostics);
     try appendConfigDiagnosticChecks(&checks, alloc, detailed.diagnostics);
-    try appendMcpConfigCheck(&checks, alloc, mcp_config_diagnostic);
     try appendAuthCheck(&checks, alloc, snapshot.auth);
     const selection = config_runtime.selectProviderModel(
         default_model,
@@ -575,45 +571,6 @@ fn appendCheckOwned(checks: *std.ArrayList(Check), alloc: Allocator, name: []con
     });
 }
 
-fn appendMcpConfigCheck(
-    checks: *std.ArrayList(Check),
-    alloc: Allocator,
-    diagnostic: mcp_contract.ProfileConfigDiagnostic,
-) !void {
-    switch (diagnostic) {
-        .clear => return,
-        .warning => |warning| {
-            var out: std.Io.Writer.Allocating = .init(alloc);
-            defer out.deinit();
-            try out.writer.print(
-                "~/.fx/mcp.json warning: {s}",
-                .{@tagName(warning.cause)},
-            );
-            if (warning.key()) |key| try out.writer.print(" key={s}", .{key});
-            try out.writer.print(
-                " additional_matches={d}",
-                .{warning.additional_matches},
-            );
-            try appendCheckOwned(
-                checks,
-                alloc,
-                "mcp_config",
-                .warn,
-                try out.toOwnedSlice(),
-            );
-            return;
-        },
-        .failed => |err| {
-            const detail = try alloc.print(
-                "failed to load ~/.fx/mcp.json: {s}",
-                .{@errorName(err)},
-            );
-            try appendCheckOwned(checks, alloc, "mcp_config", .fail, detail);
-            return;
-        },
-    }
-}
-
 fn formatConfigPresence(alloc: Allocator, user_exists: bool, repo_exists: bool) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -719,31 +676,6 @@ test "format config presence names existing layers" {
     defer std.testing.allocator.free(detail);
 
     try std.testing.expectEqualStrings("loaded config from ~/.fx/settings.json", detail);
-}
-
-test "MCP config diagnostic maps only failures to one doctor check" {
-    const alloc = std.testing.allocator;
-    var checks: std.ArrayList(Check) = .empty;
-    defer {
-        for (checks.items) |*entry| entry.deinit(alloc);
-        checks.deinit(alloc);
-    }
-
-    try appendMcpConfigCheck(&checks, alloc, .clear);
-    try std.testing.expectEqual(@as(usize, 0), checks.items.len);
-
-    try appendMcpConfigCheck(
-        &checks,
-        alloc,
-        .{ .failed = error.McpConfigInvalidJson },
-    );
-    try std.testing.expectEqual(@as(usize, 1), checks.items.len);
-    try std.testing.expectEqualStrings("mcp_config", checks.items[0].name);
-    try std.testing.expectEqual(CheckStatus.fail, checks.items[0].status);
-    try std.testing.expectEqualStrings(
-        "failed to load ~/.fx/mcp.json: McpConfigInvalidJson",
-        checks.items[0].detail,
-    );
 }
 
 test "config check handles user and workspace config files together" {

@@ -62,53 +62,8 @@ jobs:
             fx-${{ matrix.name }}.tar.gz
             fx-${{ matrix.name }}.tar.gz.sha256
 
-  web:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
-    name: Build web artifacts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: "0.17.0"
-
-      - name: Build terminal WASM
-        run: zig build -Doptimize=ReleaseSafe -Dwasm-surface=term
-
-      - name: Package web artifacts
-        run: |
-          cp sdk/fx-sdk.js fx-sdk.js
-          cp sdk/core-output.js core-output.js
-          cp sdk/wasm-module.js wasm-module.js
-          cp zig-out/bin/fx-term.wasm fx-term.wasm
-          sha256sum fx-sdk.js > fx-sdk.js.sha256
-          sha256sum core-output.js > core-output.js.sha256
-          sha256sum wasm-module.js > wasm-module.js.sha256
-          sha256sum fx-term.wasm > fx-term.wasm.sha256
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fx-web
-          path: |
-            fx-sdk.js
-            fx-sdk.js.sha256
-            core-output.js
-            core-output.js.sha256
-            wasm-module.js
-            wasm-module.js.sha256
-            fx-term.wasm
-            fx-term.wasm.sha256
-
   publish:
-    needs: [build, web]
+    needs: [build]
     runs-on: ubuntu-latest
     env:
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -145,36 +100,6 @@ jobs:
             echo "Uploaded ${FILE} for ${RELEASE_SHA} ($HTTP_CODE)"
             if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
               echo "::error::Failed to upload ${FILE} to the dev channel ($HTTP_CODE)"
-              exit 1
-            fi
-          done
-
-      - name: Publish immutable web artifacts
-        run: |
-          set -euo pipefail
-
-          sha256sum --check fx-sdk.js.sha256
-          sha256sum --check core-output.js.sha256
-          sha256sum --check wasm-module.js.sha256
-          sha256sum --check fx-term.wasm.sha256
-
-          for FILE in fx-sdk.js fx-sdk.js.sha256 core-output.js core-output.js.sha256 wasm-module.js wasm-module.js.sha256 fx-term.wasm fx-term.wasm.sha256; do
-            CONTENT_TYPE="application/octet-stream"
-            [[ "$FILE" == *.js ]] && CONTENT_TYPE="text/javascript"
-            [[ "$FILE" == *.wasm ]] && CONTENT_TYPE="application/wasm"
-            [[ "$FILE" == *.sha256 ]] && CONTENT_TYPE="text/plain"
-
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X PUT "https://blob.vercel-storage.com/cli/dev/${RELEASE_SHA}/web/${FILE}" \
-              -H "Authorization: Bearer ${BLOB_READ_WRITE_TOKEN}" \
-              -H "x-api-version: 7" \
-              -H "x-content-type: ${CONTENT_TYPE}" \
-              -H "x-add-random-suffix: 0" \
-              -H "x-cache-control-max-age: 31536000" \
-              --data-binary "@${FILE}")
-            echo "Uploaded web/${FILE} for ${RELEASE_SHA} ($HTTP_CODE)"
-            if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-              echo "::error::Failed to upload ${FILE} to the dev web channel ($HTTP_CODE)"
               exit 1
             fi
           done

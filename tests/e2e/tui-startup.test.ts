@@ -47,7 +47,7 @@ describe.skipIf(SKIP)("tui: startup and exit", () => {
       session = await TmuxSession.create();
       await session.waitForComposer(10_000);
       await session.sendText("/help");
-      const pane = await session.waitForText("Commands 36", 5_000);
+      const pane = await session.waitForText("Commands 35", 5_000);
       expect(pane).toContain("[All]");
       expect(pane).toContain("tab category");
       expect(pane).toContain("enter open");
@@ -532,83 +532,6 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
           await session.kill();
           session = null;
         }
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-    TIMEOUT,
-  );
-});
-
-describe.skipIf(SKIP_TMUX)("tui: MCP startup", () => {
-  test(
-    "unresponsive MCP discovery does not block startup or shutdown",
-    async () => {
-      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-mcp-startup-")));
-      const home = join(root, "home");
-      mkdirSync(join(home, ".fx"), { recursive: true });
-
-      let discoveryRequests = 0;
-      const server = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        async fetch(request) {
-          const body = await request.text();
-          if (body.includes('"method":"initialize"')) discoveryRequests += 1;
-          return await new Promise<Response>(() => {});
-        },
-      });
-      writeFileSync(
-        join(home, ".fx", "mcp.json"),
-        JSON.stringify({
-          mcp: {
-            pending: {
-              type: "http",
-              url: `http://127.0.0.1:${server.port}`,
-              enabled: true,
-            },
-          },
-        }),
-      );
-
-      try {
-        session = await TmuxSession.create({
-          cwd: root,
-          env: {
-            HOME: home,
-            FX_AUTO_UPGRADE: "0",
-          },
-        });
-        const pane = await session.waitForComposer(5_000);
-        expect(hasEmptyComposer(pane)).toBe(true);
-        const startupDeadline = Date.now() + 5_000;
-        while (discoveryRequests < 1 && Date.now() < startupDeadline) {
-          await Bun.sleep(25);
-        }
-        expect(discoveryRequests).toBe(1);
-
-        await session.sendText("/mcp");
-        const summary = await session.waitForText("MCP 1", 5_000);
-        expect(summary).toContain("pending");
-        expect(summary).toContain("Connecting");
-        await session.sendKeys("Escape");
-        await session.waitForPane((pane) => !pane.includes("[Servers]"), 5_000);
-        const beforeListMenu = await session.captureFullScrollback();
-        await session.sendText("/mcp list");
-        const listMenu = await session.waitForText("[Servers]", 5_000);
-        expect(listMenu).toContain("pending");
-        expect(listMenu).toContain("Connecting");
-        await session.sendKeys("Escape");
-        await session.waitForPane((pane) => !pane.includes("[Servers]"), 5_000);
-        expect(await session.captureFullScrollback()).toBe(beforeListMenu);
-
-        await session.sendText("/quit");
-        expect(await session.waitForSessionEnd(5_000)).toBe(true);
-      } finally {
-        if (session) {
-          await session.kill();
-          session = null;
-        }
-        server.stop(true);
         rmSync(root, { recursive: true, force: true });
       }
     },

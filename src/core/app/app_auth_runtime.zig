@@ -3,8 +3,6 @@ const testing_allocator = @import("../shared/testing_allocator.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("../hosts/host.zig");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
-const host_target = @import("../hosts/target.zig");
 const io_mod = @import("../shared/io.zig");
 const credentials = @import("../auth/credentials.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
@@ -19,11 +17,6 @@ const provider_runtime = @import("provider_runtime.zig");
 const picker_state = @import("../input/picker_state.zig");
 const provider_picker_runtime = @import("provider_picker_runtime.zig");
 const types = @import("../shared/types.zig");
-
-fn oauthAuthEnabled(comptime App: type) bool {
-    return runtime_profile.allows(App, .native_auth) or
-        runtime_profile.allows(App, .js_host_auth);
-}
 
 const ProviderSwitchDecision = auth_transition.ProviderSwitchDecision;
 const ProviderSwitchIntent = auth_transition.ProviderSwitchIntent;
@@ -141,7 +134,7 @@ pub fn Runtime(comptime App: type) type {
         fn selectProviderCredential(app: *App, provider: model_provider.ProviderId) !auth_runtime.ProviderCredentialSelection {
             if (hostManagesAuth(app) or (provider != .configured and model_provider.authorizesCredential(provider, app.auth.credentialSource()))) return .unchanged;
             var preferred: ?credentials.Source = null;
-            if (provider == .gateway and !host_target.is_wasm) {
+            if (provider == .gateway) {
                 var settings = try config_runtime.loadMergedSettings(app.alloc, app.workspace_root);
                 defer settings.deinit(app.alloc);
                 preferred = settings.credential_source;
@@ -157,7 +150,6 @@ pub fn Runtime(comptime App: type) type {
                 app.auth.cancelPromptCredentialRefresh();
                 app.model_cache.resetForProviderChange();
             }
-            if (comptime host_target.is_wasm) return;
             if (hostManagesAuth(app)) return;
             const selection = selectProviderCredential(app, provider) catch |err| {
                 if (err == error.OutOfMemory) return err;
@@ -236,18 +228,6 @@ pub fn Runtime(comptime App: type) type {
                 try writeAuthNotice(app, .{ .topic = "auth", .tone = .neutral, .body = credentials.host_managed_auth_message });
                 return;
             }
-            if (comptime !oauthAuthEnabled(App)) {
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "Set FX_API_KEY through createFxTerminal() to authenticate this WASM session.",
-                }, true);
-                return;
-            }
-            if (comptime host_target.is_wasm) {
-                try beginSignIn(app, false);
-                return;
-            }
             try beginProviderPickerInventoryRefresh(app, .provider_picker_login);
         }
 
@@ -255,14 +235,6 @@ pub fn Runtime(comptime App: type) type {
             if (try rejectPendingPreparation(app)) return;
             if (hostManagesAuth(app)) {
                 try writeAuthNotice(app, .{ .topic = "auth", .tone = .neutral, .body = credentials.host_managed_auth_message });
-                return;
-            }
-            if (comptime !oauthAuthEnabled(App)) {
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "Authentication is owned by the embedding SDK for this WASM session.",
-                }, true);
                 return;
             }
             const requested_provider = if (std.mem.trim(u8, target, " \t\r\n").len == 0)
@@ -386,28 +358,12 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn runProviderCommand(app: *App) !void {
-            if (comptime !runtime_profile.allows(App, .native_auth)) {
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "API key setup is unavailable in this WASM session.",
-                }, true);
-                return;
-            }
             try beginProviderPickerInventoryRefresh(app, .provider_picker_command);
         }
 
         pub fn openSetupHub(app: *App) !void {
             if (hostManagesAuth(app)) {
                 try writeAuthNotice(app, .{ .topic = "auth", .tone = .neutral, .body = credentials.host_managed_auth_message });
-                return;
-            }
-            if (comptime !runtime_profile.allows(App, .native_auth)) {
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "API key setup is unavailable in this WASM session.",
-                }, true);
                 return;
             }
             switch (app.auth.beginSourceInventoryRefresh(app.alloc, .{
@@ -648,14 +604,6 @@ pub fn Runtime(comptime App: type) type {
 
         pub fn applyPickerChoice(app: *App, choice: auth_runtime.Choice) !void {
             if (try rejectPendingPreparation(app)) return;
-            if (comptime !oauthAuthEnabled(App)) {
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "Browser authentication is supplied by the embedding SDK.",
-                }, true);
-                return;
-            }
             switch (choice) {
                 .provider => |provider| try switchProvider(app, provider, true, .manual),
                 .source => |source| _ = try applySourceChoice(app, source),
@@ -665,14 +613,6 @@ pub fn Runtime(comptime App: type) type {
                     .chatgpt_login => try beginChatGptSignIn(app),
                     .grok_login => try beginGrokSignIn(app),
                     .setup => {
-                        if (comptime !runtime_profile.allows(App, .native_auth)) {
-                            try app.writeDomainNotice(.{
-                                .topic = "auth",
-                                .tone = .warning,
-                                .body = "API key setup is unavailable in this WASM session.",
-                            }, true);
-                            return;
-                        }
                         prepareApiKeyInputBoundary(app);
                         app.auth.openApiKeyPickerFromRoot(app.alloc);
                     },
@@ -748,12 +688,10 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn collectSignInFacts(app: *App) !void {
-            if (comptime !oauthAuthEnabled(App)) return;
             const sign_in_source: credentials.Source = if (comptime @hasDecl(@TypeOf(app.auth), "pickerView"))
                 app.auth.pickerView().sign_in_source
             else
                 .fx_login;
-            app.auth.pulseSignIn(app.alloc);
             switch (app.auth.pollSignInTransition(app.alloc)) {
                 .none => {},
                 .cancelled => {
@@ -1131,10 +1069,7 @@ pub fn Runtime(comptime App: type) type {
             intent: ProviderSwitchIntent,
             fallback: ?model_provider.ProviderId,
         ) !void {
-            if (comptime !provider_runtime.supported(App) or
-                !@hasDecl(App, "providerCatalog") or
-                !@hasDecl(@TypeOf(app.auth), "beginProviderPreparation") or host_target.is_wasm)
-            {
+            if (comptime !provider_runtime.supported(App) or !@hasDecl(App, "providerCatalog") or !@hasDecl(@TypeOf(app.auth), "beginProviderPreparation")) {
                 try app.writeDomainNotice(.{
                     .topic = "provider",
                     .tone = .warning,
@@ -1242,7 +1177,7 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn collectProviderPreparationFacts(app: *App) !void {
-            if (comptime !@hasDecl(@TypeOf(app.auth), "takeProviderPreparation") or host_target.is_wasm) return;
+            if (comptime !@hasDecl(@TypeOf(app.auth), "takeProviderPreparation")) return;
             if (pendingPromptNeedsAdoption(app)) return;
             const task = app.auth.takeProviderPreparation() orelse return;
             defer task.deinit();
@@ -1547,7 +1482,7 @@ pub fn Runtime(comptime App: type) type {
                 return false;
             };
             defer candidate.deinit(app.alloc);
-            if (comptime @hasDecl(@TypeOf(app.auth), "beginProviderPreparation") and @hasDecl(App, "providerCatalog") and !host_target.is_wasm) {
+            if (comptime @hasDecl(@TypeOf(app.auth), "beginProviderPreparation") and @hasDecl(App, "providerCatalog")) {
                 const catalog_provider = app.providerCatalog(.gateway) orelse return false;
                 var settings = config_runtime.loadMergedSettings(app.alloc, app.workspace_root) catch |err| {
                     debug_trace.logf("auth", "team preparation settings failed err={s}", .{@errorName(err)});
@@ -1798,16 +1733,6 @@ pub fn Runtime(comptime App: type) type {
         }
 
         pub fn admitPromptCredential(app: *App) !bool {
-            if (comptime !oauthAuthEnabled(App)) {
-                if (app.auth.apiKey() != null) return true;
-                if (compactionOwnsCredentialFeedback(app)) return false;
-                try app.writeDomainNotice(.{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "Missing FX_API_KEY. Supply it through createFxTerminal().",
-                }, true);
-                return false;
-            }
             if (!try ensurePromptCredential(app)) return false;
             return preparePromptCredential(app);
         }
@@ -1834,9 +1759,6 @@ pub fn Runtime(comptime App: type) type {
             if (startupCredentialPending(app)) return .pending;
             if (comptime @hasDecl(@TypeOf(app.auth), "providerPreparationPending")) {
                 if (app.auth.providerPreparationPending()) return .pending;
-            }
-            if (comptime host_target.is_wasm) {
-                return if (try admitPromptCredential(app)) .current else .rejected;
             }
             if (!try ensurePromptCredential(app)) return .rejected;
             const source = app.auth.credentialSource() orelse return .rejected;
@@ -1875,9 +1797,6 @@ pub fn Runtime(comptime App: type) type {
             if (startupCredentialPending(app)) return .pending;
             if (comptime @hasDecl(@TypeOf(app.auth), "providerPreparationPending")) {
                 if (app.auth.providerPreparationPending()) return .pending;
-            }
-            if (comptime host_target.is_wasm) {
-                return if (try admitPromptCredential(app)) .current else .rejected;
             }
             if (!try ensurePromptCredential(app)) return .rejected;
             if (comptime @hasDecl(@TypeOf(app.auth), "credentialFailure")) {
@@ -2027,7 +1946,6 @@ pub fn Runtime(comptime App: type) type {
         }
 
         fn reconcileGatewayCredential(app: *App) void {
-            if (comptime !runtime_profile.allows(App, .generation_usage)) return;
             if (comptime @hasField(App, "session") and
                 @hasField(@TypeOf(app.session), "usage"))
             {
@@ -2262,8 +2180,6 @@ const BusySignInAuth = struct {
 };
 
 const BusySignInApp = struct {
-    pub const host_profile = runtime_profile.native;
-
     alloc: std.mem.Allocator = std.testing.allocator,
     selected_provider: model_provider.ProviderId = .gateway,
     selected_model: std.ArrayList(u8) = .empty,
@@ -2447,8 +2363,6 @@ const TestAuth = struct {
         self.sign_in_transition = .none;
         return transition;
     }
-
-    fn pulseSignIn(_: *TestAuth, _: std.mem.Allocator) void {}
 
     fn popPickerStage(self: *TestAuth, _: std.mem.Allocator) bool {
         self.picker_pop_count += 1;
@@ -3001,26 +2915,6 @@ test "login inventory failure leaves the picker closed and reports one error" {
         app.transcript.items,
         "picker was not opened with stale data",
     ) != null);
-}
-
-test "OAuth app gating accepts native auth or JS-host auth and rejects neither" {
-    const NativeApp = struct {
-        pub const host_profile = runtime_profile.native;
-    };
-    const JsHostApp = struct {
-        pub const host_profile = runtime_profile.wasm;
-    };
-    const NeitherApp = struct {
-        pub const host_profile = blk: {
-            var profile = runtime_profile.wasm;
-            profile.js_host_auth = false;
-            break :blk profile;
-        };
-    };
-
-    try std.testing.expect(oauthAuthEnabled(NativeApp));
-    try std.testing.expect(oauthAuthEnabled(JsHostApp));
-    try std.testing.expect(!oauthAuthEnabled(NeitherApp));
 }
 
 test "interactive sign-in opens the owned browser URL through the host" {

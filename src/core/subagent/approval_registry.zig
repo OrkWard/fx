@@ -317,7 +317,6 @@ pub fn preparedRequestFingerprint(
     hash.update("fx.subagent.approval.v1\x00");
     hashString(&hash, request.label);
     hashOptional(&hash, request.explanation);
-    hashOptional(&hash, request.tool_arguments_preview);
     hashOptional(&hash, request.command);
     var result: [32]u8 = undefined;
     hash.final(&result);

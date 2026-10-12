@@ -1,5 +1,4 @@
 const std = @import("std");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
 const edit_contract = @import("../input/editor_state.zig");
 const file_picker_path = @import("../input/file_picker_path.zig");
 const file_completion_state = @import("../input/file_completion_state.zig");
@@ -387,13 +386,12 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         fn routeNonSlashPickerMove(app: *App, delta: i32) !bool {
-            if (try routeMcpHostMenuMove(app, delta)) return true;
             if (try routeSettingsMenuMove(app, delta)) return true;
             if (try routeHelpMenuMove(app, delta)) return true;
             if (try routeModelMenuMove(app, delta)) return true;
             if (routeAuthPickerMove(app, delta)) return true;
             if (try routeSkillsMenuMove(app, delta)) return true;
-            if (comptime runtime_profile.allows(App, .durable_sessions)) {
+            {
                 if (try routeSessionPickerMove(app, delta)) return true;
             }
             if (hasFileQuery(app)) {
@@ -411,13 +409,6 @@ pub fn CompletionRuntime(comptime App: type) type {
             // Mid-turn bare `/model`: consume arrows without slash/skill navigation.
             if (app.stream.active and picker_state.isBareModelCommandAtCursor(&app.input_runtime.edit_state)) return true;
             return false;
-        }
-
-        fn routeMcpHostMenuMove(app: *App, delta: i32) !bool {
-            if (comptime !@hasDecl(App, "mcpHostMenuKey")) return false;
-            if (!app.mcp.hostMenuActive()) return false;
-            try app.mcpHostMenuKey(if (delta < 0) .up else .down);
-            return true;
         }
 
         fn routeSettingsMenuMove(app: *App, delta: i32) !bool {
@@ -599,7 +590,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn hasFileQuery(app: *App) bool {
-            if (comptime !runtime_profile.allows(App, .file_index)) return false;
             return app.input_runtime.picker.activeFilePickerQuery(&app.input_runtime.edit_state) != null;
         }
 
@@ -741,7 +731,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         fn filePickerEligible(app: *App) bool {
-            if (comptime !runtime_profile.allows(App, .file_index)) return false;
             if (comptime @hasField(App, "question_prompt")) if (app.question_prompt.isActive()) return false;
             if (comptime @hasField(App, "approval_prompt")) if (app.approval_prompt.isActive()) return false;
             if (comptime @hasField(App, "auth")) {
@@ -754,7 +743,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn reconcileFilePicker(app: *App) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             const picker = &app.input_runtime.picker;
             const query = picker.activeFilePickerQuery(&app.input_runtime.edit_state);
             var decoded_storage: [file_index.max_path_len]u8 = undefined;
@@ -777,7 +765,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn collectFilePickerFacts(app: *App) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             reconcileFilePicker(app);
             app.harvestDirectoryCompletion(filePickerEligible(app));
         }
@@ -785,7 +772,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         /// The sole acquisition boundary. Called after input batching, never by
         /// painters, navigation or acceptance. Directory work is scheduled, not run.
         pub fn prepareFilePicker(app: *App) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             reconcileFilePicker(app);
             const picker = &app.input_runtime.picker;
             const state = &picker.file_completion;
@@ -859,20 +845,18 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn filePickerView(app: *App) file_completion_state.View {
-            if (comptime !runtime_profile.allows(App, .file_index)) return .{};
             const picker = &app.input_runtime.picker;
             return picker.file_completion.view(picker.file_completion_index, picker.file_completion_window_start);
         }
 
         pub fn acknowledgeFilePicker(app: *App, receipt: FilePickerReceipt) void {
-            if (comptime !runtime_profile.allows(App, .file_index)) return;
             if (!filePickerEligible(app)) return;
             const picker = &app.input_runtime.picker;
             picker.file_completion.acknowledge(app.alloc, receipt, &picker.file_completion_index, &picker.file_completion_window_start);
         }
 
         pub fn distrustFilePicker(app: *App) void {
-            if (comptime runtime_profile.allows(App, .file_index)) app.input_runtime.picker.file_completion.distrust();
+            app.input_runtime.picker.file_completion.distrust();
         }
 
         fn navigateFilePicker(app: *App, delta: i32) void {
@@ -883,7 +867,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn autocompleteFilePickerSelection(app: *App, max_input_len: usize) !edit_contract.InsertResult {
-            if (comptime !runtime_profile.allows(App, .file_index)) return .inactive;
             reconcileFilePicker(app);
             if (!filePickerEligible(app)) return .inactive;
             const selection = resolveFilePickerSelection(app) orelse {
@@ -961,7 +944,6 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         pub fn submitFilePickerOnEnter(app: *App, max_input_len: usize) !?edit_contract.InsertResult {
-            if (comptime !runtime_profile.allows(App, .file_index)) return null;
             reconcileFilePicker(app);
             if (!filePickerOwnsSurface(app)) return null;
             const selection = resolveFilePickerSelection(app) orelse {
@@ -1870,31 +1852,6 @@ fn expectInlineSkillCompletionInactive(app: *InlineCompletionTestApp) !void {
         edit_contract.InsertResult.inactive,
         try rt.autocompleteInlineSkillCompletion(app, 4096),
     );
-}
-
-test "file picker disabled profile never claims literal input or prepares rows" {
-    const DisabledApp = struct {
-        pub const host_profile = runtime_profile.wasm;
-        input_runtime: core_input_runtime.Runtime = .{},
-    };
-    const rt = CompletionRuntime(DisabledApp);
-    var app: DisabledApp = .{};
-    defer app.input_runtime.deinit(std.testing.allocator);
-    try app.input_runtime.textReplacementState().replace(std.testing.allocator, "@./file");
-    rt.prepareFilePicker(&app);
-    rt.reconcileFilePicker(&app);
-    rt.collectFilePickerFacts(&app);
-    const workspace_rt = app_workspace_runtime.Runtime(DisabledApp);
-    workspace_rt.prepareDirectoryCompletion(&app);
-    workspace_rt.reconcileDirectoryCompletion(&app, true);
-    workspace_rt.harvestDirectoryCompletion(&app, true);
-    workspace_rt.requestStop(&app);
-    try std.testing.expect(!rt.hasFileQuery(&app));
-    try std.testing.expect(!rt.filePickerOwnsSurface(&app));
-    try std.testing.expectEqual(@as(?edit_contract.InsertResult, null), try rt.submitFilePickerOnEnter(&app, 4096));
-    try std.testing.expectEqual(edit_contract.InsertResult.inactive, try rt.autocompleteFilePickerSelection(&app, 4096));
-    try std.testing.expect(!app.input_runtime.picker.file_completion.active);
-    try std.testing.expectEqualStrings("@./file", app.input_runtime.edit_state.input.items);
 }
 
 test "file picker defers bare at refresh until the settled query mode" {

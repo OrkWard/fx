@@ -676,7 +676,7 @@ test "parallel skill admission binds identities preserves denies and isolates fa
             }, call.arguments_json);
         }
 
-        fn permission(raw: *anyopaque, arena: std.mem.Allocator, call: ToolCall, _: permission_auto_classifier.ReviewTurnContext, mode: types.PermissionMode, grants: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation, _: []const []const u8) anyerror!command_admission.PermissionOutcome {
+        fn permission(raw: *anyopaque, arena: std.mem.Allocator, call: ToolCall, _: permission_auto_classifier.ReviewTurnContext, mode: types.PermissionMode, grants: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation) anyerror!command_admission.PermissionOutcome {
             const self: *@This() = @ptrCast(@alignCast(raw));
             self.admission_count += 1;
             return admission.requestPermissionOutcome(.{
@@ -685,8 +685,6 @@ test "parallel skill admission binds identities preserves denies and isolates fa
                 .permission_rules = self.rules,
                 .tool_registry = self.registry,
                 .worker = &self.worker,
-                .advertised_dynamic_tool_names = &.{},
-                .mcp_runtime = .{},
             }, arena, call, mode, grants);
         }
 
@@ -1412,7 +1410,6 @@ test "shell lifecycle resolves one display target before execution" {
             _: []const PermissionGrant,
             _: ?runtime_tool_contracts.LiveToolAuthority,
             _: ?runtime_tool_contracts.LivePermissionRevalidation,
-            _: []const []const u8,
         ) !command_admission.PermissionOutcome {
             return .{
                 .decision = .once,
@@ -1488,7 +1485,6 @@ test "processQueuedPrompt keeps sampled root mode through permission and executi
             _: []const PermissionGrant,
             _: ?runtime_tool_contracts.LiveToolAuthority,
             _: ?runtime_tool_contracts.LivePermissionRevalidation,
-            _: []const []const u8,
         ) !command_admission.PermissionOutcome {
             const self: *@This() = @ptrCast(@alignCast(raw));
             try std.testing.expectEqual(types.PermissionMode.auto, permission_mode);
@@ -1747,85 +1743,6 @@ test "parallel streamed cancellation closes every concrete tool action" {
             try std.testing.expect(!std.mem.eql(u8, event.terminal.outcome.summary, "Tool cancelled"));
         }
     }
-}
-
-test "selected dynamic MCP allow returned after cancellation never executes" {
-    const alloc = std.testing.allocator;
-    const select_calls = [_]ToolCall{
-        toolCall("select", "mcp_select_tool", "{\"name\":\"mcp_fixture_echo\"}"),
-    };
-    const dynamic_calls = [_]ToolCall{
-        toolCall("dynamic", "mcp_fixture_echo", "{}"),
-    };
-    const completions = [_]FakeCompletion{
-        .{ .tool_calls = &select_calls },
-        .{ .tool_calls = &dynamic_calls },
-    };
-    var gateway = FakeGateway.init(alloc, &completions);
-    defer gateway.deinit();
-    var hooks = FakeAgentRuntimeDeps.init(alloc);
-    defer hooks.deinit();
-    hooks.permission_decisions = &.{ .once, .once };
-    hooks.exec_plans = &.{
-        .{ .result = .{
-            .model_output = "selected",
-            .selected_dynamic_tools = &.{.{ .name = "mcp_fixture_echo", .schema_json = "{\"type\":\"function\",\"name\":\"mcp_fixture_echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}" }},
-        } },
-        .{ .result = .{ .model_output = "must not execute" } },
-    };
-    var fixture = PromptFixture{};
-    hooks.cancel_on_permission = &fixture.cancel_flag;
-    hooks.cancel_on_permission_name = "mcp_fixture_echo";
-    var job = fixture.job();
-    job.permission_mode = .auto;
-
-    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
-
-    try std.testing.expectEqual(@as(usize, 2), gateway.index);
-    try std.testing.expectEqual(@as(usize, 1), hooks.executed_names.items.len);
-    try std.testing.expectEqualStrings("mcp_select_tool", hooks.executed_names.items[0]);
-    try std.testing.expectEqual(types.TurnPresentationOutcome.interrupted, hooks.finalized_outcome.?);
-    try std.testing.expectEqual(@as(usize, 0), hooks.rejected_names.items.len);
-}
-
-test "selected dynamic MCP execution carries its validation generation" {
-    const alloc = std.testing.allocator;
-    const select_calls = [_]ToolCall{
-        toolCall("select", "mcp_select_tool", "{\"name\":\"mcp_fixture_echo\"}"),
-    };
-    const dynamic_calls = [_]ToolCall{
-        toolCall("dynamic", "mcp_fixture_echo", "{}"),
-    };
-    const completions = [_]FakeCompletion{
-        .{ .tool_calls = &select_calls },
-        .{ .tool_calls = &dynamic_calls },
-        .{ .content = "Final" },
-    };
-    var gateway = FakeGateway.init(alloc, &completions);
-    defer gateway.deinit();
-    var hooks = FakeAgentRuntimeDeps.init(alloc);
-    defer hooks.deinit();
-    hooks.permission_decisions = &.{ .once, .once };
-    hooks.validation_mcp_tool_name = "mcp_fixture_echo";
-    hooks.validation_mcp_runtime_generation = 41;
-    hooks.exec_plans = &.{
-        .{ .result = .{
-            .model_output = "selected",
-            .selected_dynamic_tools = &.{.{ .name = "mcp_fixture_echo", .schema_json = "{\"type\":\"function\",\"name\":\"mcp_fixture_echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}" }},
-        } },
-        .{ .result = .{ .model_output = "called" } },
-    };
-    var fixture = PromptFixture{};
-    var job = fixture.job();
-    job.permission_mode = .auto;
-
-    try runFakePrompt(&gateway, &hooks, fixture.config(), job);
-
-    try std.testing.expectEqualSlices(
-        ?u64,
-        &.{ null, 41 },
-        hooks.execution_mcp_runtime_generations.items,
-    );
 }
 
 test "resumed persistent child review rejects child-authored authority provenance" {
@@ -2805,7 +2722,7 @@ test "same-batch retarget defers stale scoped call before permission and reloads
     defer alloc.free(link_path);
 
     const first_calls = [_]ToolCall{
-        toolCall("retarget", "terminal", "{\"action\":\"exec\",\"command\":\"true\"}"),
+        toolCall("retarget", "shell", "{\"action\":\"run\",\"command\":\"true\"}"),
         toolCall("stale_read", "read_file", "{\"path\":\"link/secret.txt\"}"),
         toolCall("stable_info", "read_file", "{\"path\":\"stable.txt\"}"),
     };
@@ -2823,7 +2740,7 @@ test "same-batch retarget defers stale scoped call before permission and reloads
     defer hooks.deinit();
     hooks.context_enabled = true;
     hooks.context_registry = FreshnessApplicableContext.registry;
-    hooks.swap_link_on_execute_name = "terminal";
+    hooks.swap_link_on_execute_name = "shell";
     hooks.swap_link_on_execute = link_path;
     hooks.swap_link_target_on_execute = new_directory;
     hooks.exec_plans = &.{
@@ -2915,7 +2832,7 @@ test "same-batch file mutation retarget stops before permission and execution" {
     defer alloc.free(new_output);
 
     const calls = [_]ToolCall{
-        toolCall("retarget", "terminal", "{\"action\":\"exec\",\"command\":\"true\"}"),
+        toolCall("retarget", "shell", "{\"action\":\"run\",\"command\":\"true\"}"),
         toolCall("stale_write", "write_file", "{\"path\":\"link/proof.txt\",\"content\":\"blocked\"}"),
     };
     const completions = [_]FakeCompletion{
@@ -2928,7 +2845,7 @@ test "same-batch file mutation retarget stops before permission and execution" {
     defer hooks.deinit();
     hooks.context_enabled = true;
     hooks.context_registry = EmptyApplicableContext.registry;
-    hooks.swap_link_on_execute_name = "terminal";
+    hooks.swap_link_on_execute_name = "shell";
     hooks.swap_link_on_execute = link_path;
     hooks.swap_link_target_on_execute = new_directory;
     hooks.exec_plans = &.{.{ .result = .{ .model_output = "retargeted" } }};
@@ -4275,7 +4192,7 @@ test "committed file result is appended before degraded secondary publication" {
         .model_output = model_output,
         .committed_file_handoff = handoff,
         .deferred_tool_completion = .{
-            .transport_id = "acp-call-write",
+            .transport_id = "transport-call-write",
             .content_text = model_output,
         },
     } }};
@@ -6426,7 +6343,6 @@ test "parallel result assembly emits context notices in call order" {
         &.{ false, false },
         &.{ false, false },
         1,
-        &.{},
         .{},
     );
 
@@ -6455,7 +6371,6 @@ test "child live authority refresh denies the next tool action before execution"
     const LiveProvider = struct {
         calls: usize = 0,
         const allowed_tools = [_][]const u8{"read_file"};
-        const integrations = [_][]const u8{"mcp_fixture"};
         var grants = [_]PermissionGrant{.{
             .tool_name = @constCast("read_file"),
             .target_path = @constCast("/tmp/workspace/first"),
@@ -6486,7 +6401,6 @@ test "child live authority refresh denies the next tool action before execution"
                     .generation = if (self.calls <= 2) 1 else 2,
                     .root_id = "root",
                     .tools = if (self.calls <= 2) &allowed_tools else &.{},
-                    .integrations = &integrations,
                     .rules = .{ .rules = if (self.calls <= 2) &allow_rules else &deny_rules },
                     .grants = &grants,
                     .permission_mode = .auto,
@@ -6536,7 +6450,7 @@ test "child target failures settle the batch before and after permission without
         provider_error: ?anyerror = null,
         target_error: anyerror = error.NotDir,
 
-        fn target(raw: *anyopaque, arena: std.mem.Allocator, call: ToolCall, _: []const []const u8) ![]const u8 {
+        fn target(raw: *anyopaque, arena: std.mem.Allocator, call: ToolCall) ![]const u8 {
             const hooks: *FakeAgentRuntimeDeps = @ptrCast(@alignCast(raw));
             const self: *@This() = @fieldParentPtr("hooks", hooks);
             if (std.mem.eql(u8, call.id, "bad-target") and self.provider_error == null and
@@ -6553,7 +6467,6 @@ test "child target failures settle the batch before and after permission without
                     .generation = 1,
                     .root_id = "root",
                     .tools = &.{"read_file"},
-                    .integrations = &.{},
                     .rules = .{ .rules = &.{} },
                     .grants = &.{},
                     .permission_mode = .auto,
@@ -6667,7 +6580,6 @@ test "child live authority revalidates after permission before effect" {
                     .generation = if (self.calls == 1) 1 else 2,
                     .root_id = "root",
                     .tools = if (self.calls == 1) &tools else &.{},
-                    .integrations = &.{},
                     .rules = .{ .rules = if (self.calls == 1) &allow_rules else &deny_rules },
                     .grants = &.{},
                     .permission_mode = .auto,
@@ -6739,7 +6651,6 @@ test "child live authority allow to ask requires current approval before effect"
                     .generation = if (ask) 2 else 1,
                     .root_id = "root",
                     .tools = &tools,
-                    .integrations = &.{},
                     .rules = .{ .rules = if (ask) &ask_rules else &allow_rules },
                     .grants = &.{},
                     .permission_mode = .auto,

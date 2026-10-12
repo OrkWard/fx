@@ -1429,40 +1429,20 @@ pub fn composeApprovalPanelRow(alloc: Allocator, approval: ApprovalProjection, w
         return composeApprovalHeaderRow(alloc, approval, label.bytes, width);
     }
     if (approvalActionRowIndex(row_index, row_count)) {
-        var preview = if (approval.request.tool_arguments_preview) |raw_preview|
-            try text_utils.encodeTerminalSafe(
-                alloc,
-                raw_preview,
-                permission_request.max_tool_arguments_preview_bytes,
-            )
-        else
-            null;
-        defer if (preview) |*value| value.deinit(alloc);
         var action_line: std.Io.Writer.Allocating = .init(alloc);
         defer action_line.deinit();
         try writeApprovalActionLine(
             &action_line.writer,
             label.bytes,
-            if (preview) |value| value.bytes else null,
-            width,
         );
 
         var action_row: std.ArrayList(u8) = .empty;
-        if (preview != null) {
-            try row_text.appendSingleLineEllipsized(
-                alloc,
-                &action_row,
-                action_line.written(),
-                width,
-            );
-        } else {
-            try row_text.appendClipped(
-                alloc,
-                &action_row,
-                action_line.written(),
-                width,
-            );
-        }
+        try row_text.appendClipped(
+            alloc,
+            &action_row,
+            action_line.written(),
+            width,
+        );
         try action_row.appendSlice(alloc, ui_render.reset_style);
         return action_row;
     }
@@ -1507,14 +1487,13 @@ fn buildApprovalPanelLineWithLabel(
     const r = ui_render.reset_style;
     const target = approvalTarget(label);
     const explanation = approval.request.explanation;
-    const dynamic_mcp = approval.request.tool_arguments_preview != null;
 
     if (row_count >= interaction_state.approval_panel_rows_spacious) {
         return switch (row_index) {
             0 => "  Permission needed · Choose one",
             1 => "",
-            2 => std.mem.print(buf, "  {s}{s}{s}", .{ b, approvalQuestion(label, dynamic_mcp), r }) catch "  Permission request",
-            3 => approvalReasonLine(buf, label, target, explanation, dynamic_mcp),
+            2 => std.mem.print(buf, "  {s}{s}{s}", .{ b, approvalQuestion(label), r }) catch "  Permission request",
+            3 => approvalReasonLine(buf, label, target, explanation),
             4 => approvalActionLine(buf, label, target),
             5 => "",
             6 => approvalChoiceLine(buf, approval.choice_index == 0, approvalChoiceLabel(approval, 0)),
@@ -1528,8 +1507,8 @@ fn buildApprovalPanelLineWithLabel(
 
     return switch (row_index) {
         0 => "  Permission needed · Choose one",
-        1 => std.mem.print(buf, "  {s}{s}{s}", .{ b, approvalQuestion(label, dynamic_mcp), r }) catch "  Permission request",
-        2 => approvalReasonLine(buf, label, target, explanation, dynamic_mcp),
+        1 => std.mem.print(buf, "  {s}{s}{s}", .{ b, approvalQuestion(label), r }) catch "  Permission request",
+        2 => approvalReasonLine(buf, label, target, explanation),
         3 => approvalActionLine(buf, label, target),
         4 => approvalChoiceLine(buf, approval.choice_index == 0, approvalChoiceLabel(approval, 0)),
         5 => approvalChoiceLine(buf, approval.choice_index == 1, approvalChoiceLabel(approval, 1)),
@@ -1692,14 +1671,6 @@ fn approvalChoiceLabel(approval: ApprovalProjection, choice: u8) []const u8 {
         else => "",
     };
     if (approval.amendmentChoice() == choice) return approvalAmendmentLabel(choice);
-    if (approval.request.tool_arguments_preview != null) {
-        return switch (choice) {
-            0 => "1. Allow once",
-            1 => approvalAlwaysChoice(approval, approval.request.label),
-            2 => "3. Deny",
-            else => "",
-        };
-    }
     return switch (choice) {
         0 => interaction_state.approval_once_label,
         1 => approvalAlwaysChoice(approval, approval.request.label),
@@ -1779,10 +1750,7 @@ fn composeApprovalHeaderRow(
         "Permission needed · Choose one",
     );
     defer title.deinit(alloc);
-    const kind = approvalKind(
-        label,
-        approval.request.tool_arguments_preview != null,
-    );
+    const kind = approvalKind(label);
     const inset_width = 2;
     const right_margin = 2;
     const inner_width = @as(usize, width) -| (inset_width + right_margin);
@@ -1838,10 +1806,9 @@ fn approvalTitle(
     };
 }
 
-fn approvalKind(label: []const u8, dynamic_mcp: bool) []const u8 {
+fn approvalKind(label: []const u8) []const u8 {
     if (std.mem.startsWith(u8, label, "Remember ") or
         std.mem.startsWith(u8, label, "Revoke saved-session")) return "Permission rule";
-    if (dynamic_mcp) return "MCP tool";
     if (commandLabelPrefix(label) != null) return "Command";
     if (std.mem.startsWith(u8, label, "write_file ")) return "Write file";
     if (std.mem.startsWith(u8, label, "edit_file ")) return "Edit file";
@@ -1850,7 +1817,7 @@ fn approvalKind(label: []const u8, dynamic_mcp: bool) []const u8 {
     return "Tool";
 }
 
-fn approvalQuestion(label: []const u8, dynamic_mcp: bool) []const u8 {
+fn approvalQuestion(label: []const u8) []const u8 {
     if (std.mem.eql(u8, label, "Remember allow for this saved session")) {
         return "Remember allow for this saved session?";
     }
@@ -1860,7 +1827,6 @@ fn approvalQuestion(label: []const u8, dynamic_mcp: bool) []const u8 {
     if (std.mem.eql(u8, label, "Revoke saved-session permission rule")) {
         return "Revoke this saved-session permission rule?";
     }
-    if (dynamic_mcp) return "Allow this MCP tool call?";
     if (commandLabelPrefix(label) != null) return "Would you like to run the following command?";
     if (std.mem.startsWith(u8, label, "write_file ")) return "Would you like to create or update this file?";
     if (std.mem.startsWith(u8, label, "edit_file ")) return "Would you like to edit this file?";
@@ -1888,7 +1854,6 @@ fn approvalReasonLine(
     label: []const u8,
     target: []const u8,
     explanation: ?[]const u8,
-    dynamic_mcp: bool,
 ) []const u8 {
     const dim = ui_render.dim_style;
     const r = ui_render.reset_style;
@@ -1897,13 +1862,6 @@ fn approvalReasonLine(
     }
     if (approvalAnnotation(target)) |annotation| {
         return std.mem.print(buf, "  {s}Reason:{s} {s}", .{ dim, r, annotation }) catch "  Reason: permission required";
-    }
-    if (dynamic_mcp) {
-        return std.mem.print(
-            buf,
-            "  {s}Reason:{s} This MCP tool needs approval before fx can send the request.",
-            .{ dim, r },
-        ) catch "  Reason: MCP tool approval required";
     }
     if (commandLabelPrefix(label) != null) {
         if (firstUrlHost(target)) |host| {
@@ -1930,24 +1888,10 @@ fn approvalActionLine(buf: []u8, label: []const u8, target: []const u8) []const 
 fn writeApprovalActionLine(
     writer: *std.Io.Writer,
     label: []const u8,
-    tool_arguments_preview: ?[]const u8,
-    width: u16,
 ) !void {
     const target = approvalActionTarget(approvalTarget(label));
     if (commandLabelPrefix(label) != null) {
         try writer.print("  $ {s}", .{target});
-        return;
-    }
-    if (tool_arguments_preview) |preview| {
-        const verbose_prefix_bytes = 2 + target.len + " · Arguments for this request: ".len;
-        if (width < verbose_prefix_bytes + 16) {
-            try writer.print("  {s} · {s}", .{ target, preview });
-        } else {
-            try writer.print(
-                "  {s} · Arguments for this request: {s}",
-                .{ target, preview },
-            );
-        }
         return;
     }
     try writer.print("  {s}", .{target});
@@ -1962,10 +1906,7 @@ pub fn commandTargetForApproval(label: []const u8, command: ?[]const u8) ?[]cons
     return command orelse commandTarget(label);
 }
 
-fn approvalAlwaysChoice(approval: ApprovalProjection, label: []const u8) []const u8 {
-    if (approval.request.tool_arguments_preview != null) {
-        return "2. Allow this MCP tool for this session";
-    }
+fn approvalAlwaysChoice(_: ApprovalProjection, label: []const u8) []const u8 {
     if (commandLabelPrefix(label) != null) return "2. Yes, and don't ask again for this exact command";
     return "2. Yes, and don't ask again for this request";
 }
@@ -2201,64 +2142,6 @@ test "approval panel renders request context and numbered choices" {
     var row = try composeApprovalPanelRow(std.testing.allocator, prompt.projection().?, 120, 4, interaction_state.approval_panel_rows_spacious);
     defer row.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.find(u8, row.items, "$ curl -I https://example.com") != null);
-}
-
-test "approval panel shows bounded terminal-safe tool arguments with ellipsis" {
-    const alloc = std.testing.allocator;
-    var prompt = ApprovalPrompt{};
-    defer prompt.deinit(alloc);
-    try std.testing.expect(try prompt.syncRequest(alloc, .{
-        .label = "mcp_fixture_echo",
-        .tool_arguments_preview = "{\"text\":\"\x1b\n\xff sentinel\"}",
-    }));
-
-    var wide = try composeApprovalPanelRow(
-        alloc,
-        prompt.projection().?,
-        120,
-        4,
-        interaction_state.approval_panel_rows_spacious,
-    );
-    defer wide.deinit(alloc);
-    try std.testing.expect(std.mem.find(
-        u8,
-        wide.items,
-        "Arguments for this request: {\"text\":\"\\x1b\\x0a\\xff sentinel\"}",
-    ) != null);
-
-    const projection = prompt.projection().?;
-    inline for ([_]struct { row: u16, expected: []const u8 }{
-        .{ .row = 0, .expected = "MCP tool" },
-        .{ .row = 2, .expected = "Allow this MCP tool call?" },
-        .{ .row = 3, .expected = "This MCP tool needs approval" },
-        .{ .row = 6, .expected = "Allow once" },
-        .{ .row = 7, .expected = "Allow this MCP tool for this session" },
-        .{ .row = 8, .expected = "Deny" },
-    }) |expectation| {
-        var row = try composeApprovalPanelRow(
-            alloc,
-            projection,
-            120,
-            expectation.row,
-            interaction_state.approval_panel_rows_spacious,
-        );
-        defer row.deinit(alloc);
-        try std.testing.expect(std.mem.find(u8, row.items, expectation.expected) != null);
-    }
-
-    var narrow = try composeApprovalPanelRow(
-        alloc,
-        prompt.projection().?,
-        24,
-        4,
-        interaction_state.approval_panel_rows_spacious,
-    );
-    defer narrow.deinit(alloc);
-    try std.testing.expectEqual(
-        @as(usize, 24),
-        display_width.visibleWidthIgnoringAnsi(narrow.items),
-    );
-    try std.testing.expect(std.mem.find(u8, narrow.items, "…") != null);
 }
 
 test "approval panel hint keeps enter and esc guidance at narrow widths" {

@@ -2,7 +2,7 @@
  ⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀
  ⠀⠀⠀⠀⠀⢰⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
  ⠀⠀⠀⣠⣶⣿⣿⣷⣶⡶⣶⣶⣆⠀⠀⠀⣴⣶⣶⠆
- ⠀⠀⠀⠉⢹⣿⣿⠉⠉⠀⠘⢿⣿⣧⣀⣾⣿⡿⠃⠀             Tiny, open, embeddable, native coding agent.
+ ⠀⠀⠀⠉⢹⣿⣿⠉⠉⠀⠘⢿⣿⣧⣀⣾⣿⡿⠃⠀             Tiny, open, native coding agent.
  ⠀⠀⠀⠀⣼⣿⡏⠀⠀⠀⠀⠀⠻⣿⣿⣿⠟⠀⠀⠀
  ⠀⠀⠀⢀⣿⣿⠃⠀⠀⠀⠀⢠⣦⠘⢿⣿⣷⡀⠀⠀             curl -fsSL https://fx.sh/setup.sh | bash
  ⠀⠀⠀⣸⣿⡟⠀⠀⠀⠀⣰⣿⣿⠗⠀⠻⣿⣿⣄⠀
@@ -15,7 +15,7 @@
 
 fx is the smallest coding agent: one native binary with no runtime to install. It's written in Zig and runs the same on your laptop, in CI, or inside an agent sandbox.
 
-It works with the model you choose, and its output is closer to a Unix shell than an IDE: the conversation prints into your scrollback instead of filling the screen. The same agent core runs in editors over the Agent Client Protocol (ACP) and in JavaScript apps through [libfx](sdk/README.md).
+It works with the model you choose, and its output is closer to a Unix shell than an IDE: the conversation prints into your scrollback instead of filling the screen.
 
 ## Features
 
@@ -25,7 +25,7 @@ It works with the model you choose, and its output is closer to a Unix shell tha
 - **Your own shell**: commands run in your login shell with your aliases, functions, and `PATH`. fx runs your startup files once and reuses the result, so a slow `.zshrc` doesn't slow down every command.
 - **Permissions**: the default `auto` mode runs routine work, such as editing project files and running tests, without asking. Anything else goes to a model that checks it for prompt injection or malicious behavior first. Switch to `ask` to approve each action yourself, or to `full-access` to turn the checks off ([permissions](https://fx.sh/docs/configure-fx/permissions)).
 - **Sessions**: fx saves your conversations, so `fx -c` picks up where you left off in a project. When a conversation fills the model's context, fx compacts older turns and keeps their full text on disk for the agent to look up ([sessions](https://fx.sh/docs/using-fx/sessions)).
-- **Skills, MCP, and subagents**: fx loads skills from `.fx/skills`, `~/.fx/skills`, and the folders other agents use, like `.claude/skills` and `.agents/skills`. It connects to MCP servers (`/mcp add slack` sets up Slack), hands independent work to subagents, and follows your project's `AGENTS.md`.
+- **Skills and subagents**: fx loads skills from `.fx/skills`, `~/.fx/skills`, and the folders other agents use, like `.claude/skills` and `.agents/skills`. It hands independent work to subagents and follows your project's `AGENTS.md`.
 
 ## Install
 
@@ -64,9 +64,9 @@ fx ask --json "summarize the failing tests" | jq -r .final_output
 
 ## How it works
 
-Each request runs as a loop. fx sends the model your message, the conversation so far, your project's `AGENTS.md`, and short descriptions of the tools it can use. The model either replies or asks to call a tool: read or edit a file, run a shell command, search the web, load a skill, call an MCP server, or start a subagent. fx checks each call against your permission mode and rules, runs the ones that pass, and sends the results back. The loop ends when the model replies without asking for another tool.
+Each request runs as a loop. fx sends the model your message, the conversation so far, your project's `AGENTS.md`, and short descriptions of the tools it can use. The model either replies or asks to call a tool: read or edit a file, run a shell command, search the web, load a skill, or start a subagent. fx checks each call against your permission mode and rules, runs the ones that pass, and sends the results back. The loop ends when the model replies without asking for another tool.
 
-Skill instructions and MCP tool schemas don't go to the model up front. They load when the model asks for them, which keeps the context small and leaves more room for your code.
+Skill instructions don't go to the model up front. They load when the model asks for them, which keeps the context small and leaves more room for your code.
 
 Commands run by fx receive `AI_AGENT=fx` in their environment. Development tools can use it to detect fx.
 
@@ -77,23 +77,10 @@ fx prints every step inline as it happens and saves the session under `~/.fx/ses
 | Surface | Use it for |
 | --- | --- |
 | `fx ask` | One request from a script or CI job. `--json` returns structured output, and `--resume` continues a saved session. |
-| `fx acp` | Editors and other [Agent Client Protocol](https://fx.sh/docs/using-fx/acp) clients, over stdio. |
-| [libfx](https://www.npmjs.com/package/libfx) | The agent core as a JavaScript library, built as a native Node.js addon and as WebAssembly. `createFxAgent()` runs an agent with your own tools, and `createFxTerminal()` embeds the fx terminal. |
-
-The [libfx README](sdk/README.md) and the [libfx docs](https://fx.sh/docs/lib) cover the API. The WebAssembly build is experimental.
-
-## Examples
-
-[`examples/`](examples) has small libfx apps you can run with an AI Gateway API key:
-
-- [`node-chat`](examples/node-chat): a terminal chat with streamed replies.
-- [`browser-agent`](examples/browser-agent): the agent in WebAssembly behind a plain HTML form.
-- [`nextjs-agent`](examples/nextjs-agent): a Next.js App Router form with a streaming route handler.
-- [`nuxt-agent`](examples/nuxt-agent): the same idea in Nuxt, with a Nitro route.
 
 ## Documentation
 
-The manual lives at [fx.sh/docs](https://fx.sh/docs). It covers models, permissions, configuration, skills, MCP, sessions, and every CLI and slash command.
+The manual lives at [fx.sh/docs](https://fx.sh/docs). It covers models, permissions, configuration, skills, sessions, and every CLI and slash command.
 
 For agents, [fx.sh/llms.txt](https://fx.sh/llms.txt) lists every page as Markdown, and [fx.sh/llms-full.txt](https://fx.sh/llms-full.txt) puts the whole manual in one file. Adding `.md` to any docs URL returns that page as Markdown.
 
@@ -125,9 +112,6 @@ src/
   tools/      built-in tools: files, shell, web, skills, subagents
   ui/         terminal rendering and input
   gateway/    model provider transport
-  mcp/        MCP client
-  acp/        Agent Client Protocol server
-sdk/          libfx, the JavaScript library
 tests/        end-to-end tests and model evals
 benchmarks/   startup, memory, and latency benchmarks
 ```

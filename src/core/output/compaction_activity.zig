@@ -198,7 +198,7 @@ test "compaction activity failure retains error and publication provenance" {
     try std.testing.expectEqual(Outcome.failed, uncertain.outcome);
     try std.testing.expectEqual(Publication.uncertain, uncertain.publication);
     try std.testing.expectEqual(error.SessionPersistenceUncertain, uncertain.err.?);
-    // A cooperative host can cancel transport before queued input sets the worker flag.
+    // Transport can be cancelled before queued input sets the worker flag.
     try std.testing.expectEqual(Outcome.cancelled, failure(error.Cancelled, .summary, false).outcome);
     try std.testing.expectEqual(Outcome.cancelled, failure(error.Aborted, .publication, true).outcome);
     try std.testing.expectEqual(Outcome.failed, failure(error.Aborted, .publication, false).outcome);

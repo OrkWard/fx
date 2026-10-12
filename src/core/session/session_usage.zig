@@ -1360,7 +1360,7 @@ pub const Usage = struct {
     /// only updates the profile-level usage ledger. Tests keep the legacy
     /// synchronous flush so assertions stay deterministic.
     fn scheduleProfilePublicationDrain(self: *Usage) void {
-        if (builtin.is_test or comptime builtin.target.os.tag == .wasi) {
+        if (builtin.is_test) {
             self.flushProfilePublications();
             return;
         }
@@ -1394,7 +1394,7 @@ pub const Usage = struct {
     /// Stops the background profile-publication drain, joining any live worker.
     /// A later schedule starts a fresh worker.
     fn stopPublicationDrain(self: *Usage) void {
-        if (builtin.is_test or comptime builtin.target.os.tag == .wasi) return;
+        if (builtin.is_test) return;
         self.publication_drain_cancel.store(true, .seq_cst);
         self.publication_drain_mutex.lockUncancelable(io_mod.getIo());
         defer self.publication_drain_mutex.unlock(io_mod.getIo());

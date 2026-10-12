@@ -164,7 +164,7 @@ pub const EphemeralStore = struct {
         alloc: Allocator,
         stem: []const u8,
     ) !OpenSpool {
-        if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+        if (comptime builtin.target.os.tag == .windows) {
             return error.EphemeralReplayUnavailable;
         }
         const handle = try alloc.print("{s}.bin", .{stem});
@@ -214,7 +214,7 @@ pub const EphemeralStore = struct {
 /// A private temporary file in `temp_dir`, open for reading and writing and
 /// already unlinked, so it goes when its last handle closes.
 fn createUnlinkedFile(alloc: Allocator, temp_dir: []const u8, stem: []const u8) !std.Io.File {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.EphemeralReplayUnavailable;
     }
     const temp_name = try alloc.print(".{s}.tmp", .{stem});
@@ -240,7 +240,7 @@ fn createUnlinkedFile(alloc: Allocator, temp_dir: []const u8, stem: []const u8) 
 const blob_spool_dir = "/tmp";
 
 fn duplicateFile(file: std.Io.File) !std.Io.File {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.EphemeralReplayUnavailable;
     }
     const duplicated = std.c.fcntl(file.handle, std.c.F.DUPFD_CLOEXEC, @as(std.c.fd_t, 0));

@@ -2091,7 +2091,7 @@ test "TurnFinalizationGuard runs PostTurnEnd once for every terminal outcome and
         .{ .scope_kind = .interactive, .outcome = .completed, .disposition = .completed },
         .{ .scope_kind = .ask, .outcome = .interrupted, .disposition = null },
         .{ .scope_kind = .ask, .outcome = .paused, .disposition = null },
-        .{ .scope_kind = .acp, .outcome = .failed, .disposition = .length_limited },
+        .{ .scope_kind = .ask, .outcome = .failed, .disposition = .length_limited },
         .{ .scope_kind = .subagent, .outcome = .completed, .disposition = null },
     };
 

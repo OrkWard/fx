@@ -212,7 +212,7 @@ fn openExistingRegularFileWithPolicy(
     // read-only open accepts that snapshot as the check after the open does.
     try verifyOpenedRegularFileWithPolicy(initial, policy);
 
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         var file = try dir.openFile(getIo(), sub_path, .{
             .mode = policy.mode,
             .allow_directory = false,
@@ -305,7 +305,7 @@ fn makeFileBlocking(file: *std.Io.File) !void {
 }
 
 test "read-only regular files remain valid when atomic replacement unlinks the descriptor" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     const alloc = std.testing.allocator;
@@ -331,7 +331,7 @@ test "read-only regular files remain valid when atomic replacement unlinks the d
 }
 
 test "read-only opens accept a file that a concurrent atomic replacement unlinks" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     var tmp = std.testing.tmpDir(.{});
@@ -457,7 +457,7 @@ fn getenvFromBlock(block: std.process.Environ.Block, key: []const u8) ?[]const u
     if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .freestanding or builtin.target.os.tag == .other) {
         return null;
     }
-    if (comptime (builtin.target.os.tag == .wasi or builtin.target.os.tag == .emscripten) and !builtin.link_libc) {
+    if (comptime builtin.target.os.tag == .emscripten and !builtin.link_libc) {
         return null;
     }
 
@@ -1083,9 +1083,6 @@ pub fn dirRealpathAlloc(alloc: std.mem.Allocator, dir: std.Io.Dir, sub_path: []c
         const joined = try std.Io.Dir.path.join(alloc, &.{ dir_path, sub_path });
         defer alloc.free(joined);
         return realpathAlloc(alloc, joined);
-    } else if (comptime builtin.target.os.tag == .wasi) {
-        if (std.Io.Dir.path.isAbsolute(sub_path)) return alloc.dupe(u8, sub_path);
-        return std.Io.Dir.path.resolveAlloc(alloc, &.{sub_path});
     } else {
         @compileError("dirRealpathAlloc not implemented for this OS");
     }

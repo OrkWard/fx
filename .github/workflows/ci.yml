@@ -5,11 +5,6 @@ name: CI
 
 on:
   workflow_dispatch:
-    inputs:
-      acp_live:
-        description: Also run the full ACP suite with live model calls
-        type: boolean
-        default: false
   push:
     branches: [main]
   pull_request:
@@ -72,20 +67,18 @@ jobs:
           cache-key: ${{ steps.zig.outputs.cache-key }}
           cache-hit: ${{ steps.zig.outputs.cache-hit }}
 
-  # The SDK jobs are part of this required check because Publish libfx relies
-  # on them instead of rerunning the package qualification before publishing.
   zig:
     name: Build & Test
     if: ${{ always() }}
-    needs: [zig_mode, sdk-node-wasm, sdk-node-napi, sdk-bun, sdk-browser-wasm]
+    needs: [zig_mode]
     runs-on: ubuntu-latest
     steps:
-      - name: Require unit tests and every SDK job
+      - name: Require unit tests
         env:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
           printf '%s\n' "$RESULTS"
-          jq -e 'length == 5 and all(.[]; . == "success")' <<<"$RESULTS"
+          jq -e 'length == 1 and all(.[]; . == "success")' <<<"$RESULTS"
 
   build:
     name: Build fx (ReleaseSafe)
@@ -126,367 +119,6 @@ jobs:
         with:
           cache-key: ${{ steps.zig.outputs.cache-key }}
           cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
-  sdk-wasm:
-    name: SDK build (WASM)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-sdk-wasm
-
-      - name: Build WASM surfaces (ReleaseSmall)
-        run: |
-          zig build fx-core-wasm -Dwasm-surface=core -Doptimize=ReleaseSmall
-          zig build fx-term-wasm -Dwasm-surface=term -Doptimize=ReleaseSmall
-
-      - name: Share WASM surfaces with SDK jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: sdk-wasm
-          path: |
-            zig-out/bin/fx-core.wasm
-            zig-out/bin/fx-term.wasm
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Save Zig cache
-        uses: ./.github/actions/save-zig-cache
-        with:
-          cache-key: ${{ steps.zig.outputs.cache-key }}
-          cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
-  sdk-napi:
-    name: SDK build (N-API, ${{ matrix.platform }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x64
-            target_flags: -Dtarget=x86_64-linux-gnu.2.34 -Dcpu=baseline
-          - platform: linux-arm64
-            target_flags: -Dtarget=aarch64-linux-gnu.2.34 -Dcpu=baseline
-          - platform: darwin-x64
-            target_flags: -Dtarget=x86_64-macos -Dcpu=baseline
-          - platform: darwin-arm64
-            target_flags: -Dtarget=aarch64-macos -Dcpu=baseline
-    steps:
-      - uses: actions/checkout@v4
-
-      # build.zig locates node_api.h through the node on PATH.
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-sdk-napi-${{ matrix.platform }}
-
-      - name: Build N-API addon (ReleaseSafe)
-        run: |
-          zig build libfx-napi -Dnapi-surface=core -Doptimize=ReleaseSafe ${{ matrix.target_flags }}
-          mkdir -p native-addons
-          cp zig-out/lib/libfx.node native-addons/libfx.${{ matrix.platform }}.node
-
-      - name: Share the addon with SDK jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: sdk-napi-${{ matrix.platform }}
-          path: native-addons/libfx.${{ matrix.platform }}.node
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Save Zig cache
-        uses: ./.github/actions/save-zig-cache
-        with:
-          cache-key: ${{ steps.zig.outputs.cache-key }}
-          cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
-  sdk-node-wasm:
-    name: SDK (Node + WASM)
-    needs: sdk-wasm
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Download WASM surfaces
-        uses: actions/download-artifact@v4
-        with:
-          name: sdk-wasm
-          path: zig-out/bin
-
-      - name: Install terminal test dependencies
-        run: npm ci --prefix sdk/node
-
-      - name: Install the durable Worlds
-        run: npm ci --prefix sdk/durable
-
-      - name: Test Node + WASM
-        run: npm run --prefix sdk test:node-wasm
-
-      - name: Test libfx Wasm integrations
-        run: |
-          node --experimental-wasm-jspi sdk/tests/test-host-tools.mjs wasm
-          node --experimental-wasm-jspi sdk/tests/test-host-tool-cancel.mjs wasm
-          node --experimental-wasm-jspi sdk/tests/test-mcp-adapter.mjs http wasm
-          node --experimental-wasm-jspi sdk/tests/test-skills-adapter.mjs host wasm
-
-      - name: Test durable sessions on Wasm
-        run: |
-          node --experimental-wasm-jspi sdk/tests/test-durable.mjs memory wasm
-          node --experimental-wasm-jspi sdk/tests/test-durable.mjs local wasm
-          node --experimental-wasm-jspi sdk/tests/test-durable-provider-crash.mjs wasm
-
-      - name: Type-check the TypeScript declarations
-        run: node sdk/tests/test-types.mjs
-
-  sdk-node-napi:
-    name: SDK (Node + N-API)
-    needs: sdk-napi
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Download Linux addon
-        uses: actions/download-artifact@v4
-        with:
-          name: sdk-napi-linux-x64
-          path: native-addons
-
-      - name: Install the addon
-        run: |
-          mkdir -p zig-out/lib
-          cp native-addons/libfx.linux-x64.node zig-out/lib/libfx.node
-
-      - name: Test Node + N-API
-        run: npm run --prefix sdk test:node-napi
-
-      - name: Test minimal native integrations
-        run: |
-          node sdk/tests/test-minimal-api.mjs
-          node sdk/tests/test-host-tools.mjs native
-          node sdk/tests/test-host-tool-cancel.mjs native
-          node sdk/tests/test-mcp-adapter.mjs stdio native
-          node sdk/tests/test-skills-adapter.mjs disk native
-
-      - name: Install the durable Worlds
-        run: npm ci --prefix sdk/durable
-
-      - name: Test durable sessions on N-API
-        run: |
-          node sdk/tests/test-durable.mjs memory native
-          node sdk/tests/test-durable.mjs local native
-          node sdk/tests/test-durable.mjs world native
-          node sdk/tests/test-durable-provider-crash.mjs native
-          node sdk/tests/test-durable-core.mjs memory
-          node sdk/tests/test-durable-core.mjs local
-          node sdk/tests/test-durable-core.mjs world
-
-  sdk-bun:
-    name: SDK (Bun + N-API/WASM)
-    needs: [sdk-wasm, sdk-napi]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.2"
-
-      - name: Download WASM surfaces
-        uses: actions/download-artifact@v4
-        with:
-          name: sdk-wasm
-          path: zig-out/bin
-
-      - name: Download native addons
-        uses: actions/download-artifact@v4
-        with:
-          pattern: sdk-napi-*
-          path: native-addons
-          merge-multiple: true
-
-      - name: Install the Linux addon
-        run: |
-          mkdir -p zig-out/lib
-          cp native-addons/libfx.linux-x64.node zig-out/lib/libfx.node
-
-      - name: Install terminal test dependencies
-        run: npm ci --prefix sdk/node
-
-      - name: Install the durable Worlds
-        run: npm ci --prefix sdk/durable
-
-      - name: Test Bun + N-API
-        run: bun sdk/tests/test-node-napi.mjs
-
-      - name: Test Bun + WASM
-        run: bun sdk/tests/test-node-wasm.mjs
-
-      - name: Test Bun benchmark path
-        run: |
-          bun sdk/tests/test-libfx-benchmark.mjs
-          bun sdk/tests/test-durable-harness.mjs
-
-      - name: Test durable sessions on Bun
-        run: |
-          bun sdk/tests/test-durable.mjs memory native
-          bun sdk/tests/test-durable.mjs local native
-          bun sdk/tests/test-durable-core.mjs memory
-          bun sdk/tests/test-durable-core.mjs local
-
-      - name: Model-check durable sessions and drive the code along the model
-        run: |
-          set -euo pipefail
-          jar="$RUNNER_TEMP/tla2tools.jar"
-          curl -fsSL -o "$jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
-          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $jar" | sha256sum -c -
-          TLA2TOOLS_JAR="$jar" sdk/tests/model/check.sh
-          bun sdk/tests/model/drive.mjs send --walks 40
-          bun sdk/tests/model/drive.mjs lookup --walks 40 --seed 7
-          bun sdk/tests/model/drive.mjs send --walks 20 --seed 3 --durability world
-          bun sdk/tests/model/drive.mjs lookup --walks 20 --seed 9 --durability world
-          bun sdk/tests/model/drive.mjs cutoff --walks 20 --seed 5
-          bun sdk/tests/model/drive.mjs leased --walks 40 --seed 12
-
-      - name: Test libfx on a World
-        run: |
-          # The World libfx bundles, installed above from its lockfile.
-          world_root=sdk/durable
-          node sdk/tests/test-world-persistence.mjs "$world_root" native
-          node --experimental-wasm-jspi sdk/tests/test-world-persistence.mjs "$world_root" wasm
-          bun sdk/tests/test-world-persistence.mjs "$world_root" native
-          bun sdk/tests/test-world-persistence.mjs "$world_root" wasm
-
-      - name: Test Bun cross-backend integrations
-        run: |
-          bun sdk/tests/test-agent-bootstrap.mjs auto
-          bun sdk/tests/test-checkpoint.mjs native wasm
-          bun sdk/tests/test-checkpoint.mjs wasm native
-          bun sdk/tests/test-journal.mjs native wasm
-          bun sdk/tests/test-journal.mjs wasm native
-          bun sdk/tests/test-tool-contract.mjs native
-          bun sdk/tests/test-tool-contract.mjs wasm
-          bun sdk/tests/test-host-tools.mjs native
-          bun sdk/tests/test-host-tools.mjs wasm
-          bun sdk/tests/test-host-tool-cancel.mjs native
-          bun sdk/tests/test-host-tool-cancel.mjs wasm
-          bun sdk/tests/test-mcp-adapter.mjs stdio native
-          bun sdk/tests/test-mcp-adapter.mjs http wasm
-          bun sdk/tests/test-skills-adapter.mjs disk native
-          bun sdk/tests/test-skills-adapter.mjs host wasm
-
-      - name: Check Linux addon compatibility
-        run: |
-          python3 sdk/tests/test-linux-abi.py
-          python3 sdk/scripts/check-linux-abi.py zig-out/lib/libfx.node
-          docker run --rm --network none --entrypoint /bin/bash \
-            --volume "$PWD:/workspace:ro" --workdir /workspace \
-            public.ecr.aws/lambda/nodejs@sha256:2472f0273d8848d8b2aa6528f5526b8a514b70703596199efe5a4b84d3d59b0b -euc '
-              node sdk/tests/test-native-core-ready.mjs
-              node sdk/tests/test-host-tools.mjs native
-              node sdk/tests/test-host-tool-cancel.mjs native
-            '
-
-      - name: Test Node package and backend diagnostics
-        run: |
-          node --experimental-wasm-jspi sdk/tests/test-backend-info.mjs
-          node --experimental-wasm-jspi sdk/tests/test-node-bundled-assets.mjs
-          node sdk/tests/test-node-package.mjs
-          node sdk/tests/test-term-demo-package.mjs
-          node sdk/scripts/package-libfx.mjs sdk/dist/libfx native-addons/libfx.linux-x64.node native-addons/libfx.linux-arm64.node native-addons/libfx.darwin-x64.node native-addons/libfx.darwin-arm64.node
-          node --experimental-wasm-jspi sdk/tests/test-node-async-assets.mjs sdk/dist/libfx
-          npm pack ./sdk/dist/libfx --ignore-scripts --json > /tmp/libfx-pack.json
-          mv "$(node -p 'require("/tmp/libfx-pack.json")[0].filename')" /tmp/libfx-package.tgz
-          node sdk/tests/test-packed-example.mjs /tmp/libfx-package.tgz native esm
-          node --no-experimental-require-module sdk/tests/test-packed-example.mjs /tmp/libfx-package.tgz native cjs
-          node --experimental-wasm-jspi sdk/tests/test-packed-example.mjs /tmp/libfx-package.tgz wasm esm
-          node --experimental-wasm-jspi --no-experimental-require-module sdk/tests/test-packed-example.mjs /tmp/libfx-package.tgz wasm cjs
-
-      - name: Test package recovery and lifecycle boundaries
-        run: |
-          node sdk/tests/test-package-resilience.mjs --package /tmp/libfx-package.tgz \
-            --cheap-cycles 100 --tool-workflows 20 --duration-ms 5000 --concurrency 4 \
-            --json-out "${{ runner.temp }}/libfx-package-evidence/resilience.json"
-
-      - name: Install Next fixture package manager
-        run: npm install --global pnpm@11.1.1
-
-      - name: Test installed package through Next
-        env:
-          LIBFX_TEST_ARTIFACT_ROOT: ${{ runner.temp }}/libfx-package-evidence
-        run: |
-          node sdk/tests/test-next-package.mjs /tmp/libfx-package.tgz
-          node sdk/tests/test-next-package.mjs /tmp/libfx-package.tgz --webpack
-          node sdk/tests/test-next-package.mjs /tmp/libfx-package.tgz --next15
-
-      - name: Retain package qualification evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: libfx-next-package-evidence
-          path: |
-            ${{ runner.temp }}/libfx-package-evidence/resilience.json
-            ${{ runner.temp }}/libfx-package-evidence/libfx-next-*/*.log
-            ${{ runner.temp }}/libfx-package-evidence/libfx-next-*/results.json
-            ${{ runner.temp }}/libfx-package-evidence/libfx-trace-*/*.log
-            ${{ runner.temp }}/libfx-package-evidence/libfx-trace-*/results.json
-          if-no-files-found: ignore
-
-  sdk-browser-wasm:
-    name: SDK (Browser + WASM)
-    needs: sdk-wasm
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Chrome
-        id: setup-chrome
-        uses: browser-actions/setup-chrome@v2
-
-      - name: Download WASM surfaces
-        uses: actions/download-artifact@v4
-        with:
-          name: sdk-wasm
-          path: zig-out/bin
-
-      - name: Test Browser + WASM
-        env:
-          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
-        run: npm run --prefix sdk test:browser-wasm
 
   e2e_mode:
     name: E2E (deterministic, shard ${{ matrix.shard.label }})
@@ -607,76 +239,17 @@ jobs:
           cache-key: ${{ steps.zig.outputs.cache-key }}
           cache-hit: ${{ steps.zig.outputs.cache-hit }}
 
-  e2e_conformance:
-    name: E2E (MCP conformance)
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      AI_GATEWAY_API_KEY: ""
-      VERCEL_OIDC_TOKEN: ""
-      FX_SOUND: "0"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download fx
-        uses: actions/download-artifact@v4
-        with:
-          name: fx-linux-x86_64
-          path: zig-out/bin
-
-      - name: Restore executable mode
-        run: chmod +x zig-out/bin/fx
-
-      # The client-request-state scenario builds a Zig dispatcher fixture.
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-mcp-fixtures
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install E2E dependencies
-        run: bun install --frozen-lockfile
-        working-directory: tests/e2e
-
-      - name: Install isolated MCP conformance package
-        run: npm ci
-        working-directory: tests/e2e/conformance
-
-      - name: Run isolated MCP conformance baseline
-        run: npm test
-        working-directory: tests/e2e/conformance
-
-      - name: Save Zig cache
-        uses: ./.github/actions/save-zig-cache
-        with:
-          cache-key: ${{ steps.zig.outputs.cache-key }}
-          cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
   e2e:
     name: E2E (deterministic)
     if: ${{ always() }}
-    needs: [e2e_mode, e2e_conformance]
+    needs: [e2e_mode]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every shard and the conformance baseline
+      - name: Require every shard
         env:
           SHARD_RESULT: ${{ needs.e2e_mode.result }}
-          CONFORMANCE_RESULT: ${{ needs.e2e_conformance.result }}
         run: |
           test "$SHARD_RESULT" = success
-          test "$CONFORMANCE_RESULT" = success
 
   lint-scripts:
     name: Shellcheck
@@ -700,34 +273,3 @@ jobs:
           done
           shellcheck "${scripts[@]}"
 
-  e2e_acp_live:
-    name: E2E ACP (live models)
-    if: github.event_name == 'workflow_dispatch' && inputs.acp_live
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-unit-ReleaseSafe
-
-      - name: Build
-        run: zig build -Doptimize=ReleaseSafe
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
-
-      - name: Install e2e deps
-        run: bun install
-        working-directory: tests/e2e
-
-      - name: Run full ACP tests
-        run: bun test acp.test.ts
-        working-directory: tests/e2e
-        env:
-          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}

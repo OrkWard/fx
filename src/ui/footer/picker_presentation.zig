@@ -800,7 +800,7 @@ pub noinline fn composePickerOptionRowAnnotated(
     // brightness alone, like the question panel; other pickers keep the filled row.
     const selected_style = switch (kind) {
         .model_stage, .provider_stage, .models => ui_render.selected_completion_style,
-        .file, .slash, .skills, .help, .settings, .sessions, .mcp, .auth => ui_render.approval_button_inactive_style,
+        .file, .slash, .skills, .help, .settings, .sessions, .auth => ui_render.approval_button_inactive_style,
     };
     const base_style = if (selected) selected_style else ui_render.dim_style;
     const available = width_usize - @as(usize, start_col - 1);
@@ -908,7 +908,6 @@ pub fn composePickerStatusRowWithProvider(
         .help => "no matching commands",
         .settings => "no matching settings",
         .sessions => "no matching sessions",
-        .mcp => "no MCP items available",
         .auth => "authentication actions unavailable",
     };
 
@@ -1510,7 +1509,7 @@ const picker_test_slash_specs = [_]command_specs.SlashSpec{
     .{ .kind = .help, .command = "/help", .help_entry = "/help", .completion_description = "show available slash commands", .presentation_category = .general },
     .{ .kind = .clear_screen, .command = "/clear", .help_entry = "/clear", .completion_description = "clear the terminal transcript", .presentation_category = .general },
     .{ .kind = .model, .command = "/model", .help_entry = "/model <id-or-query>", .completion_description = "choose what model and reasoning effort to use", .presentation_category = .model, .has_args = true },
-    .{ .kind = .mcp, .command = "/mcp", .help_entry = "/mcp [list|resource|prompt|add|remove]", .completion_description = "manage MCP servers, resources, and prompts", .presentation_category = .extensions, .has_args = true },
+    .{ .kind = .skills, .command = "/mod", .help_entry = "/mod [list|resource|prompt|add|remove]", .completion_description = "manage mod servers, resources, and prompts", .presentation_category = .extensions, .has_args = true },
     .{ .kind = .permissions, .command = "/permissions", .help_entry = "/permissions [ask|auto|remember|revoke|full-access|reset]", .completion_description = "choose permission behavior", .presentation_category = .security, .has_args = true },
     .{ .kind = .credits, .command = "/credits", .aliases = &.{"/balance"}, .help_entry = "/credits (/balance)", .completion_description = "show gateway credits balance", .presentation_category = .account },
     .{ .kind = .settings, .command = "/settings", .help_entry = "/settings", .completion_description = "configure fx", .presentation_category = .general },

@@ -349,8 +349,8 @@ pub const Runtime = struct {
         };
     }
 
-    /// Loads the catalog inline for cooperative single-threaded hosts.
-    pub fn loadCooperative(
+    /// Loads the catalog inline on the calling thread.
+    pub fn loadInline(
         self: *Self,
         provider: model_catalog.Provider,
         access: credentials.CatalogAccess,
@@ -1028,12 +1028,12 @@ test "model cache expires successful catalogs only when the provider requests re
         var source = AuthChangeCatalog{ .model_id = "first" };
         var provider = source.provider();
         provider.refresh_interval_ms = if (expires) 60_000 else null;
-        runtime.loadCooperative(provider, .{ .public_only = .no_credential });
+        runtime.loadInline(provider, .{ .public_only = .no_credential });
         source.model_id = "new-release";
-        runtime.loadCooperative(provider, .{ .public_only = .no_credential });
+        runtime.loadInline(provider, .{ .public_only = .no_credential });
         try std.testing.expectEqual(@as(usize, 1), source.calls);
         runtime.last_attempt_ms -= 60_000;
-        runtime.loadCooperative(provider, .{ .public_only = .no_credential });
+        runtime.loadInline(provider, .{ .public_only = .no_credential });
         try std.testing.expectEqual(@as(usize, if (expires) 2 else 1), source.calls);
         try std.testing.expectEqualStrings(if (expires) "new-release" else "first", runtime.catalog.items[0].id);
     }
@@ -1065,7 +1065,7 @@ test "model cache clears an old failure after a clean empty refresh" {
     try std.testing.expectEqualStrings("public/original", snapshot.items[0]);
 }
 
-test "cooperative model cache retries a ready catalog after a retryable fallback failure" {
+test "inline model cache load retries a ready catalog after a retryable fallback failure" {
     var runtime = Runtime.init(std.testing.allocator, "/v1/models");
     defer runtime.deinit();
     runtime.catalog = try testCatalog(std.testing.allocator, "public/original");
@@ -1082,7 +1082,7 @@ test "cooperative model cache retries a ready catalog after a retryable fallback
     runtime.last_attempt_ms = io_mod.milliTimestamp() - 1000;
 
     var provider = AuthChangeCatalog{ .model_id = "public/refreshed" };
-    runtime.loadCooperative(provider.provider(), .{ .public_only = .no_credential });
+    runtime.loadInline(provider.provider(), .{ .public_only = .no_credential });
 
     try std.testing.expectEqual(@as(usize, 1), provider.calls);
     try std.testing.expect(runtime.outcome.last_failure == null);

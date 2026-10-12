@@ -3121,14 +3121,14 @@ test "semantic notice topics never render the tool-activity bullet or forced cap
     const alloc = std.testing.allocator;
     for ([_]types.NoticeTone{ .neutral, .information, .success, .warning, .@"error", .cancelled }) |tone| {
         const rendered = try renderSemanticNotice(alloc, .{
-            .topic = "mcp",
+            .topic = "hook",
             .tone = tone,
             .body = "body",
         }, .{}, 80);
         defer alloc.free(rendered);
         try std.testing.expect(std.mem.find(u8, rendered, "●") == null);
-        try std.testing.expect(std.mem.find(u8, rendered, "Mcp") == null);
-        try std.testing.expect(std.mem.find(u8, rendered, "mcp:") != null);
+        try std.testing.expect(std.mem.find(u8, rendered, "Hook") == null);
+        try std.testing.expect(std.mem.find(u8, rendered, "hook:") != null);
     }
 }
 

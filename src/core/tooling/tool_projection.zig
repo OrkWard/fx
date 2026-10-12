@@ -271,7 +271,7 @@ const test_skill = blk: {
 const test_capability_search = blk: {
     var spec = test_skill;
     spec.name = "capability_search";
-    spec.description = "Test capability search. When to use: discover skill and MCP metadata together. When NOT to use: load or execute a match.";
+    spec.description = "Test capability search. When to use: discover skill metadata. When NOT to use: load or execute a match.";
     spec.model_schema = .{
         .name = "capability_search",
         .description = spec.description,
@@ -315,31 +315,6 @@ const test_subagent = blk: {
     spec.completed_action_label = "Managed";
     spec.label_arg_kind = .none;
     spec.label_arg_default = "subagent";
-    break :blk spec;
-};
-
-const test_mcp_select_tool = blk: {
-    var spec = test_skill;
-    spec.name = "mcp_select_tool";
-    spec.description = "Test MCP selection. When to use: exercise deferred MCP projection. When NOT to use: assert product-specific MCP guidance.";
-    spec.model_schema = .{
-        .name = "mcp_select_tool",
-        .description = spec.description,
-        .input_schema = .{
-            .properties = &.{
-                .{ .name = "name", .json_type = .string },
-            },
-            .required = &.{"name"},
-        },
-    };
-    spec.executor_kind = .mcp_select_tool;
-    spec.activity_kind = .read;
-    spec.requires_approval = false;
-    spec.action_label = "Selecting MCP tool";
-    spec.completed_action_label = "Selected MCP tool";
-    spec.label_arg_kind = .name;
-    spec.label_arg_default = "dynamic tool";
-    spec.permission_target_kind = .none;
     break :blk spec;
 };
 
@@ -454,7 +429,6 @@ const test_all_tools = [_]tool_dispatch.Tool{
     test_skill,
     test_install_skill,
     test_subagent,
-    test_mcp_select_tool,
     test_ask_user_question,
     test_vision,
     test_read_tool_result,
@@ -471,7 +445,6 @@ const test_order = [_][]const u8{
     "capability_search",
     "skill",
     "install_skill",
-    "mcp_select_tool",
     "ask_user_question",
     "web_fetch",
     "web_search",
@@ -762,12 +735,11 @@ test "effective tool projection cleans up every partial allocation failure" {
     );
 }
 
-test "base tool projection includes MCP discovery and explicit selection" {
+test "base tool projection includes capability search" {
     const alloc = std.testing.allocator;
     var projection = try buildTestModelToolProjection(alloc, .{});
     defer projection.deinit(alloc);
     try expectContainsName(projection.advertised_names, "capability_search");
-    try expectContainsName(projection.advertised_names, "mcp_select_tool");
 }
 
 test "subagent and shell selection follow host capability" {

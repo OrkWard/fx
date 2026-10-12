@@ -21,7 +21,7 @@ pub fn ToolRegistry(comptime Tool: type) type {
 /// A completion for a command's arguments that only the running app knows,
 /// such as a server name.
 pub const ArgumentCompletion = struct {
-    /// The whole input it completes to, such as "/mcp show context7".
+    /// The whole input it completes to, such as "/model gpt-5".
     full: []const u8,
     description: ?[]const u8 = null,
 };

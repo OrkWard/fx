@@ -107,7 +107,6 @@ test('installs through a real loopback POST, validates PKCE, and saves only bot 
   expect(status.code).toBe(0);
   expect(status.stdout).not.toContain(access);
   expect(f.calls).toHaveLength(2);
-  expect(existsSync(join(f.home, '.fx/mcp'))).toBe(false);
 }, 20000);
 
 test('wrong origin and mismatched state cannot consume the waiting CLI transaction', async () => {

@@ -20,7 +20,7 @@ const INITIAL_OR_RUNNABLE_PROMPTS = [
   "Find where slash commands are defined.",
   "Find every use of command policy.",
   "Investigate how command policy is wired in this repo.",
-  "What does the MCP feature do in this repo?",
+  "What does the hooks feature do in this repo?",
   "Investigate how the current GitHub repo changelog works; do not ask me for my GitHub handle.",
   "Read https://github.com/vercel-labs/fx/pull/57 comments, and if gh is missing or unauthenticated report the blocker.",
   "Remove either the logs directory or the session cache, whichever you think is safer.",
@@ -40,7 +40,6 @@ const INITIAL_OR_RUNNABLE_PROMPTS = [
   "Large command output is needed later.",
   "Summarize https://example.com/docs from that exact URL.",
   "Research current Zig 0.17 HTTP client behavior on the web.",
-  "Use a specialized MCP tool for creating a GitHub issue.",
   "I changed tests/evals/agent-quality-matrix.test.ts. Pick and run the focused verification for that change, not a broad suite.",
   "For the current changes, choose focused verification instead of generic command spam.",
 ] as const;
@@ -173,7 +172,7 @@ describe("agent quality baseline matrix", () => {
     const changelog = matrixRowById("github-changelog-local-first");
     const commandPolicy = matrixRowById("command-policy-usage-search");
     const commandPolicyProgress = matrixRowById("command-policy-progress-stop-summary");
-    const mcpConcept = matrixRowById("unfamiliar-feature-inspect-before-question");
+    const featureConcept = matrixRowById("unfamiliar-feature-inspect-before-question");
     const largeOutput = matrixRowById("large-output-retained");
 
     expect(slashCommand?.expectedFirstTool.tools).toEqual([
@@ -207,8 +206,8 @@ describe("agent quality baseline matrix", () => {
       "web_search",
     ]);
 
-    expect(mcpConcept?.expectedFirstTool.tools).toContain("glob_files");
-    expect(mcpConcept?.targetResult).toContain("local inspection");
+    expect(featureConcept?.expectedFirstTool.tools).toContain("glob_files");
+    expect(featureConcept?.targetResult).toContain("local inspection");
 
     expect(largeOutput?.failureCategory).toBe("large output");
     expect(largeOutput?.targetResult).toContain("handle or limitation");
@@ -384,17 +383,4 @@ describe("agent quality baseline matrix", () => {
     expect(firstToolMatchesExpectation(githubMetadata!, { name: "web_fetch" })).toBe(false);
   });
 
-  test("covers deferred MCP tool discovery", () => {
-    const row = matrixRowById("mcp-deferred-tool-discovery");
-
-    expect(row?.expectedFirstTool.tools).toEqual(["capability_search"]);
-    expect(firstToolMatchesExpectation(row!, { name: "capability_search" })).toBe(true);
-    expect(firstToolMatchesExpectation(row!, { name: "mcp_select_tool" })).toBe(false);
-    expect(forbiddenToolsUsed(row!, [
-      { name: "capability_search" },
-      { name: "web_search" },
-      { name: "ask_user_question" },
-    ])).toEqual(["web_search", "ask_user_question"]);
-    expect(row?.targetResult).toContain("exact-selects");
-  });
 });

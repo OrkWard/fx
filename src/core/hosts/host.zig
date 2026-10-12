@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const wasm = @import("wasm.zig");
 
 pub const TerminalSupport = enum {
     unsupported,
@@ -237,22 +236,7 @@ pub const Clipboard = struct {
 };
 
 pub fn current() Capabilities {
-    return capabilitiesForTarget(builtin.target.cpu.arch, builtin.target.os.tag);
-}
-
-fn capabilitiesForTarget(
-    arch: std.Target.Cpu.Arch,
-    os_tag: std.Target.Os.Tag,
-) Capabilities {
-    if (wasm.isTarget(arch)) {
-        return .{
-            .process_control = wasm.process_control,
-            .url_open = false,
-            .native_url_open = false,
-            .terminal = terminalSupportForOs(os_tag),
-        };
-    }
-    return nativeForOs(os_tag);
+    return nativeForOs(builtin.target.os.tag);
 }
 
 pub fn terminalSupportForOs(os_tag: std.Target.Os.Tag) TerminalSupport {
@@ -274,10 +258,7 @@ pub fn nativeForOs(os_tag: std.Target.Os.Tag) Capabilities {
 /// Returns an owned description of the current operating system. The caller
 /// owns the returned slice and must free it with `alloc`.
 pub fn operatingSystemText(alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
-    if (comptime wasm.isTarget(builtin.target.cpu.arch)) {
-        return wasm.operatingSystemText(alloc, builtin.target.os.tag);
-    }
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return alloc.dupe(u8, @tagName(builtin.target.os.tag));
     }
 
@@ -360,20 +341,6 @@ test "native host capabilities expose process and URL support" {
     );
 }
 
-test "host boundary routes WebAssembly targets to WASM capabilities" {
-    const emscripten = capabilitiesForTarget(.wasm32, .emscripten);
-    try std.testing.expect(!emscripten.process_control);
-    try std.testing.expect(!emscripten.url_open);
-    try std.testing.expect(!emscripten.native_url_open);
-    try std.testing.expectEqual(TerminalSupport.unsupported, emscripten.terminal);
-
-    const wasi = capabilitiesForTarget(.wasm64, .wasi);
-    try std.testing.expect(!wasi.process_control);
-    try std.testing.expect(!wasi.url_open);
-    try std.testing.expect(!wasi.native_url_open);
-    try std.testing.expectEqual(TerminalSupport.unsupported, wasi.terminal);
-}
-
 test "unavailable URL opener keeps the manual fallback available" {
     try std.testing.expect(!try unavailable_url_opener.open(
         std.testing.allocator,
@@ -401,7 +368,7 @@ test "current host describes its operating system" {
     defer std.testing.allocator.free(text);
 
     try std.testing.expect(text.len > 0);
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         try std.testing.expectEqualStrings(@tagName(builtin.target.os.tag), text);
     }
 }

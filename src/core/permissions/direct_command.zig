@@ -227,7 +227,7 @@ fn executeDirectReadOnlyWithLimitAndTestControls(
             .stdin = if (child_count == 0) .ignore else .pipe,
             .stdout = .pipe,
             .stderr = .pipe,
-            .pgid = if (builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi)
+            .pgid = if (builtin.target.os.tag != .windows)
                 (if (child_count == 0) 0 else group_id)
             else
                 null,
@@ -238,7 +238,7 @@ fn executeDirectReadOnlyWithLimitAndTestControls(
             };
         };
         children[child_count] = child;
-        if (child_count == 0 and builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) {
+        if (child_count == 0 and builtin.target.os.tag != .windows) {
             group_id = child.id;
         }
         if (test_controls.after_spawn) |after_spawn| {
@@ -749,7 +749,7 @@ fn deadlineExpired(cfg: command_runner.Config) bool {
 }
 
 fn signalGroup(group_id: ?std.posix.pid_t, force: bool) void {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
     const pid = group_id orelse return;
     std.posix.kill(-pid, if (force) std.posix.SIG.KILL else std.posix.SIG.TERM) catch |err| switch (err) {
         error.ProcessNotFound => {},

@@ -10,7 +10,7 @@
 //! - entries are only added: one repeated word for word is left out, and one
 //!   whose ID is taken is kept under the next free ID.
 //! lint.zig then checks what the notes and entries say.
-//! It also lists, from the tool calls alone, the skills and MCP tools used,
+//! It also lists, from the tool calls alone, the skills used,
 //! and finds the sentences of the user's messages that may set rules, so the
 //! model files them instead of relying on its own recall.
 
@@ -797,14 +797,14 @@ fn itemId(line: []const u8) ?[]const u8 {
     return rest[0..digits];
 }
 
-/// One tool call, as the list of skills and MCP tools reads it.
+/// One tool call, as the list of skills reads it.
 pub const Call = struct {
     number: usize,
     name: []const u8,
     arguments: []const u8,
 };
 
-/// `earlier` with the skills and MCP tools that `calls` used added, each
+/// `earlier` with the skills that `calls` used added, each
 /// counted, in the order first used. `arena` owns the result.
 pub fn addUsed(arena: Allocator, earlier: []const checkpoint.Used, calls: []const Call) Allocator.Error![]const checkpoint.Used {
     var list: std.ArrayList(checkpoint.Used) = .empty;
@@ -829,23 +829,13 @@ pub fn addUsed(arena: Allocator, earlier: []const checkpoint.Used, calls: []cons
 
 const Found = struct { kind: checkpoint.Used.Kind, name: []const u8 };
 
-/// The skill or MCP tool a call used: a `skill` call's location (and
-/// resource), an MCP tool by its name, or an `mcp_features` call by its
-/// server and action.
+/// The skill a call used: a `skill` call's location (and resource).
 fn usedBy(arena: Allocator, call: Call) Allocator.Error!?Found {
     if (std.mem.eql(u8, call.name, "skill")) {
         const location = try stringArgument(arena, call.arguments, "location") orelse return null;
         const resource = try stringArgument(arena, call.arguments, "resource") orelse "";
         const name = if (resource.len == 0) location else try arena.print("{s} {s}", .{ location, resource });
         return .{ .kind = .skill, .name = name };
-    }
-    if (std.mem.eql(u8, call.name, "mcp_features")) {
-        const server = try stringArgument(arena, call.arguments, "server") orelse "";
-        const action = try stringArgument(arena, call.arguments, "action") orelse "";
-        return .{ .kind = .mcp, .name = try arena.print("mcp_features {s} {s}", .{ server, action }) };
-    }
-    if (std.mem.startsWith(u8, call.name, "mcp_") and !std.mem.eql(u8, call.name, "mcp_select_tool")) {
-        return .{ .kind = .mcp, .name = try arena.dupe(u8, call.name) };
     }
     return null;
 }
@@ -1014,32 +1004,23 @@ test "a reply in none of the asked form becomes the newest turn's notes" {
     try testing.expectEqual(@as(usize, 1), misplaced.unknown);
 }
 
-test "skills and MCP tools are listed from their calls, counted in the order first used" {
+test "skills are listed from their calls, counted in the order first used" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const earlier = [_]checkpoint.Used{.{ .kind = .skill, .name = "skill:ab:4/fx-conventions", .first_tool = 2, .last_tool = 2 }};
     const calls = [_]Call{
         .{ .number = 7, .name = "read_file", .arguments = "{\"path\":\"a.zig\"}" },
-        .{ .number = 8, .name = "mcp_linear_list_issues", .arguments = "{}" },
         .{ .number = 9, .name = "skill", .arguments = "{\"location\":\"skill:ab:4/fx-conventions\"}" },
-        .{ .number = 10, .name = "mcp_select_tool", .arguments = "{\"name\":\"mcp_linear_get_issue\"}" },
-        .{ .number = 11, .name = "mcp_linear_list_issues", .arguments = "{\"team\":\"fx\"}" },
-        .{ .number = 12, .name = "mcp_features", .arguments = "{\"action\":\"resource_read\",\"server\":\"linear\"}" },
         .{ .number = 13, .name = "skill", .arguments = "{\"location\":\"skill:ab:4/zig\",\"resource\":\"references/io.md\"}" },
         .{ .number = 14, .name = "skill", .arguments = "not json" },
     };
     const used = try addUsed(arena, &earlier, &calls);
-    try testing.expectEqual(@as(usize, 4), used.len);
+    try testing.expectEqual(@as(usize, 2), used.len);
     try testing.expectEqual(@as(usize, 2), used[0].calls);
     try testing.expectEqual(@as(usize, 9), used[0].last_tool);
-    try testing.expectEqualStrings("mcp_linear_list_issues", used[1].name);
-    try testing.expectEqual(@as(usize, 2), used[1].calls);
-    try testing.expectEqual(@as(usize, 8), used[1].first_tool);
-    try testing.expectEqual(@as(usize, 11), used[1].last_tool);
-    try testing.expectEqualStrings("mcp_features linear resource_read", used[2].name);
-    try testing.expectEqual(checkpoint.Used.Kind.skill, used[3].kind);
-    try testing.expectEqualStrings("skill:ab:4/zig references/io.md", used[3].name);
+    try testing.expectEqual(checkpoint.Used.Kind.skill, used[1].kind);
+    try testing.expectEqualStrings("skill:ab:4/zig references/io.md", used[1].name);
 }
 
 test "sentences that may set rules are found in the user's messages, with what a short one refers to" {

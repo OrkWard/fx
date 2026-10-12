@@ -58,7 +58,6 @@ pub fn QuestionRuntime(comptime App: type) type {
 
         pub fn cancelQuestionPrompt(app: *App) !void {
             const route_recovery = isRouteRecoveryPrompt(app);
-            const mcp_elicitation = isMcpElicitationPrompt(app);
             interrupt.traceInterruptRequested(app, "input_question");
             if (!route_recovery) {
                 if (comptime @hasDecl(@TypeOf(app.worker), "requestInteractiveCancel")) {
@@ -68,7 +67,7 @@ pub fn QuestionRuntime(comptime App: type) type {
                 }
             }
             app.pacer.clear(app.alloc);
-            if (!route_recovery and !mcp_elicitation) try finalizeQuestionTranscript(app, true);
+            if (!route_recovery) try finalizeQuestionTranscript(app, true);
             try app.worker.submitQuestionBatchAnswer(std.heap.c_allocator, null);
             app.question_prompt.discard(app.alloc, "cancelled");
             app.input_runtime.input_limit_rejection = input_limit_rejection.clear();
@@ -88,7 +87,7 @@ pub fn QuestionRuntime(comptime App: type) type {
                 labels.appendAssumeCapacity(entry.answer.?);
             }
 
-            if (!isRouteRecoveryPrompt(app) and !isMcpElicitationPrompt(app)) {
+            if (!isRouteRecoveryPrompt(app)) {
                 try finalizeQuestionTranscript(app, false);
             }
             try app.worker.submitQuestionBatchAnswer(std.heap.c_allocator, labels.items);
@@ -105,14 +104,6 @@ pub fn QuestionRuntime(comptime App: type) type {
             const Worker = @TypeOf(app.worker);
             if (comptime @hasDecl(Worker, "pendingQuestionBatchSource")) {
                 return app.worker.pendingQuestionBatchSource() == worker_runtime.QuestionPromptSource.route_recovery;
-            }
-            return false;
-        }
-
-        fn isMcpElicitationPrompt(app: *App) bool {
-            const Worker = @TypeOf(app.worker);
-            if (comptime @hasDecl(Worker, "pendingQuestionBatchSource")) {
-                return app.worker.pendingQuestionBatchSource() == worker_runtime.QuestionPromptSource.mcp_elicitation;
             }
             return false;
         }

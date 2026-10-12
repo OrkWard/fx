@@ -10,7 +10,6 @@ bun.lock
 zig-cache/
 zig-out/
 zig-pkg/
-sdk/dist/
 
 # Workspace-local runtime state
 /skills/
@@ -42,7 +41,6 @@ benchmarks/baseline.json
 .kilocode/
 .kiro/
 .kode/
-.mcpjam/
 .mux/
 .neovate/
 .openhands/

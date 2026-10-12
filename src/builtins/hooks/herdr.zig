@@ -6,8 +6,6 @@
 const std = @import("std");
 const io_mod = @import("../../core/shared/io.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
-const host_target = @import("../../core/hosts/target.zig");
-const jsonrpc = @import("../../acp/jsonrpc.zig");
 
 pub const State = enum { idle, working, blocked };
 
@@ -130,7 +128,6 @@ pub const Client = struct {
     }
 
     fn sendAll(self: *Client, requests: []const Request) void {
-        if (comptime host_target.is_wasm) return;
         if (!self.enabled) return;
         const io = io_mod.getIo();
         self.mutex.lockUncancelable(io);
@@ -205,6 +202,23 @@ fn drainResponse(stream: std.Io.net.Stream) void {
     _ = stream_reader.interface.takeDelimiterInclusive('\n') catch {};
 }
 
+fn writeJsonStr(s: []const u8, w: *std.Io.Writer) !void {
+    try w.writeByte('"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\r' => try w.writeAll("\\r"),
+            '\t' => try w.writeAll("\\t"),
+            0x08 => try w.writeAll("\\b"),
+            0x0c => try w.writeAll("\\f"),
+            else => if (c < 0x20) try w.print("\\u{x:0>4}", .{c}) else try w.writeByte(c),
+        }
+    }
+    try w.writeByte('"');
+}
+
 /// herdr's JSON-RPC requires the request id to be a string, not a number.
 fn writeId(w: *std.Io.Writer, id: u64) !void {
     try w.writeAll("{\"id\":\"");
@@ -221,16 +235,16 @@ fn writeReportAgent(
 ) !void {
     try writeId(w, id);
     try w.writeAll(",\"method\":\"pane.report_agent\",\"params\":{\"pane_id\":");
-    try jsonrpc.writeJsonStr(pane_id, w);
+    try writeJsonStr(pane_id, w);
     try w.writeAll(",\"source\":");
-    try jsonrpc.writeJsonStr(source, w);
+    try writeJsonStr(source, w);
     try w.writeAll(",\"agent\":");
-    try jsonrpc.writeJsonStr(agent_name, w);
+    try writeJsonStr(agent_name, w);
     try w.writeAll(",\"state\":");
-    try jsonrpc.writeJsonStr(@tagName(state), w);
+    try writeJsonStr(@tagName(state), w);
     if (custom_status) |status| {
         try w.writeAll(",\"custom_status\":");
-        try jsonrpc.writeJsonStr(status, w);
+        try writeJsonStr(status, w);
     }
     try w.writeAll("}}\n");
 }
@@ -243,13 +257,13 @@ fn writeReportAgentSession(
 ) !void {
     try writeId(w, id);
     try w.writeAll(",\"method\":\"pane.report_agent_session\",\"params\":{\"pane_id\":");
-    try jsonrpc.writeJsonStr(pane_id, w);
+    try writeJsonStr(pane_id, w);
     try w.writeAll(",\"source\":");
-    try jsonrpc.writeJsonStr(source, w);
+    try writeJsonStr(source, w);
     try w.writeAll(",\"agent\":");
-    try jsonrpc.writeJsonStr(agent_name, w);
+    try writeJsonStr(agent_name, w);
     try w.writeAll(",\"agent_session_id\":");
-    try jsonrpc.writeJsonStr(session_id, w);
+    try writeJsonStr(session_id, w);
     try w.writeAll("}}\n");
 }
 
@@ -264,24 +278,24 @@ fn writeRename(
 ) !void {
     try writeId(w, id);
     try w.writeAll(",\"method\":");
-    try jsonrpc.writeJsonStr(method, w);
+    try writeJsonStr(method, w);
     try w.writeAll(",\"params\":{");
-    try jsonrpc.writeJsonStr(target_key, w);
+    try writeJsonStr(target_key, w);
     try w.writeAll(":");
-    try jsonrpc.writeJsonStr(target, w);
+    try writeJsonStr(target, w);
     try w.writeAll(",");
-    try jsonrpc.writeJsonStr(value_key, w);
+    try writeJsonStr(value_key, w);
     try w.writeAll(":");
-    if (value) |v| try jsonrpc.writeJsonStr(v, w) else try w.writeAll("null");
+    if (value) |v| try writeJsonStr(v, w) else try w.writeAll("null");
     try w.writeAll("}}\n");
 }
 
 fn writeClearAuthority(w: *std.Io.Writer, id: u64, pane_id: []const u8) !void {
     try writeId(w, id);
     try w.writeAll(",\"method\":\"pane.clear_agent_authority\",\"params\":{\"pane_id\":");
-    try jsonrpc.writeJsonStr(pane_id, w);
+    try writeJsonStr(pane_id, w);
     try w.writeAll(",\"source\":");
-    try jsonrpc.writeJsonStr(source, w);
+    try writeJsonStr(source, w);
     try w.writeAll("}}\n");
 }
 

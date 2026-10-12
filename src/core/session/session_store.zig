@@ -7024,14 +7024,14 @@ test "recovery copies tool image artifacts and rejects changed content" {
     var target = try session_child_store.SessionChildCapability.initLegacyRoute(alloc, target_path, .tool_results, .writable);
     defer target.deinit();
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
-    const handle = try result_store.storeToolImages(alloc, &source, "screenshot", "mcp_browser", &.{.{
+    const handle = try result_store.storeToolImages(alloc, &source, "screenshot", "browser_tool", &.{.{
         .data = @constCast(png),
         .mime_type = @constCast("image/png"),
     }});
     defer alloc.free(handle);
     var results = [_]core_types.PersistedToolResult{.{
         .tool_call_id = @constCast("screenshot"),
-        .tool_name = @constCast("mcp_browser"),
+        .tool_name = @constCast("browser_tool"),
         .status = .success,
         .output = @constCast(""),
         .output_bytes = 0,

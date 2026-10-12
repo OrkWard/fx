@@ -78,7 +78,7 @@ test "moveCursorSequence row 1 col 1" {
     try std.testing.expectEqualStrings("\x1b[1;1H", seq);
 }
 
-test "layoutFromSize derives shared native and WASM terminal geometry" {
+test "layoutFromSize derives terminal geometry" {
     const layout = try layoutFromSize(24, 80, 4);
     try std.testing.expectEqual(@as(u16, 24), layout.rows);
     try std.testing.expectEqual(@as(u16, 80), layout.cols);

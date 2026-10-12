@@ -62,7 +62,6 @@ pub const all_hooks = [_]HookDefinition{
 pub const ScopeKind = enum {
     interactive,
     ask,
-    acp,
     subagent,
 };
 
@@ -247,5 +246,5 @@ test "hook definitions enumerate current hook surfaces" {
 }
 
 test "Hooks v1.0 scope kinds remain limited to the current surfaces" {
-    try std.testing.expectEqual(@as(usize, 4), @typeInfo(ScopeKind).@"enum".field_names.len);
+    try std.testing.expectEqual(@as(usize, 3), @typeInfo(ScopeKind).@"enum".field_names.len);
 }

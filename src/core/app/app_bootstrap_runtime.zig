@@ -14,14 +14,10 @@ const oauth_transport = @import("../auth/oauth_transport.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_provider = @import("../config/model_provider.zig");
 const host = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const record_tape = @import("../workspace/record_tape.zig");
 const statusline_identity = @import("../workspace/statusline_identity.zig");
 const shared_io = @import("../shared/io.zig");
-const mcp_runtime = @import("../mcp/mcp_runtime.zig");
-const mcp_host = @import("../mcp_host/host.zig");
-const mcp_health = @import("../mcp/health.zig");
 const permissions = @import("../permissions/permissions.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
 const skill_runtime = @import("../skills/skill_runtime.zig");
@@ -37,12 +33,6 @@ const transcript_runtime = @import("../../ui/transcript/runtime.zig");
 
 const Allocator = std.mem.Allocator;
 
-const SessionAssemblyMcpServer = struct {
-    name: []const u8,
-    connection: []const u8,
-    tools: ?usize,
-};
-
 const SessionAssemblyFacts = struct {
     provider: []const u8,
     model: []const u8,
@@ -51,11 +41,9 @@ const SessionAssemblyFacts = struct {
     tool_names: []const []const u8,
     /// Null while the launch skill discovery is still running.
     skill_count: ?usize,
-    mcp_servers: []const SessionAssemblyMcpServer,
 };
 
 const session_tool_name_preview_max = 8;
-const session_mcp_server_preview_max = 10;
 
 /// Pure formatter for the full-only session assembly record. Facts in,
 /// bounded body text out; no I/O, no app state.
@@ -86,35 +74,13 @@ fn writeSessionAssemblyBody(
     }
     try writer.writeByte('\n');
     if (facts.skill_count) |count| {
-        try writer.print("skills: {d} in catalog\n", .{count});
+        try writer.print("skills: {d} in catalog", .{count});
     } else {
-        try writer.writeAll("skills: loading\n");
-    }
-    if (facts.mcp_servers.len == 0) {
-        try writer.writeAll("mcp: none");
-        return;
-    }
-    try writer.print("mcp: {d} server{s}: ", .{
-        facts.mcp_servers.len,
-        if (facts.mcp_servers.len == 1) "" else "s",
-    });
-    const shown = @min(facts.mcp_servers.len, session_mcp_server_preview_max);
-    for (facts.mcp_servers[0..shown], 0..) |server, index| {
-        if (index > 0) try writer.writeAll(", ");
-        try writer.writeAll(server.name);
-        try writer.writeAll(" (");
-        try writer.writeAll(server.connection);
-        if (server.tools) |tools| try writer.print(", {d} tools", .{tools});
-        try writer.writeAll(")");
-    }
-    if (facts.mcp_servers.len > shown) {
-        try writer.print(", +{d} more", .{facts.mcp_servers.len - shown});
+        try writer.writeAll("skills: loading");
     }
 }
 
 pub const CapabilityProviders = struct {
-    load_mcp_runtime: mcp_runtime.LoadRuntimeFn,
-    load_mcp_host: ?mcp_host.LoadFn = null,
     skill_root_policy: skill_contract.RootPolicy,
     terminal_title: host.TerminalTitle,
 };
@@ -149,8 +115,6 @@ fn BootstrapDeps(comptime App: type) type {
         bootstrap_interactive_app: BootstrapInteractiveAppFn,
         configure_session_preferences: ConfigureSessionPreferencesFn,
         initialize_persistence: InitializePersistenceFn,
-        load_mcp_runtime: mcp_runtime.LoadRuntimeFn,
-        load_mcp_host: ?mcp_host.LoadFn = null,
         load_skills: LoadSkillsFn,
         skill_root_policy: skill_contract.RootPolicy,
         welcome_message: WelcomeMessageFn,
@@ -198,8 +162,6 @@ pub fn Runtime(comptime App: type) type {
                 .bootstrap_interactive_app = bootstrapInteractiveAppDefault,
                 .configure_session_preferences = configureSessionPreferencesDefault,
                 .initialize_persistence = initializePersistenceDefault,
-                .load_mcp_runtime = capability_providers.load_mcp_runtime,
-                .load_mcp_host = capability_providers.load_mcp_host,
                 .load_skills = app_runtime_setup.loadSkills,
                 .skill_root_policy = capability_providers.skill_root_policy,
                 .welcome_message = welcomeMessageDefault,
@@ -280,7 +242,7 @@ pub fn Runtime(comptime App: type) type {
         /// when it lands. Prompts already wait for a current catalog. Returns
         /// false when the host loads skills inline.
         fn beginStartupSkillsLoad(app: *App) !bool {
-            if (comptime host_target.is_wasm or !@hasDecl(App, "requestSkillsRefresh")) return false;
+            if (comptime !@hasDecl(App, "requestSkillsRefresh")) return false;
             const dir = (try app_runtime_setup.resolveManagedSkillsDir(std.heap.c_allocator)) orelse return false;
             // An empty catalog records the managed directory the refresh scans.
             app.skills.replaceLoaded(std.heap.c_allocator, dir, &.{}, &.{}) catch |err| {
@@ -339,39 +301,9 @@ pub fn Runtime(comptime App: type) type {
 
         /// Writes one full-only record describing what this session assembled:
         /// provider/model/effort, system prompt size, advertised tools, skill
-        /// catalog size, and MCP server states. Live-session only; resume does
+        /// catalog size. Live-session only; resume does
         /// not replay it, matching other full-only startup detail.
         fn writeSessionAssemblyNotice(app: *App, provider_label: []const u8) !void {
-            var mcp_servers: std.ArrayList(SessionAssemblyMcpServer) = .empty;
-            // Names are duped: the health snapshot is released with its lease
-            // at the end of the acquire block, before the body is rendered.
-            defer {
-                for (mcp_servers.items) |server| app.alloc.free(server.name);
-                mcp_servers.deinit(app.alloc);
-            }
-            if (comptime @hasDecl(App, "acquireMcpRuntime")) {
-                if (app.acquireMcpRuntime()) |lease_value| {
-                    var lease = lease_value;
-                    defer lease.deinit();
-                    const captured_at_ms: u64 = @intCast(@max(shared_io.milliTimestamp(), 0));
-                    var snapshot: ?mcp_health.Snapshot = lease.runtime.snapshotHealth(app.alloc, captured_at_ms) catch |err| blk: {
-                        debug_trace.logf("bootstrap", "session assembly mcp snapshot failed err={s}", .{@errorName(err)});
-                        break :blk null;
-                    };
-                    defer if (snapshot) |*value| value.deinit(app.alloc);
-                    if (snapshot) |*value| {
-                        for (value.servers) |server| {
-                            const name = try app.alloc.dupe(u8, server.configured_name);
-                            errdefer app.alloc.free(name);
-                            try mcp_servers.append(app.alloc, .{
-                                .name = name,
-                                .connection = @tagName(server.connection),
-                                .tools = server.counts.tools,
-                            });
-                        }
-                    }
-                }
-            }
             const system_prompt_bytes: ?usize = if (comptime @hasDecl(App, "promptPolicy"))
                 app.promptPolicy().system_prompt.len
             else
@@ -393,7 +325,6 @@ pub fn Runtime(comptime App: type) type {
                 .system_prompt_bytes = system_prompt_bytes,
                 .tool_names = tool_names,
                 .skill_count = if (app.skills.refreshActive()) null else app.skills.items.len,
-                .mcp_servers = mcp_servers.items,
             });
             try app.shell.appendFullDetailRecord(app.alloc, .{
                 .topic = "session",
@@ -596,19 +527,6 @@ pub fn Runtime(comptime App: type) type {
                 app,
                 app.requested_resume != null,
             );
-            const profile_mcp = try deps.load_mcp_runtime(
-                app.alloc,
-                app.workspace_root,
-                .{ .form = true, .url = true },
-            );
-            if (comptime @hasDecl(App, "installInitialMcpRuntime")) {
-                app.installInitialMcpRuntime(profile_mcp);
-            } else {
-                app.mcp_runtime = profile_mcp;
-            }
-            if (comptime @hasDecl(App, "loadMcpHost")) if (deps.load_mcp_host) |load_host| {
-                try app.loadMcpHost(load_host);
-            };
 
             const skills_deferred = try beginStartupSkillsLoad(app);
             if (!skills_deferred) {
@@ -641,9 +559,6 @@ pub fn Runtime(comptime App: type) type {
                     },
                 );
                 try app.writeTranscriptClassified(welcome_message, true, .welcome);
-                if (comptime @hasDecl(App, "presentProjectMcpPrompt")) {
-                    try app.presentProjectMcpPrompt();
-                }
                 // Fresh sessions only: on resume the transcript must stay
                 // empty until the deferred session load replays history.
                 try writeSessionAssemblyNotice(app, startup.provider.label());
@@ -836,7 +751,6 @@ const TestApp = struct {
     statusline_session: bool = false,
     workspace_identity: statusline_identity.Runtime = .{},
     requested_resume: ?u8 = null,
-    mcp_runtime: ?*mcp_runtime.McpRuntime = null,
     skills: skill_runtime.Runtime = .{},
     transcript: std.ArrayList(u8) = .empty,
     transcript_recorded: bool = false,
@@ -858,11 +772,6 @@ const TestApp = struct {
         self.selected_model.deinit(self.alloc);
         self.permission_engine.deinit(self.alloc);
         self.worker.deinit(std.heap.c_allocator);
-        if (self.mcp_runtime) |runtime| {
-            runtime.deinit();
-            self.alloc.destroy(runtime);
-            self.mcp_runtime = null;
-        }
         self.skills.deinit(std.heap.c_allocator);
         self.input_runtime.deinit(self.alloc);
         self.terminal_input_runtime.deinit(self.alloc);
@@ -910,7 +819,6 @@ fn testDeps() BootstrapDeps(TestApp) {
         .bootstrap_interactive_app = bootstrapInteractiveAppForTest,
         .configure_session_preferences = configureSessionPreferencesForTest,
         .initialize_persistence = initializePersistenceForTest,
-        .load_mcp_runtime = loadMcpRuntimeForTest,
         .load_skills = loadSkillsForTest,
         .skill_root_policy = .{
             .workspace_roots = &test_workspace_skill_roots,
@@ -1006,11 +914,6 @@ fn initializePersistenceForTest(
 ) !void {
     _ = app;
     active_capture.?.initialize_required = required;
-}
-
-fn loadMcpRuntimeForTest(_: Allocator, _: []const u8, _: @import("../mcp/elicitation.zig").Capabilities) !?*mcp_runtime.McpRuntime {
-    active_capture.?.recordEvent("load_mcp");
-    return null;
 }
 
 fn loadSkillsForTest(
@@ -1278,13 +1181,12 @@ test "app_bootstrap_runtime transfers startup state and starts a fresh session" 
     try std.testing.expectEqual(@as(usize, 1), capture.load_skills_workspace_root_count);
     try std.testing.expectEqual(@as(usize, 1), capture.load_skills_global_root_count);
     const events = capture.eventSlice();
-    try std.testing.expectEqual(@as(usize, 6), events.len);
-    try std.testing.expectEqualStrings("load_mcp", events[0]);
-    try std.testing.expectEqualStrings("load_skills", events[1]);
-    try std.testing.expectEqualStrings("welcome", events[2]);
-    try std.testing.expectEqualStrings("begin_fresh", events[3]);
-    try std.testing.expectEqualStrings("enable_stores", events[4]);
-    try std.testing.expectEqualStrings("title", events[5]);
+    try std.testing.expectEqual(@as(usize, 5), events.len);
+    try std.testing.expectEqualStrings("load_skills", events[0]);
+    try std.testing.expectEqualStrings("welcome", events[1]);
+    try std.testing.expectEqualStrings("begin_fresh", events[2]);
+    try std.testing.expectEqualStrings("enable_stores", events[3]);
+    try std.testing.expectEqualStrings("title", events[4]);
     try std.testing.expectEqual(@as(usize, 1), capture.begin_calls);
     try std.testing.expectEqual(@as(usize, 1), capture.enable_calls);
     try std.testing.expectEqualStrings("fx v" ++ build_options.app_version ++ " | workspace", capture.titleText());
@@ -1354,7 +1256,7 @@ test "app_bootstrap_runtime defers requested session loading until after bootstr
     const events = capture.eventSlice();
     try std.testing.expectEqualSlices(
         []const u8,
-        &.{ "load_mcp", "load_skills" },
+        &.{"load_skills"},
         events,
     );
 }
@@ -1372,7 +1274,6 @@ test "app_bootstrap_runtime renders startup notices without a resume cache" {
     try std.testing.expectEqualSlices(
         []const u8,
         &.{
-            "load_mcp",
             "load_skills",
             "welcome",
             "welcome",
@@ -1438,10 +1339,6 @@ test "writeSessionAssemblyBody renders bounded facts" {
     var body: std.Io.Writer.Allocating = .init(alloc);
     defer body.deinit();
     const tool_names = [_][]const u8{ "read_file", "edit_file", "run_command" };
-    const mcp_servers = [_]SessionAssemblyMcpServer{
-        .{ .name = "linear", .connection = "ready", .tools = 12 },
-        .{ .name = "slack", .connection = "connecting", .tools = null },
-    };
     try writeSessionAssemblyBody(&body.writer, .{
         .provider = "gateway",
         .model = "kimi-k3",
@@ -1449,19 +1346,17 @@ test "writeSessionAssemblyBody renders bounded facts" {
         .system_prompt_bytes = 12345,
         .tool_names = &tool_names,
         .skill_count = 7,
-        .mcp_servers = &mcp_servers,
     });
     try std.testing.expectEqualStrings(
         "provider: gateway · model: kimi-k3 · effort: high\n" ++
             "system prompt: ready · 12345 bytes\n" ++
             "tools: 3 advertised (read_file, edit_file, run_command)\n" ++
-            "skills: 7 in catalog\n" ++
-            "mcp: 2 servers: linear (ready, 12 tools), slack (connecting)",
+            "skills: 7 in catalog",
         body.written(),
     );
 }
 
-test "writeSessionAssemblyBody caps long tool and server lists" {
+test "writeSessionAssemblyBody caps long tool lists" {
     const alloc = std.testing.allocator;
     var body: std.Io.Writer.Allocating = .init(alloc);
     defer body.deinit();
@@ -1477,11 +1372,10 @@ test "writeSessionAssemblyBody caps long tool and server lists" {
         .system_prompt_bytes = null,
         .tool_names = &tool_names,
         .skill_count = 0,
-        .mcp_servers = &.{},
     });
     try std.testing.expect(std.mem.find(u8, body.written(), "system prompt") == null);
     try std.testing.expect(std.mem.find(u8, body.written(), "+4 more") != null);
-    try std.testing.expect(std.mem.find(u8, body.written(), "mcp: none") != null);
+    try std.testing.expect(std.mem.endsWith(u8, body.written(), "skills: 0 in catalog"));
 }
 
 test "app_bootstrap_runtime records a full-only session assembly record" {
@@ -1502,5 +1396,4 @@ test "app_bootstrap_runtime records a full-only session assembly record" {
     try std.testing.expect(std.mem.find(u8, record.body, "provider:") != null);
     try std.testing.expect(std.mem.find(u8, record.body, "model: model-x") != null);
     try std.testing.expect(std.mem.find(u8, record.body, "skills: 0 in catalog") != null);
-    try std.testing.expect(std.mem.find(u8, record.body, "mcp: none") != null);
 }

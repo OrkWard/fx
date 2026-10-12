@@ -1,7 +1,6 @@
 const runtime_assistant_stream = @import("runtime/assistant_stream.zig");
 const runtime_agent = @import("runtime/agent.zig");
 const runtime_config = @import("runtime/config.zig");
-const runtime_checkpoint = @import("runtime/checkpoint.zig");
 const runtime_deps = @import("runtime/deps.zig");
 const runtime_execution_memory = @import("runtime/execution_memory.zig");
 const runtime_finalization = @import("runtime/finalization.zig");
@@ -11,13 +10,11 @@ const runtime_tool_contracts = @import("runtime/tool_contracts.zig");
 
 pub const ToolExecutionStatus = runtime_tool_contracts.ToolExecutionStatus;
 pub const Agent = runtime_agent.Agent;
-pub const checkpoint = runtime_checkpoint;
 pub const DeferredToolCompletion = runtime_tool_contracts.DeferredToolCompletion;
 pub const TransportPublicationOutcome = runtime_tool_contracts.TransportPublicationOutcome;
 pub const SecondarySinkOutcome = runtime_tool_contracts.SecondarySinkOutcome;
 pub const SecondaryPublicationReport = runtime_tool_contracts.SecondaryPublicationReport;
 pub const ToolExecutionResult = runtime_tool_contracts.ToolExecutionResult;
-pub const unavailableHostToolResult = runtime_tool_contracts.unavailableHostToolResult;
 pub const LiveToolAuthority = runtime_tool_contracts.LiveToolAuthority;
 pub const LivePermissionRevalidation = runtime_tool_contracts.LivePermissionRevalidation;
 pub const ToolExecutionRequest = runtime_tool_contracts.ToolExecutionRequest;

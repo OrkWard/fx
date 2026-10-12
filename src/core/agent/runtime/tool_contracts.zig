@@ -26,7 +26,6 @@ pub const LiveToolAuthority = struct {
     generation: u64,
     root_id: []const u8,
     tools: []const []const u8,
-    integrations: []const []const u8,
     rules: types.PermissionRuleSet,
     grants: []const PermissionGrant,
     permission_state: ?*const session_permission_state.State = null,
@@ -107,8 +106,6 @@ pub const ToolExecutionResult = struct {
     web_fetch_completion: ?types.WebFetchCompletion = null,
     subagent_completion: ?types.SubagentStatus = null,
     inner_usage: ?types.ToolUsage = null,
-    selected_dynamic_tools: []const @import("../../tooling/tool_mcp_runtime.zig").SelectedTool = &.{},
-    retired_dynamic_tool_names: []const []const u8 = &.{},
     tool_result_memory: ?types.ToolResultMemory = null,
     tool_result_memory_prepared: bool = false,
     committed_file_handoff: ?file_mutation.CommittedFileHandoff = null,
@@ -139,13 +136,6 @@ test "tool result failure writer preserves exact error type and identity" {
     try std.testing.expectError(error.LiveToolAuthorityUnavailable, failure);
 }
 
-pub fn unavailableHostToolResult(alloc: Allocator) Allocator.Error!ToolExecutionResult {
-    return .{
-        .status = .failure,
-        .model_output = try alloc.dupe(u8, "Tools are unavailable in the current JavaScript host."),
-    };
-}
-
 pub const ToolExecutionRequest = struct {
     skill_locations: ?*const skill_contract.Locations = null,
     call_allocator: Allocator,
@@ -169,9 +159,6 @@ pub const ToolExecutionRequest = struct {
     current_turn_messages: []const ChatMessage = &.{},
     session_grants: []const PermissionGrant,
     live_authority: ?LiveToolAuthority = null,
-    expected_mcp_runtime_generation: ?u64 = null,
-    expected_mcp_binding: ?types.McpToolBinding = null,
-    advertised_dynamic_tool_names: []const []const u8,
     max_tool_result_bytes: usize,
     /// The owning agent loop already ran its policy-neutral idempotency and
     /// availability classifiers for this exact effective call.
@@ -188,9 +175,7 @@ pub const ToolExecutionRequest = struct {
 
 pub const DiffEntryPayload = diff.DiffEntryPayload;
 
-pub const ToolCallValidationWitness = struct {
-    mcp_runtime_generation: ?u64 = null,
-};
+pub const ToolCallValidationWitness = struct {};
 
 pub const ToolCallValidationResult = union(enum) {
     not_registered,

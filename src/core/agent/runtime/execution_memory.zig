@@ -1660,7 +1660,7 @@ test "saved tool output preparation keeps builtins and dynamic tools compactable
     defer alloc.free(dir);
     var cancel = std.atomic.Value(bool).init(false);
     for (0..builtins.all.len + 1) |index| {
-        const name = if (index < builtins.all.len) builtins.all[index].name else "mcp_fixture_lookup";
+        const name = if (index < builtins.all.len) builtins.all[index].name else "fixture_lookup";
         var arena_state = std.heap.ArenaAllocator.init(alloc);
         defer arena_state.deinit();
         const arena = arena_state.allocator();

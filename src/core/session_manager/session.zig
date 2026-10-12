@@ -171,7 +171,7 @@ const Phase = union(enum) {
 
 /// The last written seq, which `syncThrough` reads without `mutex` so that
 /// appends go on during an fsync. A 64-bit atomic where the target has one;
-/// on 32-bit targets such as fx's wasm build, a value behind its own brief
+/// on 32-bit targets, a value behind its own brief
 /// lock (never held across an fsync).
 const SeqCell = if (@bitSizeOf(usize) >= 64) struct {
     value: std.atomic.Value(u64) = .init(0),
@@ -985,7 +985,7 @@ fn needsSync(bodies: []const schema.Body) bool {
         // that cites them comes later in the log, which keeps a prefix (D50).
         .set => |s| switch (s.key) {
             .permissions, .usage, .moved_files => return true,
-            .prefs, .title, .workspace, .language, .client_prompt, .tool_identities, .compaction_records => {},
+            .prefs, .title, .workspace, .language, .compaction_records => {},
         },
         else => {},
     };

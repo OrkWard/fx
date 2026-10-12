@@ -2,7 +2,6 @@
   "cli.test.ts",
   "file-tool-permissions.test.ts",
   "gateway-stream-lifecycle.test.ts",
-  "mcp-auth.test.ts",
   "oauth-keychain-migration.test.ts",
   "sessions-v2.test.ts",
   "tui-auth-source-selection.test.ts",

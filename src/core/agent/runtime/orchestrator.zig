@@ -21,7 +21,6 @@ const mem_utils = @import("../../shared/mem_utils.zig");
 const text_utils = @import("../../shared/text_utils.zig");
 const file_mutation_contract = @import("../../tooling/file_mutation_contract.zig");
 const io_mod = @import("../../shared/io.zig");
-const host_target = @import("../../hosts/target.zig");
 const secret = @import("../../auth/secret.zig");
 const auth_transition = @import("../../auth/auth_transition.zig");
 const credentials = @import("../../auth/credentials.zig");
@@ -67,7 +66,6 @@ const runtime_parallel_execution = @import("parallel_execution.zig");
 const runtime_tool_batch = @import("tool_batch.zig");
 const model_response_recovery = @import("model_response_recovery.zig");
 const response_language = @import("response_language.zig");
-const tool_mcp_runtime = @import("../../tooling/tool_mcp_runtime.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -2464,7 +2462,6 @@ fn resolveLiveToolAuthority(
     arena: Allocator,
     call: ToolCall,
     workspace_root: []const u8,
-    advertised_dynamic_tool_names: []const []const u8,
     target_override: ?[]const u8,
 ) !LiveToolAuthorityResolution {
     const provider = deps.live_tool_authority orelse unreachable;
@@ -2473,7 +2470,6 @@ fn resolveLiveToolAuthority(
             deps.ctx,
             arena,
             call,
-            advertised_dynamic_tool_names,
         ) catch |err| {
         const failure = (try tooling_tool_admission.permissionTargetResolutionFailureMessage(arena, call, err)) orelse return err;
         debug_trace.logf("permission", "event=live_authority_target_failure call_id={s} tool_name={s} err={s}", .{ call.id, call.name, @errorName(err) });
@@ -2632,69 +2628,6 @@ fn prepareAvailabilityTerminal(
     };
 }
 
-/// Advertises live MCP tools the model called without loading them first, so
-/// those calls reach normal validation and MCP permission instead of failing
-/// as unselected. Names that do not resolve, including lookups that fail or
-/// are cancelled, keep the unsupported-tool path, where the turn's normal
-/// cancellation handling still applies.
-fn advertiseUnselectedMcpCalls(
-    deps: *const AgentRuntimeDeps,
-    arena: Allocator,
-    calls: []const ToolCall,
-    selected: *std.ArrayList(agent_stream_provider.DynamicFunctionTool),
-    advertised_tools: *[]const agent_stream_provider.DynamicFunctionTool,
-    advertised_names: *[][]const u8,
-) !void {
-    const resolve = deps.resolve_unselected_mcp_tool orelse return;
-    for (calls) |call| {
-        if (deps.tool_registry.lookup(call.name) != null) continue;
-        if (containsToolName(advertised_names.*, call.name)) continue;
-        const resolved = resolve(deps.ctx, arena, call.name) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                debug_trace.logf("mcp", "unselected MCP tool lookup failed tool={s} err={s}", .{ call.name, @errorName(err) });
-                continue;
-            },
-        };
-        const definition = resolved orelse continue;
-        if (!std.mem.eql(u8, definition.name, call.name) or definition.mcp_binding == null) continue;
-        try runtime_gateway_step.recordSelectedDynamicTool(arena, selected, definition);
-        const tool = for (selected.items) |item| {
-            if (std.mem.eql(u8, item.name, call.name)) break item;
-        } else unreachable;
-        const tools = try arena.alloc(agent_stream_provider.DynamicFunctionTool, advertised_tools.len + 1);
-        @memcpy(tools[0..advertised_tools.len], advertised_tools.*);
-        tools[advertised_tools.len] = tool;
-        const names = try arena.alloc([]const u8, advertised_names.len + 1);
-        @memcpy(names[0..advertised_names.len], advertised_names.*);
-        names[advertised_names.len] = tool.name;
-        advertised_tools.* = tools;
-        advertised_names.* = names;
-        debug_trace.logf("mcp", "loaded unselected MCP tool for direct call tool={s}", .{call.name});
-    }
-}
-
-fn containsToolName(names: []const []const u8, name: []const u8) bool {
-    for (names) |candidate| {
-        if (std.mem.eql(u8, candidate, name)) return true;
-    }
-    return false;
-}
-
-fn prepareDeferredDynamicCandidate(
-    raw_ctx: ?*anyopaque,
-    alloc: Allocator,
-    call: ToolCall,
-) anyerror!bool {
-    const ctx: *PreparationClassifierContext = @ptrCast(@alignCast(raw_ctx.?));
-    const validate = ctx.deps.validate_tool_call orelse return false;
-    return switch (try validate(ctx.deps.ctx, alloc, call)) {
-        .not_registered => false,
-        .valid => true,
-        .failure => true,
-    };
-}
-
 fn preparedTerminalModelOutput(
     alloc: Allocator,
     call: ToolCall,
@@ -2782,7 +2715,6 @@ fn settleFailedContextGate(
     provisional_alloc: Allocator,
     turn_id: u64,
     calls: []const ToolCall,
-    advertised_dynamic_tool_names: []const []const u8,
     original_error: anyerror,
 ) anyerror {
     var settlement_arena_state = std.heap.ArenaAllocator.init(provisional_alloc);
@@ -2796,7 +2728,6 @@ fn settleFailedContextGate(
             turn_id,
             call,
             "Failed",
-            advertised_dynamic_tool_names,
         ) catch |settlement_error| {
             debug_trace.logf(
                 "tool",
@@ -2840,7 +2771,7 @@ fn candidateHasApplicableContextDelta(
     candidate: tool_preparation.Candidate,
 ) !bool {
     switch (candidate.kind) {
-        .advertised_dynamic, .deferred_dynamic, .legacy_target_resolution => return true,
+        .legacy_target_resolution => return true,
         .registered => if (candidate.applicable_targets.len == 0) return false,
     }
 
@@ -2906,7 +2837,6 @@ fn appendNotExecutedToolResult(
     arena: Allocator,
     turn_id: u64,
     call: ToolCall,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
     within_turn_suffix: *std.ArrayList(ChatMessage),
     completed_tool_names: *std.ArrayList([]u8),
@@ -2920,7 +2850,6 @@ fn appendNotExecutedToolResult(
         turn_id,
         call,
         types.deferred_tool_result_output,
-        advertised_dynamic_tool_names,
     );
     debug_trace.eventf(
         "tool",
@@ -2951,7 +2880,6 @@ fn appendContextDeferredToolResult(
     arena: Allocator,
     turn_id: u64,
     call: ToolCall,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
     within_turn_suffix: *std.ArrayList(ChatMessage),
     completed_tool_names: *std.ArrayList([]u8),
@@ -2963,7 +2891,6 @@ fn appendContextDeferredToolResult(
         arena,
         turn_id,
         call,
-        advertised_dynamic_tool_names,
     );
     debug_trace.eventf(
         "tool",
@@ -3059,7 +2986,6 @@ fn appendProviderExecutedToolResult(
     config: Config,
     turn_id: u64,
     call: ToolCall,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
     within_turn_suffix: *std.ArrayList(ChatMessage),
     completed_tool_names: *std.ArrayList([]u8),
@@ -3096,7 +3022,6 @@ fn appendProviderExecutedToolResult(
                 stream_ctx.provisional_statuses.presentation_group_id,
                 call,
                 null,
-                advertised_dynamic_tool_names,
             ),
         };
     }
@@ -3133,7 +3058,6 @@ fn appendProviderExecutedToolResult(
             safe_tool_output,
             prepared.memory,
             null,
-            advertised_dynamic_tool_names,
         );
     }
 }
@@ -3146,7 +3070,6 @@ fn materializeConfirmedProviderTools(
     turn_id: u64,
     completion: types.ModelCompletion,
     selection: model_provider.ProviderSelection,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
     within_turn_suffix: *std.ArrayList(ChatMessage),
     completed_tool_names: *std.ArrayList([]u8),
@@ -3189,7 +3112,6 @@ fn materializeConfirmedProviderTools(
             config,
             turn_id,
             call,
-            advertised_dynamic_tool_names,
             step_ctx,
             within_turn_suffix,
             completed_tool_names,
@@ -3235,7 +3157,6 @@ fn filterMaterializedProviderCalls(
 const ParallelSubagentCompletionPublisher = struct {
     deps: *const AgentRuntimeDeps,
     turn_id: u64,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: debug_trace.TraceContext,
 
     fn notify(
@@ -3254,7 +3175,6 @@ const ParallelSubagentCompletionPublisher = struct {
                     self.turn_id,
                     call,
                     result.execution,
-                    self.advertised_dynamic_tool_names,
                 ) catch |err| {
                     debug_trace.eventf(
                         "subagent",
@@ -3281,7 +3201,6 @@ fn finishPendingParallelCancelled(
     results: []const ?ToolExecutionResult,
     status_started: []const bool,
     status_terminalized: []const bool,
-    advertised_dynamic_tool_names: []const []const u8,
 ) !void {
     for (calls, results, status_started, status_terminalized) |call, result, started, terminalized| {
         if (terminalized) continue;
@@ -3308,7 +3227,6 @@ fn finishPendingParallelCancelled(
                 prepared.model_output,
                 prepared.memory,
                 null,
-                advertised_dynamic_tool_names,
             );
             continue;
         }
@@ -3321,7 +3239,6 @@ fn finishPendingParallelCancelled(
             started,
             null,
             "Cancelled",
-            advertised_dynamic_tool_names,
         );
     }
 }
@@ -3335,7 +3252,6 @@ fn finishPreparedCallsOnCancellation(
     turn_id: u64,
     prepared_calls: []const PreparedToolCall,
     preparations: []const ?tool_preparation.Result,
-    advertised_dynamic_tool_names: []const []const u8,
 ) !void {
     std.debug.assert(preparations.len == 0 or preparations.len == prepared_calls.len);
 
@@ -3395,7 +3311,6 @@ fn finishPreparedCallsOnCancellation(
         results,
         status_started,
         status_terminalized,
-        advertised_dynamic_tool_names,
     );
 }
 
@@ -3407,7 +3322,6 @@ fn finishPendingCancelledCalls(
     config: Config,
     turn_id: u64,
     calls: []const ToolCall,
-    advertised_dynamic_tool_names: []const []const u8,
 ) !void {
     for (calls) |call| {
         if (providerExecutedResult(call)) |execution| {
@@ -3424,7 +3338,6 @@ fn finishPendingCancelledCalls(
                 prepared.model_output,
                 prepared.memory,
                 null,
-                advertised_dynamic_tool_names,
             );
             continue;
         }
@@ -3437,7 +3350,6 @@ fn finishPendingCancelledCalls(
             false,
             null,
             "Cancelled",
-            advertised_dynamic_tool_names,
         );
     }
 }
@@ -5009,7 +4921,7 @@ fn refreshGatewayCredentialForJob(
         return false;
     } orelse return false;
     const previous_api_key = active_api_key.*;
-    if (comptime !host_target.is_wasm) {
+    {
         if (deps.usage) |usage| {
             if (source == .chatgpt_subscription or source == .grok_subscription) {
                 usage.clearReconciliationCredential();
@@ -6883,11 +6795,6 @@ fn processQueuedPromptLoop(
     var last_tool_call_name: []const u8 = "none";
     var last_tool_call_id: []const u8 = "none";
     var last_gateway_message_count: usize = stable_prefix.items.len + history_messages.items.len + 1;
-    var selected_dynamic_tools: std.ArrayList(agent_stream_provider.DynamicFunctionTool) = .empty;
-    try selected_dynamic_tools.ensureTotalCapacity(arena, config.initial_dynamic_tools.len);
-    for (config.initial_dynamic_tools) |tool| {
-        selected_dynamic_tools.appendAssumeCapacity(tool);
-    }
     const current_user_effective = current_user_message;
     const initial_pending_image_ids = try arena.alloc(usize, job.images.len);
     for (job.images, 0..) |attachment, index| initial_pending_image_ids[index] = attachment.id;
@@ -7091,9 +6998,6 @@ fn processQueuedPromptLoop(
             restore_recovery_source = false;
         }
 
-        var advertised_dynamic_tools = try runtime_gateway_step.snapshotDynamicTools(arena, deps, &selected_dynamic_tools);
-        var advertised_dynamic_tool_names = try arena.alloc([]const u8, advertised_dynamic_tools.len);
-        for (advertised_dynamic_tools, 0..) |tool, index| advertised_dynamic_tool_names[index] = tool.name;
         var stream_result: runtime_gateway_step.StreamResult = undefined;
         var stream_result_set = false;
         var gateway_model: []const u8 = job.model;
@@ -7376,7 +7280,6 @@ fn processQueuedPromptLoop(
                     .registry = deps.tool_registry,
                     .advertised_names = config.advertised_tool_names,
                     .advertised_functions = config.advertised_functions,
-                    .selected_dynamic = advertised_dynamic_tools,
                 },
                 .tool_choice = tool_choice,
                 .vision_mode = vision_mode,
@@ -7485,7 +7388,6 @@ fn processQueuedPromptLoop(
                     };
                     var summary_model: runtime_text_completion.CompactorCaller = .{
                         .stream_provider = deps.agent_stream_provider,
-                        .cooperative_transport_pulse = deps.cooperative_transport_pulse,
                         .provider = job.provider,
                         .model = gateway_model,
                         .api_key = active_api_key,
@@ -7667,7 +7569,6 @@ fn processQueuedPromptLoop(
                 .prepared_request_body = prepared_request_body,
                 .trace_ctx = step_ctx,
                 .content_capture_limit = null,
-                .cooperative_pulse = deps.cooperative_transport_pulse,
                 .delivery = &gateway_delivery,
                 .attempt_evidence = &gateway_attempt_evidence,
                 .events = .{ .context = &provider_events, .emit_fn = onProviderEvent },
@@ -8280,7 +8181,6 @@ fn processQueuedPromptLoop(
                     turn_id,
                     response_completion,
                     .{ .provider = job.provider, .model = gateway_model },
-                    advertised_dynamic_tool_names,
                     step_ctx,
                     &within_turn_suffix,
                     &completed_tool_names,
@@ -8510,7 +8410,6 @@ fn processQueuedPromptLoop(
                             config,
                             turn_id,
                             response_completion.tool_calls,
-                            advertised_dynamic_tool_names,
                         );
                         const interruption_source = stream_ctx.interruption_source_or("");
                         if (try append_immediate_steering_after_cancel(
@@ -8562,7 +8461,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     attempt_completion.tool_calls,
-                    advertised_dynamic_tool_names,
                 );
                 const interruption_source = stream_ctx.interruption_source_or(
                     attempt_completion.content orelse "",
@@ -8886,7 +8784,6 @@ fn processQueuedPromptLoop(
                             config,
                             turn_id,
                             attempt_completion.tool_calls,
-                            advertised_dynamic_tool_names,
                         );
                         if (try append_immediate_steering_after_cancel(
                             deps,
@@ -9239,25 +9136,25 @@ fn processQueuedPromptLoop(
             switch (tool_admission) {
                 .admitted => reportProviderExecutedUsage(deps, completion.tool_calls),
                 .reject_duplicate_identity => {
-                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls, advertised_dynamic_tool_names);
+                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls);
                     debug_trace.eventf("agent", "authoritative_tool_admission_rejected", step_ctx, "failure=duplicate", .{});
                     finish_trace.finish("duplicate_tool_identity");
                     return error.MalformedAuthoritativeToolIdentity;
                 },
                 .reject_malformed_identity => |failure| {
-                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls, advertised_dynamic_tool_names);
+                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls);
                     debug_trace.eventf("agent", "authoritative_tool_admission_rejected", step_ctx, "failure={s} provenance=fx_local", .{@tagName(failure)});
                     finish_trace.finish("malformed_tool_identity");
                     return error.MalformedAuthoritativeToolIdentity;
                 },
                 .reject_unstorable_identity => |failure| {
-                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls, advertised_dynamic_tool_names);
+                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls);
                     debug_trace.eventf("agent", "authoritative_tool_admission_rejected", step_ctx, "field={s} failure={s}", .{ @tagName(failure.field), @tagName(failure.reason) });
                     finish_trace.finish("unstorable_tool_identity");
                     return error.MalformedAuthoritativeToolIdentity;
                 },
                 .reject_malformed_provider_result => |failure| {
-                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls, advertised_dynamic_tool_names);
+                    try stream_ctx.provisional_statuses.finishRejectedCompletions(deps, arena, turn_id, completion.tool_calls);
                     debug_trace.eventf("agent", "authoritative_tool_admission_rejected", step_ctx, "failure={s} provenance=provider_executed", .{@tagName(failure)});
                     finish_trace.finish("malformed_provider_result");
                     return error.MalformedProviderResultIdentity;
@@ -9592,14 +9489,6 @@ fn processQueuedPromptLoop(
             }
         }
 
-        try advertiseUnselectedMcpCalls(
-            deps,
-            arena,
-            completion.tool_calls,
-            &selected_dynamic_tools,
-            &advertised_dynamic_tools,
-            &advertised_dynamic_tool_names,
-        );
         const prepared_tool_calls = try arena.alloc(
             PreparedToolCall,
             completion.tool_calls.len,
@@ -9666,7 +9555,6 @@ fn processQueuedPromptLoop(
                         turn_id,
                         prepared_tool_calls[0..tool_call_index],
                         &.{},
-                        advertised_dynamic_tool_names,
                     );
                     try finishPendingCancelledCalls(
                         deps,
@@ -9676,7 +9564,6 @@ fn processQueuedPromptLoop(
                         config,
                         turn_id,
                         completion.tool_calls[tool_call_index..],
-                        advertised_dynamic_tool_names,
                     );
                     try runtime_interruption.persistInterruptedTurnOnce(
                         deps,
@@ -9724,7 +9611,6 @@ fn processQueuedPromptLoop(
                 stream_ctx.alloc,
                 turn_id,
                 effective_tool_calls,
-                advertised_dynamic_tool_names,
                 err,
             );
         };
@@ -9743,14 +9629,12 @@ fn processQueuedPromptLoop(
                     .tool_registry = deps.tool_registry,
                     .workspace_root = config.workspace_root,
                     .access_scope = config.access_scope,
-                    .advertised_dynamic_tool_names = advertised_dynamic_tool_names,
                     .cancel_flag = config.cancel_flag,
                     .classifiers = .{
                         .ctx = @ptrCast(&classifier_ctx),
                         .idempotent = prepareNoIdempotentTerminal,
                         .validation = prepareValidationTerminal,
                         .availability = prepareAvailabilityTerminal,
-                        .deferred_dynamic = prepareDeferredDynamicCandidate,
                     },
                 }) catch |err| {
                     if (err == error.Cancelled and config.cancel_flag.load(.seq_cst)) {
@@ -9764,7 +9648,6 @@ fn processQueuedPromptLoop(
                             turn_id,
                             prepared_tool_calls,
                             preparation_batch.preparations,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_interruption.persistInterruptedTurnOnce(
                             deps,
@@ -9788,7 +9671,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.alloc,
                         turn_id,
                         effective_tool_calls,
-                        advertised_dynamic_tool_names,
                         err,
                     );
                 };
@@ -9802,7 +9684,6 @@ fn processQueuedPromptLoop(
                 stream_ctx.alloc,
                 turn_id,
                 effective_tool_calls,
-                advertised_dynamic_tool_names,
                 err,
             );
         };
@@ -9825,7 +9706,6 @@ fn processQueuedPromptLoop(
                     stream_ctx.alloc,
                     turn_id,
                     effective_tool_calls,
-                    advertised_dynamic_tool_names,
                     err,
                 );
             };
@@ -9868,7 +9748,6 @@ fn processQueuedPromptLoop(
                                 stream_ctx.alloc,
                                 turn_id,
                                 effective_tool_calls,
-                                advertised_dynamic_tool_names,
                                 err,
                             );
                         };
@@ -9901,7 +9780,6 @@ fn processQueuedPromptLoop(
                     turn_id,
                     prepared_tool_calls,
                     preparation_batch.preparations,
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_interruption.persistInterruptedTurnOnce(
                     deps,
@@ -9932,7 +9810,6 @@ fn processQueuedPromptLoop(
                     stream_ctx.alloc,
                     turn_id,
                     effective_tool_calls,
-                    advertised_dynamic_tool_names,
                     err,
                 );
             };
@@ -9995,7 +9872,7 @@ fn processQueuedPromptLoop(
                 .read_only => root_action_permission_mode == .auto or
                     root_action_permission_mode == .yolo,
                 // Each call is reviewed before the group starts.
-                .subagent, .host => true,
+                .subagent => true,
             };
             const parallel_candidate_len = if (parallel_permission_eligible)
                 parallel_group.len
@@ -10015,7 +9892,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.alloc,
                         turn_id,
                         effective_tool_calls[tool_call_index..],
-                        advertised_dynamic_tool_names,
                         err,
                     );
                 };
@@ -10068,7 +9944,6 @@ fn processQueuedPromptLoop(
                             precomputed_results,
                             parallel_status_started,
                             parallel_status_terminalized,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                         try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, parallel_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10129,7 +10004,6 @@ fn processQueuedPromptLoop(
                             precomputed_results,
                             parallel_status_started,
                             parallel_status_terminalized,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                         try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, parallel_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10150,7 +10024,6 @@ fn processQueuedPromptLoop(
                             precomputed_results,
                             parallel_status_started,
                             parallel_status_terminalized,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                         try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, parallel_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10168,7 +10041,7 @@ fn processQueuedPromptLoop(
                         },
                     };
                     if (!runtime_tool_admission.deferVisibleLifecycleUntilAfterPermission(parallel_call.name)) {
-                        parallel_status_started[group_index] = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, parallel_call, null, advertised_dynamic_tool_names);
+                        parallel_status_started[group_index] = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, parallel_call, null);
                     }
 
                     const parallel_preserved_review_hold = if (root_action_permission_mode == .auto)
@@ -10199,7 +10072,7 @@ fn processQueuedPromptLoop(
                     const maybe_parallel_permission: ?command_admission.PermissionOutcome = if (parallel_preserved_review_hold) |outcome|
                         outcome
                     else
-                        runtime_tool_admission.requestToolPermissionTraced(deps, arena, parallel_call, parallel_review_context, root_action_permission_mode, local_grants.items, null, null, advertised_dynamic_tool_names, advertised_dynamic_tools, config.workspace_root, step_ctx) catch |err| blk: {
+                        runtime_tool_admission.requestToolPermissionTraced(deps, arena, parallel_call, parallel_review_context, root_action_permission_mode, local_grants.items, null, null, config.workspace_root, step_ctx) catch |err| blk: {
                             if (err != error.Cancelled or !config.cancel_flag.load(.seq_cst)) return err;
                             break :blk null;
                         };
@@ -10216,7 +10089,6 @@ fn processQueuedPromptLoop(
                             precomputed_results,
                             parallel_status_started,
                             parallel_status_terminalized,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                         try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, parallel_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10258,7 +10130,6 @@ fn processQueuedPromptLoop(
                             parallel_status_started[group_index],
                             null,
                             runtime_tool_admission.permissionDeniedStatusLabel(reason),
-                            advertised_dynamic_tool_names,
                         );
                         tool_dispatch.traceDeniedWebSearch(step_ctx, parallel_call, reason);
                         debug_trace.eventf("tool", "execution_result", step_ctx, "call_id={s} name={s} result_kind=permission_denied reason={s} model_output_bytes={d}", .{ parallel_call.id, parallel_call.name, @tagName(reason), denied_output.len });
@@ -10271,12 +10142,12 @@ fn processQueuedPromptLoop(
                     }
 
                     if (decision == .always) {
-                        const target_path = try deps.permission_target_for_call(deps.ctx, arena, parallel_call, advertised_dynamic_tool_names);
+                        const target_path = try deps.permission_target_for_call(deps.ctx, arena, parallel_call);
                         try runtime_tool_admission.applyInitialSessionGrants(deps, arena, &local_grants, config.workspace_root, parallel_call, target_path);
                     }
 
                     if (!parallel_status_started[group_index]) {
-                        parallel_status_started[group_index] = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, parallel_call, null, advertised_dynamic_tool_names);
+                        parallel_status_started[group_index] = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, parallel_call, null);
                     }
                     const parallel_authority = permission_outcome.execution_authority orelse
                         return error.MissingToolExecutionAuthority;
@@ -10312,7 +10183,6 @@ fn processQueuedPromptLoop(
                             precomputed_results,
                             parallel_status_started,
                             parallel_status_terminalized,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                         try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, executable_calls.items[0], completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10375,30 +10245,19 @@ fn processQueuedPromptLoop(
                         .current_turn_messages = within_turn_suffix.items,
                         .session_grants = local_grants.items,
                         .permission_mode = root_action_permission_mode,
-                        .advertised_dynamic_tool_names = advertised_dynamic_tool_names,
                         .max_tool_result_bytes = config.max_tool_result_bytes,
                         .classification_complete = executable_classification_complete.items,
                     };
                     var completion_publisher = ParallelSubagentCompletionPublisher{
                         .deps = deps,
                         .turn_id = turn_id,
-                        .advertised_dynamic_tool_names = advertised_dynamic_tool_names,
                         .step_ctx = step_ctx,
                     };
                     const attempt_observer: ?runtime_parallel_execution.ParallelAttemptObserver = if (parallel_group.kind == .subagent)
                         .{ .ctx = &completion_publisher, .notify = ParallelSubagentCompletionPublisher.notify }
                     else
                         null;
-                    if (comptime host_target.is_wasm) {
-                        parallel_run = try runtime_parallel_execution.runSequentialCalls(arena, executable_calls.items, .{
-                            .exec_ctx = &parallel_exec_ctx,
-                            .execute = runtime_parallel_execution.parallelHookExecute,
-                            .format_ctx = &parallel_exec_ctx,
-                            .format_error = runtime_parallel_execution.parallelHookFormatError,
-                            .cancel_flag = config.cancel_flag,
-                            .attempt_observer = attempt_observer,
-                        });
-                    } else {
+                    {
                         parallel_run = try runtime_parallel_execution.runParallelCalls(arena, executable_calls.items, .{
                             .exec_ctx = &parallel_exec_ctx,
                             .execute = runtime_parallel_execution.parallelHookExecute,
@@ -10454,7 +10313,6 @@ fn processQueuedPromptLoop(
                     admitted_status_started,
                     parallel_status_terminalized,
                     turn_id,
-                    advertised_dynamic_tool_names,
                     step_ctx,
                 );
                 debug_trace.eventf(
@@ -10541,7 +10399,6 @@ fn processQueuedPromptLoop(
                             prepared.model_output,
                             prepared.memory,
                             null,
-                            advertised_dynamic_tool_names,
                         );
                     }
                     try runtime_tool_admission.recordRejectedToolCall(
@@ -10591,7 +10448,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     effective_tool_calls[tool_call_index..],
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                 try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, tool_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10606,7 +10462,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     tool_call,
-                    advertised_dynamic_tool_names,
                     step_ctx,
                     &within_turn_suffix,
                     &completed_tool_names,
@@ -10624,7 +10479,6 @@ fn processQueuedPromptLoop(
                             arena,
                             turn_id,
                             tool_call,
-                            advertised_dynamic_tool_names,
                             step_ctx,
                             &within_turn_suffix,
                             &completed_tool_names,
@@ -10668,7 +10522,6 @@ fn processQueuedPromptLoop(
                                     safe_output,
                                     prepared_terminal.memory,
                                     null,
-                                    advertised_dynamic_tool_names,
                                 );
                                 try runtime_tool_batch.appendToolResultContent(
                                     arena,
@@ -10709,7 +10562,6 @@ fn processQueuedPromptLoop(
                                     safe_output,
                                     prepared_terminal.memory,
                                     null,
-                                    advertised_dynamic_tool_names,
                                 );
                                 try runtime_tool_admission.recordRejectedToolCall(
                                     deps,
@@ -10737,7 +10589,6 @@ fn processQueuedPromptLoop(
                                     stream_ctx.provisional_statuses.presentation_group_id,
                                     tool_call,
                                     tool_display_target,
-                                    advertised_dynamic_tool_names,
                                 );
                                 const execution: ToolExecutionResult = .{
                                     .status = .failure,
@@ -10756,7 +10607,6 @@ fn processQueuedPromptLoop(
                                     safe_output,
                                     prepared_terminal.memory,
                                     null,
-                                    advertised_dynamic_tool_names,
                                 );
                                 try runtime_tool_batch.appendToolResultContent(
                                     arena,
@@ -10793,7 +10643,6 @@ fn processQueuedPromptLoop(
                                     safe_output,
                                     prepared_terminal.memory,
                                     null,
-                                    advertised_dynamic_tool_names,
                                 );
                                 try runtime_tool_batch.appendToolResultContent(
                                     arena,
@@ -10832,19 +10681,10 @@ fn processQueuedPromptLoop(
                 }
             else
                 true;
-            var expected_mcp_runtime_generation: ?u64 = null;
-            const requires_action_validation = requires_legacy_classification or
-                tool_mcp_runtime.isAdvertisedDynamicToolName(
-                    advertised_dynamic_tool_names,
-                    tool_call.name,
-                );
-            if (requires_action_validation) {
+            if (requires_legacy_classification) {
                 const validation_failure: ?ToolExecutionResult = switch (try runtime_tool_admission.toolCallValidation(deps, arena, tool_call)) {
                     .not_registered => null,
-                    .valid => |witness| valid: {
-                        expected_mcp_runtime_generation = witness.mcp_runtime_generation;
-                        break :valid null;
-                    },
+                    .valid => null,
                     .failure => |reason| .{
                         .model_output = reason,
                         .status = .failure,
@@ -10870,7 +10710,6 @@ fn processQueuedPromptLoop(
                         safe_tool_output,
                         prepared.memory,
                         null,
-                        advertised_dynamic_tool_names,
                     );
                     try runtime_tool_admission.recordRejectedToolCall(
                         deps,
@@ -10907,7 +10746,6 @@ fn processQueuedPromptLoop(
                         safe_tool_output,
                         prepared.memory,
                         null,
-                        advertised_dynamic_tool_names,
                     );
                     try runtime_tool_admission.recordRejectedToolCall(
                         deps,
@@ -10941,7 +10779,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     effective_tool_calls[tool_call_index..],
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                 try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, tool_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -10967,7 +10804,6 @@ fn processQueuedPromptLoop(
                             prepared.model_output,
                             prepared.memory,
                             null,
-                            advertised_dynamic_tool_names,
                         );
                         try runtime_tool_admission.recordRejectedToolCall(deps, arena, tool_call, prepared.model_output, null);
                         for (execution.context_notices) |notice| try deps.pushContextNotice(notice);
@@ -10985,12 +10821,7 @@ fn processQueuedPromptLoop(
                     },
                 }
             }
-            const is_file_mutation = file_mutation_contract.isToolName(tool_call.name) and
-                // A host tool may reuse a reserved file-mutation name; it owns
-                // its own execution and never enters the builtin contract. A
-                // missing registry entry keeps the contract's own failure path.
-                (deps.tool_registry.lookup(tool_call.name) == null or
-                    deps.tool_registry.lookup(tool_call.name).?.executor_kind != .host);
+            const is_file_mutation = file_mutation_contract.isToolName(tool_call.name);
             var prepared_file_mutation: ?tooling_tool_admission.PreparedFileMutationCall = null;
             defer if (prepared_file_mutation) |*prepared| prepared.deinit(arena);
 
@@ -11012,7 +10843,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.alloc,
                         turn_id,
                         effective_tool_calls[tool_call_index..],
-                        advertised_dynamic_tool_names,
                         err,
                     );
                 };
@@ -11046,7 +10876,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.alloc,
                         turn_id,
                         effective_tool_calls[tool_call_index..],
-                        advertised_dynamic_tool_names,
                         err,
                     );
                 }
@@ -11060,7 +10889,6 @@ fn processQueuedPromptLoop(
                     arena,
                     turn_id,
                     tool_call,
-                    advertised_dynamic_tool_names,
                     step_ctx,
                     &within_turn_suffix,
                     &completed_tool_names,
@@ -11084,7 +10912,6 @@ fn processQueuedPromptLoop(
                     arena,
                     tool_call,
                     config.workspace_root,
-                    advertised_dynamic_tool_names,
                     live_authority_target,
                 )) {
                     .resolved => |value| value,
@@ -11123,7 +10950,6 @@ fn processQueuedPromptLoop(
                         arena,
                         turn_id,
                         tool_call,
-                        advertised_dynamic_tool_names,
                         step_ctx,
                         &within_turn_suffix,
                         &completed_tool_names,
@@ -11157,7 +10983,7 @@ fn processQueuedPromptLoop(
             if (!runtime_tool_admission.deferVisibleLifecycleUntilAfterPermission(tool_call.name) and
                 !defer_auto_command_lifecycle)
             {
-                status_started = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, tool_call, tool_display_target, advertised_dynamic_tool_names);
+                status_started = try runtime_tool_presentation.startToolVisibleLifecycle(deps, arena, turn_id, stream_ctx.provisional_statuses.presentation_group_id, tool_call, tool_display_target);
             }
 
             var file_call_arena_state: std.heap.ArenaAllocator = undefined;
@@ -11229,7 +11055,6 @@ fn processQueuedPromptLoop(
                         action_permission_mode,
                         action_grants,
                         if (live_authority) |resolved| resolved.authority else null,
-                        advertised_dynamic_tool_names,
                         config.workspace_root,
                         step_ctx,
                     )
@@ -11243,8 +11068,6 @@ fn processQueuedPromptLoop(
                         action_grants,
                         if (live_authority) |resolved| resolved.authority else null,
                         null,
-                        advertised_dynamic_tool_names,
-                        advertised_dynamic_tools,
                         config.workspace_root,
                         step_ctx,
                     )) catch |err| blk: {
@@ -11261,7 +11084,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.provisional_statuses.presentation_group_id,
                         execution_call,
                         tool_display_target,
-                        advertised_dynamic_tool_names,
                     );
                 }
                 _ = try stream_ctx.provisional_statuses.finishDeniedCall(
@@ -11273,7 +11095,6 @@ fn processQueuedPromptLoop(
                     status_started,
                     tool_display_target,
                     "Cancelled",
-                    advertised_dynamic_tool_names,
                 );
                 try finishPendingCancelledCalls(
                     deps,
@@ -11283,7 +11104,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     effective_tool_calls[tool_call_index + 1 ..],
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                 try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, tool_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -11302,7 +11122,6 @@ fn processQueuedPromptLoop(
                     arena,
                     tool_call,
                     config.workspace_root,
-                    advertised_dynamic_tool_names,
                     live_authority_target,
                 )) {
                     .resolved => |value| value,
@@ -11341,8 +11160,6 @@ fn processQueuedPromptLoop(
                         .authority = prepared_authority,
                         .human_approval = exact_human_approval,
                     } },
-                    advertised_dynamic_tool_names,
-                    advertised_dynamic_tools,
                     config.workspace_root,
                     step_ctx,
                 ) catch |err| blk: {
@@ -11359,7 +11176,6 @@ fn processQueuedPromptLoop(
                             null,
                             execution_call,
                             tool_display_target,
-                            advertised_dynamic_tool_names,
                         );
                     }
                     try runtime_tool_presentation.finishDeniedToolStatus(
@@ -11370,7 +11186,6 @@ fn processQueuedPromptLoop(
                         status_started,
                         tool_display_target,
                         "Cancelled",
-                        advertised_dynamic_tool_names,
                     );
                     try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                     try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, tool_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -11398,7 +11213,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.provisional_statuses.presentation_group_id,
                         execution_call,
                         tool_display_target,
-                        advertised_dynamic_tool_names,
                     );
                 }
                 const failure: ToolExecutionResult = .{
@@ -11425,7 +11239,6 @@ fn processQueuedPromptLoop(
                     prepared_failure.model_output,
                     prepared_failure.memory,
                     null,
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_tool_batch.appendToolResultContent(
                     arena,
@@ -11487,7 +11300,6 @@ fn processQueuedPromptLoop(
                         stream_ctx.provisional_statuses.presentation_group_id,
                         execution_call,
                         tool_display_target,
-                        advertised_dynamic_tool_names,
                     );
                 }
                 _ = try stream_ctx.provisional_statuses.finishDeniedCall(
@@ -11499,7 +11311,6 @@ fn processQueuedPromptLoop(
                     status_started,
                     tool_display_target,
                     runtime_tool_admission.permissionDeniedStatusLabel(reason),
-                    advertised_dynamic_tool_names,
                 );
                 tool_dispatch.traceDeniedWebSearch(step_ctx, tool_call, reason);
                 debug_trace.eventf("tool", "execution_result", step_ctx, "call_id={s} name={s} result_kind=permission_denied reason={s} model_output_bytes={d}", .{ tool_call.id, tool_call.name, @tagName(reason), denied_output.len });
@@ -11590,7 +11401,6 @@ fn processQueuedPromptLoop(
                     stream_ctx.provisional_statuses.presentation_group_id,
                     execution_call,
                     tool_display_target,
-                    advertised_dynamic_tool_names,
                 );
             }
 
@@ -11616,7 +11426,7 @@ fn processQueuedPromptLoop(
                         );
                     }
                 } else {
-                    const target_path = try deps.permission_target_for_call(deps.ctx, arena, tool_call, advertised_dynamic_tool_names);
+                    const target_path = try deps.permission_target_for_call(deps.ctx, arena, tool_call);
                     try runtime_tool_admission.applyInitialSessionGrants(deps, arena, &local_grants, config.workspace_root, tool_call, target_path);
                 }
             }
@@ -11655,7 +11465,6 @@ fn processQueuedPromptLoop(
                     status_started,
                     tool_display_target,
                     "Cancelled",
-                    advertised_dynamic_tool_names,
                 );
                 try finishPendingCancelledCalls(
                     deps,
@@ -11665,7 +11474,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     effective_tool_calls[tool_call_index + 1 ..],
-                    advertised_dynamic_tool_names,
                 );
                 try runtime_tool_batch.drainPendingUserSuffix(arena, &step_batch, &within_turn_suffix);
                 try runtime_interruption.persistInterruptedTurnOnce(deps, finalization, job, partial_assistant, tool_call, completed_tool_names.items, &interrupted_persisted, step_ctx, within_turn_suffix.items, stop_state.retained_candidate, &stop_state.terminal_materializing);
@@ -11718,12 +11526,7 @@ fn processQueuedPromptLoop(
                 .current_turn_messages = within_turn_suffix.items,
                 .session_grants = execution_grants,
                 .live_authority = if (live_authority) |resolved| resolved.authority else null,
-                .advertised_dynamic_tool_names = advertised_dynamic_tool_names,
                 .max_tool_result_bytes = config.max_tool_result_bytes,
-                .expected_mcp_runtime_generation = expected_mcp_runtime_generation,
-                .expected_mcp_binding = for (advertised_dynamic_tools) |tool| {
-                    if (std.mem.eql(u8, tool.name, execution_call.name)) break tool.mcp_binding;
-                } else null,
                 .classification_complete = if (preparation_batch.preparations[tool_call_index]) |preparation|
                     switch (preparation) {
                         .candidate => |candidate| preparedCandidateClassificationComplete(candidate),
@@ -11778,7 +11581,6 @@ fn processQueuedPromptLoop(
                     status_started,
                     tool_display_target,
                     execution,
-                    advertised_dynamic_tool_names,
                 );
                 try finishPendingCancelledCalls(
                     deps,
@@ -11788,7 +11590,6 @@ fn processQueuedPromptLoop(
                     config,
                     turn_id,
                     effective_tool_calls[tool_call_index + 1 ..],
-                    advertised_dynamic_tool_names,
                 );
                 if (execution_is_command) {
                     try deps.push_command_output_complete(deps.ctx, execution_lifecycle_id);
@@ -11887,7 +11688,6 @@ fn processQueuedPromptLoop(
                     file_display_path,
                     is_file_mutation,
                     turn_id,
-                    advertised_dynamic_tool_names,
                     step_ctx,
                 );
                 if (permission_outcome.feedback) |feedback| {
@@ -11973,7 +11773,6 @@ fn processQueuedPromptLoop(
                 safe_tool_output,
                 prepared.memory,
                 execution.diff_entry,
-                advertised_dynamic_tool_names,
             );
             if (status_started) replay_handed_off = true;
             if (execution_is_command) {
@@ -12068,7 +11867,6 @@ fn processQueuedPromptLoop(
                 debug_trace.eventf("tool", "after_tool_execution", step_ctx, "call_id={s} name={s} result_kind={s} model_output_bytes={d}", .{ tool_call.id, tool_call.name, runtime_telemetry.toolExecutionResultKind(execution), safe_tool_output.len });
                 debug_trace.eventf("tool", "execution_result", step_ctx, "call_id={s} name={s} result_kind={s} model_output_bytes={d}", .{ tool_call.id, tool_call.name, runtime_telemetry.toolExecutionResultKind(execution), safe_tool_output.len });
             }
-            try runtime_gateway_step.recordSelectedDynamicTools(arena, &selected_dynamic_tools, execution);
             try runtime_tool_batch.appendOrdinaryExecutedResult(
                 deps.tool_registry,
                 arena,

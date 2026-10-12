@@ -11,7 +11,6 @@ type Category =
   | "title_control"
   | "noninteractive_output"
   | "benchmark_output"
-  | "acp_protocol_transport"
   | "subprocess_protocol_transport"
   | "tests";
 
@@ -46,7 +45,6 @@ const allowlist: AllowRule[] = [
   rule("src/ui/shell_runtime.zig", "clearTmuxScreenAndHistory", /stdio_(?:acquisition|write)/, "terminal_reset", "tmux pane reset before history cleanup"),
   rule("src/ui/shell_runtime.zig", "enableThemeNotifications", /stdio_(?:acquisition|write)/, "initialization_teardown", "terminal theme notification control"),
   rule("src/core/app/app_lifecycle.zig", "abnormalExitHandlerWithRestore", /(?:fixed_descriptor|raw_fd_write)/, "crash_recovery", "async-signal-safe terminal restoration"),
-  rule("src/core/hosts/wasm_panic.zig", "panicToStderr", /debug_print/, "crash_recovery", "WASM panic message before trap"),
   rule("src/ui/shell_runtime.zig", "ensureInteractive", /fixed_descriptor/, "terminal_probe", "TTY capability probe"),
   rule("src/ui/shell_runtime.zig", "(?:query|requestResize)CursorPosition", /stdio_(?:acquisition|write)/, "terminal_probe", "cursor-position query"),
   rule("src/ui/shell_runtime.zig", "(?:requestThemeColorScheme|requestThemeResponseFence|requestThemeBackground)", /stdio_(?:acquisition|write)/, "terminal_probe", "terminal theme query"),
@@ -56,7 +54,6 @@ const allowlist: AllowRule[] = [
   rule("src/ui/ask_presentation.zig", "refreshGeometry", /fixed_descriptor/, "terminal_probe", "ask stdout geometry refresh"),
   rule("src/ui/ask_presentation.zig", "writeTerminalBytes", /stdio_write/, "initialization_teardown", "ask terminal prepare and restore control"),
   rule("src/ui/render.zig", "(?:setTerminalTitleLabel|clearTerminalTitleProvider)", /stdio_(?:acquisition|write)/, "title_control", "terminal title control"),
-  rule("src/acp/jsonrpc.zig", ".+", /stdio_(?:acquisition|write)/, "acp_protocol_transport", "ACP JSON-RPC transport"),
   rule("src/core/execution/command_runner.zig", "(?:runForegroundSessionBootstrap|writeForegroundSessionReplaceFailure)", /stdio_acquisition_write/, "subprocess_protocol_transport", "foreground command bootstrap protocol"),
   rule("src/core/terminal/native_session.zig", "(?:acceptMarker|runLauncher)", /fixed_descriptor/, "subprocess_protocol_transport", "private native launcher PTY and control descriptors"),
   rule("src/core/shared/darwin_process_spawn.zig", "process_spawn_inheriting_fd", /fixed_descriptor/, "subprocess_protocol_transport", "child stdio and witness file-action mapping"),

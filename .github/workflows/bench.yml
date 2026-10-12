@@ -7,10 +7,6 @@ on:
         description: Run the long-turn memory benchmark
         type: boolean
         default: false
-      libfx_runtime:
-        description: Run the libfx runtime benchmark
-        type: boolean
-        default: false
       signed_run:
         description: Successful main Release validation run to compare (no signing credentials used)
         type: string
@@ -165,69 +161,6 @@ jobs:
             ${{ runner.temp }}/shell-command-overhead/home/rc-loads.log
           if-no-files-found: warn
 
-  libfx-ttft:
-    if: github.event_name == 'workflow_dispatch' && inputs.libfx_runtime && inputs.signed_run == '' && inputs.pgso_control_artifact == '' && inputs.pgso_candidate_artifact == ''
-    name: libfx Runtime
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: bench-ReleaseSafe
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.2"
-
-      - name: Build libfx artifacts
-        run: |
-          zig build -Dnapi-surface=core -Doptimize=ReleaseSafe
-          zig build -Dwasm-surface=core -Doptimize=ReleaseSmall
-
-      - name: Install pinned Pi benchmark target
-        run: npm install --prefix /tmp/libfx-pi @earendil-works/pi-coding-agent@0.84.4
-
-      - name: Build external inference fixture
-        run: zig build-exe benchmarks/libfx/fake-inference-server.zig -O ReleaseSafe -femit-bin=${{ runner.temp }}/libfx-fake-inference-server
-
-      - name: Measure libfx and Pi
-        run: |
-          node benchmarks/libfx/bench-suite.mjs --samples 100 --pi-root /tmp/libfx-pi --out benchmarks/results/libfx
-          node benchmarks/libfx/bench-bridge.mjs --backend native --samples 100 > benchmarks/results/libfx/bridge-node-native.json
-          node --experimental-wasm-jspi benchmarks/libfx/bench-bridge.mjs --backend wasm --samples 100 > benchmarks/results/libfx/bridge-node-wasm.json
-          bun benchmarks/libfx/bench-bridge.mjs --backend native --samples 100 > benchmarks/results/libfx/bridge-bun-native.json
-          bun benchmarks/libfx/bench-bridge.mjs --backend wasm --samples 100 > benchmarks/results/libfx/bridge-bun-wasm.json
-          node benchmarks/libfx/bench-runtime.mjs --backend native --warm-samples 100 --stream-samples 30 > benchmarks/results/libfx/runtime-node-native.json
-          node --experimental-wasm-jspi benchmarks/libfx/bench-runtime.mjs --backend wasm --warm-samples 100 --stream-samples 30 > benchmarks/results/libfx/runtime-node-wasm.json
-          bun benchmarks/libfx/bench-runtime.mjs --backend native --warm-samples 100 --stream-samples 30 > benchmarks/results/libfx/runtime-bun-native.json
-          bun benchmarks/libfx/bench-runtime.mjs --backend wasm --warm-samples 100 --stream-samples 30 > benchmarks/results/libfx/runtime-bun-wasm.json
-          node --expose-gc benchmarks/libfx/bench-capacity.mjs --backend native --count 25 > benchmarks/results/libfx/capacity-node-native.json
-          node --experimental-wasm-jspi --expose-gc benchmarks/libfx/bench-capacity.mjs --backend wasm --count 25 > benchmarks/results/libfx/capacity-node-wasm.json
-          bun benchmarks/libfx/bench-capacity.mjs --backend native --count 25 > benchmarks/results/libfx/capacity-bun-native.json
-          bun benchmarks/libfx/bench-capacity.mjs --backend wasm --count 25 > benchmarks/results/libfx/capacity-bun-wasm.json
-          node benchmarks/libfx/bench-competitive.mjs --server ${{ runner.temp }}/libfx-fake-inference-server --pi-root /tmp/libfx-pi --out benchmarks/results/libfx --samples 100 --warmups 3 --rounds 3
-
-      - name: Enforce deterministic libfx contracts
-        run: node benchmarks/libfx/check-results.mjs --dir benchmarks/results/libfx
-
-      - name: Upload raw libfx TTFT samples
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: libfx-ttft-${{ github.sha }}
-          path: benchmarks/results/libfx/*.json
-          if-no-files-found: error
-
   signed-macos:
     name: Signed macOS comparison
     if: github.event_name == 'workflow_dispatch' && inputs.signed_run != '' && inputs.pgso_control_artifact == '' && inputs.pgso_candidate_artifact == ''
@@ -277,12 +210,6 @@ jobs:
             --source-sha "$(jq -r .head_sha "$RUNNER_TEMP/signed-source.json")" \
             --output "$RUNNER_TEMP/signed-comparison"
 
-      - name: Compare native image-flow memory
-        env:
-          FX_SIGNED_COMPARE_DIR: ${{ runner.temp }}/signed-comparison
-          FX_SIGNED_RESOURCE_PROBE: ${{ runner.temp }}/signed-resources
-        run: bun test benchmarks/signed_macos_memory.test.ts
-
       - name: Retain paired measurements
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -292,7 +219,6 @@ jobs:
             ${{ runner.temp }}/signed-comparison/manifest.json
             ${{ runner.temp }}/signed-comparison/startup-*.json
             ${{ runner.temp }}/signed-comparison/startup-*/logs/
-            ${{ runner.temp }}/signed-comparison/memory-*.json
             ${{ runner.temp }}/signed-source.json
           if-no-files-found: error
 

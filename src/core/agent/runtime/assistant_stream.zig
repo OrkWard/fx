@@ -707,22 +707,22 @@ const NoticeCapture = struct {
 
     fn appendRuntimeContext(_: *anyopaque, _: Allocator, _: *std.ArrayList(ChatMessage)) !void {}
 
-    fn requestPermission(_: *anyopaque, _: Allocator, _: ToolCall, _: permission_auto_classifier.ReviewTurnContext, _: PermissionMode, _: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation, _: []const []const u8, _: ?[]const u8) !command_admission.PermissionOutcome {
+    fn requestPermission(_: *anyopaque, _: Allocator, _: ToolCall, _: permission_auto_classifier.ReviewTurnContext, _: PermissionMode, _: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation) !command_admission.PermissionOutcome {
         return .{
             .decision = .once,
             .execution_authority = .ordinary,
         };
     }
 
-    fn describeAction(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn describeAction(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8) ![]const u8 {
         return arena.dupe(u8, call.name);
     }
 
-    fn describeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8, _: []const []const u8) ![]const u8 {
+    fn describeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8) ![]const u8 {
         return arena.print("{s} {s}", .{ label, call.name });
     }
 
-    fn permissionTarget(_: *anyopaque, arena: Allocator, _: ToolCall, _: []const []const u8) ![]const u8 {
+    fn permissionTarget(_: *anyopaque, arena: Allocator, _: ToolCall) ![]const u8 {
         return arena.dupe(u8, "");
     }
 
@@ -831,16 +831,16 @@ const StreamCapture = struct {
     }
 
     fn noopAppendRuntimeContext(_: *anyopaque, _: Allocator, _: *std.ArrayList(ChatMessage)) !void {}
-    fn noopRequestPermission(_: *anyopaque, _: Allocator, _: ToolCall, _: permission_auto_classifier.ReviewTurnContext, _: PermissionMode, _: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation, _: []const []const u8, _: ?[]const u8) !command_admission.PermissionOutcome {
+    fn noopRequestPermission(_: *anyopaque, _: Allocator, _: ToolCall, _: permission_auto_classifier.ReviewTurnContext, _: PermissionMode, _: []const PermissionGrant, _: ?runtime_tool_contracts.LiveToolAuthority, _: ?runtime_tool_contracts.LivePermissionRevalidation) !command_admission.PermissionOutcome {
         return .{ .decision = .once, .execution_authority = .ordinary };
     }
-    fn noopDescribeAction(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn noopDescribeAction(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8) ![]const u8 {
         return arena.dupe(u8, call.name);
     }
-    fn noopDescribeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8, _: []const []const u8) ![]const u8 {
+    fn noopDescribeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8) ![]const u8 {
         return arena.print("{s} {s}", .{ label, call.name });
     }
-    fn noopPermissionTarget(_: *anyopaque, arena: Allocator, _: ToolCall, _: []const []const u8) ![]const u8 {
+    fn noopPermissionTarget(_: *anyopaque, arena: Allocator, _: ToolCall) ![]const u8 {
         return arena.dupe(u8, "");
     }
     fn noopExecute(_: *anyopaque, _: runtime_tool_contracts.ToolExecutionRequest) !ToolExecutionResult {

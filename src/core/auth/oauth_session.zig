@@ -3,11 +3,9 @@ const testing_allocator = @import("../shared/testing_allocator.zig");
 const builtin = @import("builtin");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host_contract = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const native_keychain = @import("../hosts/native_keychain.zig");
 const io_mod = @import("../shared/io.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
-const js_host_auth = @import("js_host_auth.zig");
 const secret = @import("secret.zig");
 const session_presence = @import("session_presence.zig");
 
@@ -121,7 +119,6 @@ pub fn presence() host_contract.SecretStorePresence {
 }
 
 pub fn requireSignInStorage() error{CredentialStorageUnavailable}!void {
-    if (comptime host_target.is_wasm) return;
     const file_exists = try session_presence.requireWritableProfileFile(auth_file_name, mutation_lock_file_name);
     try requireSignInDestination(storageBackend(), file_exists, native_keychain_backend);
 }
@@ -371,9 +368,7 @@ fn authFileExists(fx_dir: *std.Io.Dir) !bool {
     return true;
 }
 
-pub const Mutation = if (host_target.is_wasm) HostMutation else NativeMutation;
-
-const NativeMutation = struct {
+pub const Mutation = struct {
     fx_dir: io_mod.VerifiedDir,
     lock: io_mod.TimedAdvisoryLock,
     backend: StorageBackend,
@@ -515,70 +510,6 @@ const NativeMutation = struct {
     }
 };
 
-const HostMutation = struct {
-    store: js_host_auth.SessionStore = js_host_auth.oauth_session_store,
-    revision: [js_host_auth.max_revision_bytes]u8 = undefined,
-    revision_len: usize = 0,
-    exists: bool = false,
-
-    // Host storage validates writes through its revisioned save callback.
-    pub fn requireWritable(_: *HostMutation) error{CredentialStorageUnavailable}!void {}
-
-    fn init(store: js_host_auth.SessionStore) HostMutation {
-        return .{ .store = store };
-    }
-
-    pub fn deinit(self: *HostMutation) void {
-        @memset(&self.revision, 0);
-        self.* = undefined;
-    }
-
-    pub fn load(self: *HostMutation, alloc: Allocator) !?Session {
-        var stored = (self.store.load(alloc) catch |err| return session_presence.storageError(auth_file_name, err)) orelse {
-            self.exists = false;
-            self.revision_len = 0;
-            return null;
-        };
-        defer stored.deinit(alloc);
-        try self.captureStoredRevision(stored.revision);
-        return @as(?Session, try parseStoredSession(alloc, stored.bytes));
-    }
-
-    pub fn save(self: *HostMutation, alloc: Allocator, session: Session) !void {
-        const text = try stringify(alloc, session);
-        defer secret.zeroAndFree(alloc, text);
-        const expected = if (self.exists) self.revision[0..self.revision_len] else null;
-        const revision = try self.store.commit(alloc, text, expected);
-        defer alloc.free(revision);
-        try self.captureStoredRevision(revision);
-    }
-
-    pub fn delete(self: *HostMutation, _: Allocator) !DeleteResult {
-        const expected = if (self.exists) self.revision[0..self.revision_len] else null;
-        return switch (try self.store.remove(expected)) {
-            .deleted => .{ .session_deleted = true },
-            .missing => .{},
-        };
-    }
-
-    fn captureRevision(self: *HostMutation, alloc: Allocator) !void {
-        var stored = (try self.store.load(alloc)) orelse {
-            self.exists = false;
-            self.revision_len = 0;
-            return;
-        };
-        defer stored.deinit(alloc);
-        try self.captureStoredRevision(stored.revision);
-    }
-
-    fn captureStoredRevision(self: *HostMutation, revision: []const u8) !void {
-        if (revision.len > self.revision.len) return error.OAuthSessionRevisionTooLarge;
-        @memcpy(self.revision[0..revision.len], revision);
-        self.revision_len = revision.len;
-        self.exists = true;
-    }
-};
-
 pub fn configuredClientId() ?[]const u8 {
     if (io_mod.getenv(client_id_env)) |value| {
         if (std.mem.trim(u8, value, " \t\r\n").len > 0) return value;
@@ -627,7 +558,6 @@ fn isLoopbackHttpUrl(url: []const u8, require_origin: bool) bool {
 }
 
 pub fn load(alloc: Allocator) !?Session {
-    if (comptime host_target.is_wasm) return loadFromHost(alloc, js_host_auth.oauth_session_store);
     const home = io_mod.getenv("HOME") orelse {
         debug_trace.logf("auth", "session load skipped step=home err=HomeNotSet", .{});
         return null;
@@ -658,12 +588,6 @@ pub fn load(alloc: Allocator) !?Session {
     defer fx_dir.close(io_mod.getIo());
 
     return loadFromDir(alloc, &fx_dir);
-}
-
-fn loadFromHost(alloc: Allocator, store: js_host_auth.SessionStore) !?Session {
-    var stored = (store.load(alloc) catch |err| return session_presence.storageError(auth_file_name, err)) orelse return null;
-    defer stored.deinit(alloc);
-    return try parseStoredSession(alloc, stored.bytes);
 }
 
 fn loadFromDir(alloc: Allocator, fx_dir: *std.Io.Dir) !?Session {
@@ -703,21 +627,12 @@ fn parseStoredSession(alloc: Allocator, bytes: []const u8) !Session {
 }
 
 pub fn saveNewSession(alloc: Allocator, session: Session) !void {
-    if (comptime host_target.is_wasm) {
-        var mutation = HostMutation.init(js_host_auth.oauth_session_store);
-        defer mutation.deinit();
-        try mutation.captureRevision(alloc);
-        return mutation.save(alloc, session);
-    }
     var mutation = try beginMutation();
     defer mutation.deinit();
     try mutation.save(alloc, session);
 }
 
 pub fn beginExistingMutation() !?Mutation {
-    if (comptime host_target.is_wasm) {
-        return @as(?Mutation, HostMutation.init(js_host_auth.oauth_session_store));
-    }
     if (storageBackend() == .macos_keychain) {
         return @as(?Mutation, beginMutation() catch |err| return session_presence.storageError(auth_file_name, err));
     }
@@ -939,68 +854,6 @@ fn requiredInteger(object: std.json.ObjectMap, key: []const u8) !i64 {
 }
 
 const test_session_json = "{\"version\":1,\"issuer\":\"https://vercel.com\",\"client_id\":\"client\",\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"expires_at_ms\":1,\"scope\":\"openid offline_access\",\"token_type\":\"Bearer\",\"team_slug\":\"team-slug\",\"team_id\":\"team-id\"}";
-
-const HostStoreTestState = struct {
-    record: ?[]const u8 = test_session_json,
-    revision: []const u8 = "7",
-    next_revision: []const u8 = "8",
-    force_conflict: bool = false,
-    commit_count: usize = 0,
-    remove_count: usize = 0,
-    expected_revision_matched: bool = false,
-    committed_format_matched: bool = false,
-
-    fn provider(self: *@This()) js_host_auth.SessionStore {
-        return .{
-            .context = self,
-            .load_fn = HostStoreTestState.load,
-            .commit_fn = HostStoreTestState.commit,
-            .remove_fn = HostStoreTestState.remove,
-        };
-    }
-
-    fn load(raw: ?*anyopaque, alloc: Allocator) !?js_host_auth.StoredSession {
-        const self = state(raw);
-        const record = self.record orelse return null;
-        const bytes = try alloc.dupe(u8, record);
-        errdefer secret.zeroAndFree(alloc, bytes);
-        return .{
-            .bytes = bytes,
-            .revision = try alloc.dupe(u8, self.revision),
-        };
-    }
-
-    fn commit(
-        raw: ?*anyopaque,
-        alloc: Allocator,
-        bytes: []const u8,
-        expected_revision: ?[]const u8,
-    ) ![]u8 {
-        const self = state(raw);
-        self.commit_count += 1;
-        self.expected_revision_matched = expected_revision != null and
-            std.mem.eql(u8, expected_revision.?, self.revision);
-        self.committed_format_matched = std.mem.eql(u8, bytes, test_session_json ++ "\n");
-        if (self.force_conflict) return error.OAuthSessionRevisionConflict;
-        self.revision = self.next_revision;
-        return alloc.dupe(u8, self.revision);
-    }
-
-    fn remove(raw: ?*anyopaque, expected_revision: ?[]const u8) !js_host_auth.RemoveOutcome {
-        const self = state(raw);
-        self.remove_count += 1;
-        self.expected_revision_matched = expected_revision != null and
-            std.mem.eql(u8, expected_revision.?, self.revision);
-        if (self.force_conflict) return error.OAuthSessionRevisionConflict;
-        if (self.record == null) return .missing;
-        self.record = null;
-        return .deleted;
-    }
-
-    fn state(raw: ?*anyopaque) *@This() {
-        return @ptrCast(@alignCast(raw.?));
-    }
-};
 
 fn check_parse_allocation_failures(alloc: Allocator) !void {
     var session = try parse(alloc, test_session_json);
@@ -1332,45 +1185,6 @@ test "OAuth logout deletion attempts Keychain and file cleanup independently" {
         error.FileNotFound,
         tmp.dir.statFile(std.testing.io, auth_file_name, .{}),
     );
-}
-
-test "JS host OAuth session load commit and remove preserve the native format and revision" {
-    var state: HostStoreTestState = .{};
-    var loaded = (try loadFromHost(std.testing.allocator, state.provider())).?;
-    defer loaded.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("access", loaded.access_token);
-
-    var mutation = HostMutation.init(state.provider());
-    defer mutation.deinit();
-    var current = (try mutation.load(std.testing.allocator)).?;
-    defer current.deinit(std.testing.allocator);
-    try mutation.save(std.testing.allocator, current);
-    try std.testing.expectEqual(@as(usize, 1), state.commit_count);
-    try std.testing.expect(state.expected_revision_matched);
-    try std.testing.expect(state.committed_format_matched);
-
-    const deleted = try mutation.delete(std.testing.allocator);
-    try std.testing.expect(deleted.session_deleted);
-    try std.testing.expect(!deleted.local_cleanup_failed);
-    try std.testing.expectEqual(@as(usize, 1), state.remove_count);
-    try std.testing.expect(state.expected_revision_matched);
-}
-
-test "JS host OAuth session revision conflict does not take session ownership" {
-    var state = HostStoreTestState{ .force_conflict = true };
-    var mutation = HostMutation.init(state.provider());
-    defer mutation.deinit();
-    var current = (try mutation.load(std.testing.allocator)).?;
-    defer current.deinit(std.testing.allocator);
-    const access_token = current.access_token.ptr;
-
-    try std.testing.expectError(
-        error.OAuthSessionRevisionConflict,
-        mutation.save(std.testing.allocator, current),
-    );
-    try std.testing.expectEqual(access_token, current.access_token.ptr);
-    try std.testing.expectEqualStrings("access", current.access_token);
-    try std.testing.expectEqual(@as(usize, 1), state.commit_count);
 }
 
 test "oauth session parse cleans up allocation failures" {

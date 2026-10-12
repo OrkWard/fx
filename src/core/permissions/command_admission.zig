@@ -63,7 +63,6 @@ pub const ShellAuthorizationSource = enum {
     auto_mode,
     auto_classifier,
     yolo,
-    js_host,
 };
 
 pub const CommandExecutionAuthority = union(enum) {

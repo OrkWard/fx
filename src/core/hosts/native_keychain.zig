@@ -22,16 +22,13 @@ const FindGenericPasswordFn = *const fn (
 ) callconv(.c) i32;
 
 pub const service_name = "FX_AI_GATEWAY_API_KEY";
-const mcp_credentials_service_name = "FX_MCP_OAUTH_CREDENTIALS_V1";
-/// The sign-in credentials MCP-v2 hands fx to keep, a different format.
-const mcp_host_credentials_service_name = "FX_MCP_OAUTH_CREDENTIALS_V2";
 pub const oauth_session_service_name = "FX_OAUTH_SESSION_V1";
 
 /// Backing store for a resolved account name. Must outlive any argv built from it.
 pub const AccountBuffer = [256]u8;
 
 const passwd_scratch_bytes = 2048;
-const max_mcp_credentials_bytes: usize = 1024 * 1024;
+const max_script_value_bytes: usize = 1024 * 1024;
 const max_oauth_session_bytes: usize = 64 * 1024;
 const keychain_process_timeout: std.Io.Timeout = .{
     .duration = .{
@@ -87,7 +84,7 @@ fn userDefaultKeychainAvailableForCommand(
     argv: []const []const u8,
     cancel_flag: ?*const std.atomic.Value(bool),
 ) Error!bool {
-    const result = runMcpKeychainProcess(
+    const result = runScriptKeychainProcess(
         alloc,
         argv,
         cancel_flag,
@@ -112,7 +109,7 @@ fn userDefaultKeychainAvailableForCommand(
 }
 
 /// Returns a slice borrowing `buf`. `USER` stays authoritative when set, because it
-/// is the only way to target a non-login account. ACP clients launched by GUI editors
+/// is the only way to target a non-login account. Processes launched by GUI apps
 /// inherit a thinner environment than a shell, so the operating system supplies the
 /// account when `USER` is absent instead of failing the read.
 fn accountName(buf: *AccountBuffer) Error![]const u8 {
@@ -199,23 +196,8 @@ fn containsService(service: []const u8) Error!host.SecretStorePresence {
     return error.KeychainReadFailed;
 }
 
-pub fn loadMcpCredentials(alloc: std.mem.Allocator) !?[]u8 {
-    return loadMcpValueMacControlled(alloc, mcp_credentials_service_name, null);
-}
-
 pub fn loadOAuthSession(alloc: std.mem.Allocator) !?[]u8 {
-    return loadMcpValueMacControlled(alloc, oauth_session_service_name, null);
-}
-
-pub fn loadMcpCredentialsCancellable(
-    alloc: std.mem.Allocator,
-    cancel_flag: *const std.atomic.Value(bool),
-) !?[]u8 {
-    return loadMcpValueMacControlled(
-        alloc,
-        mcp_credentials_service_name,
-        cancel_flag,
-    );
+    return loadScriptValueMacControlled(alloc, oauth_session_service_name, null);
 }
 
 fn loadFromService(alloc: std.mem.Allocator, service: []const u8) !?[]u8 {
@@ -288,11 +270,11 @@ const store_value_script =
     \\exit [lindex $result 3]
 ;
 
-// `security add-generic-password -w` uses a 128-byte interactive buffer. MCP's
-// aggregate credential store is larger, so use the native Security API through
+// `security add-generic-password -w` uses a 128-byte interactive buffer. Larger
+// values such as OAuth sessions need more, so use the native Security API through
 // the stable system osascript host. Account and service are non-secret argv;
 // credential bytes travel only through stdin/stdout.
-const mcp_keychain_script =
+const keychain_script =
     \\ObjC.import("Security");
     \\ObjC.import("Foundation");
     \\const object = (value) => ObjC.castRefToObject(value);
@@ -378,66 +360,16 @@ pub fn storeValue(value: []const u8) Error!void {
     return error.UnsupportedPlatform;
 }
 
-pub fn storeMcpCredentials(value: []const u8) Error!void {
-    return storeMcpCredentialsControlled(value, null);
-}
-
 pub fn storeOAuthSession(value: []const u8) Error!void {
     if (!isAvailable()) return error.UnsupportedPlatform;
     if (value.len == 0 or value.len > max_oauth_session_bytes) {
         return error.KeychainWriteFailed;
     }
-    return storeMcpValueMac(oauth_session_service_name, value);
-}
-
-pub fn storeMcpCredentialsCancellable(
-    value: []const u8,
-    cancel_flag: *const std.atomic.Value(bool),
-) Error!void {
-    return storeMcpCredentialsControlled(value, cancel_flag);
-}
-
-fn storeMcpCredentialsControlled(
-    value: []const u8,
-    cancel_flag: ?*const std.atomic.Value(bool),
-) Error!void {
-    if (!isAvailable()) return error.UnsupportedPlatform;
-    if (value.len == 0 or value.len > max_mcp_credentials_bytes) {
-        return error.KeychainWriteFailed;
-    }
-
-    if (comptime builtin.target.os.tag == .macos) {
-        return storeMcpValueMacControlled(
-            mcp_credentials_service_name,
-            value,
-            cancel_flag,
-        );
-    }
-    return error.UnsupportedPlatform;
-}
-
-pub fn deleteMcpCredentials(alloc: std.mem.Allocator) Error!bool {
-    return deleteMcpValueMac(alloc, mcp_credentials_service_name);
+    return storeScriptValueMac(oauth_session_service_name, value);
 }
 
 pub fn deleteOAuthSession(alloc: std.mem.Allocator) Error!bool {
-    return deleteMcpValueMac(alloc, oauth_session_service_name);
-}
-
-/// Returns error.KeychainItemNotFound when nothing was stored yet.
-pub fn loadMcpHostCredentials(alloc: std.mem.Allocator) Error!?[]u8 {
-    return loadMcpValueMacControlled(alloc, mcp_host_credentials_service_name, null);
-}
-
-pub fn storeMcpHostCredentials(value: []const u8) Error!void {
-    if (!isAvailable()) return error.UnsupportedPlatform;
-    if (value.len == 0 or value.len > max_mcp_credentials_bytes) return error.KeychainWriteFailed;
-    if (comptime builtin.target.os.tag == .macos) return storeMcpValueMac(mcp_host_credentials_service_name, value);
-    return error.UnsupportedPlatform;
-}
-
-pub fn deleteMcpHostCredentials(alloc: std.mem.Allocator) Error!bool {
-    return deleteMcpValueMac(alloc, mcp_host_credentials_service_name);
+    return deleteScriptValueMac(alloc, oauth_session_service_name);
 }
 
 fn writeFailed(step: []const u8, err: anyerror) Error {
@@ -484,7 +416,7 @@ fn storeValueMac(service: []const u8, value: []const u8) Error!void {
     if (term != .exited or term.exited != 0) return writeFailedTerm("exit", term);
 }
 
-fn mcpScriptArgv(
+fn keychainScriptArgv(
     operation: []const u8,
     account: []const u8,
     service: []const u8,
@@ -494,21 +426,21 @@ fn mcpScriptArgv(
         "-l",
         "JavaScript",
         "-e",
-        mcp_keychain_script,
+        keychain_script,
         operation,
         account,
         service,
     };
 }
 
-fn loadMcpValueMac(
+fn loadScriptValueMac(
     alloc: std.mem.Allocator,
     service: []const u8,
 ) Error!?[]u8 {
-    return loadMcpValueMacControlled(alloc, service, null);
+    return loadScriptValueMacControlled(alloc, service, null);
 }
 
-fn loadMcpValueMacControlled(
+fn loadScriptValueMacControlled(
     alloc: std.mem.Allocator,
     service: []const u8,
     cancel_flag: ?*const std.atomic.Value(bool),
@@ -517,12 +449,12 @@ fn loadMcpValueMacControlled(
 
     var account_buf: AccountBuffer = undefined;
     const account = try accountName(&account_buf);
-    const argv = mcpScriptArgv("load", account, service);
-    const result = runMcpKeychainProcess(
+    const argv = keychainScriptArgv("load", account, service);
+    const result = runScriptKeychainProcess(
         alloc,
         &argv,
         cancel_flag,
-        .limited(max_mcp_credentials_bytes + 1),
+        .limited(max_script_value_bytes + 1),
     ) catch |err| {
         if (err == error.Cancelled) return error.Cancelled;
         debug_trace.logf("keychain", "load failed step=native err={s}", .{@errorName(err)});
@@ -538,26 +470,26 @@ fn loadMcpValueMacControlled(
         alloc.free(result.stdout);
         return error.KeychainItemNotFound;
     }
-    if (result.stdout.len > max_mcp_credentials_bytes) {
+    if (result.stdout.len > max_script_value_bytes) {
         secret.zeroAndFree(alloc, result.stdout);
         return error.KeychainReadFailed;
     }
     return result.stdout;
 }
 
-const McpKeychainRunContext = struct {
+const ScriptKeychainRunContext = struct {
     alloc: std.mem.Allocator,
     argv: []const []const u8,
     stdout_limit: std.Io.Limit,
 };
 
-const McpKeychainRunEvent = union(enum) {
+const ScriptKeychainRunEvent = union(enum) {
     process: anyerror!std.process.RunResult,
     cancelled: anyerror!void,
 };
 
-fn runMcpKeychainChild(
-    context: *const McpKeychainRunContext,
+fn runScriptKeychainChild(
+    context: *const ScriptKeychainRunContext,
 ) anyerror!std.process.RunResult {
     return std.process.run(context.alloc, io_mod.getIo(), .{
         .argv = context.argv,
@@ -567,7 +499,7 @@ fn runMcpKeychainChild(
     });
 }
 
-fn waitForMcpKeychainCancellation(
+fn waitForScriptKeychainCancellation(
     cancel_flag: *const std.atomic.Value(bool),
 ) anyerror!void {
     while (!cancel_flag.load(.acquire)) {
@@ -575,32 +507,32 @@ fn waitForMcpKeychainCancellation(
     }
 }
 
-fn runMcpKeychainProcess(
+fn runScriptKeychainProcess(
     alloc: std.mem.Allocator,
     argv: []const []const u8,
     cancel_flag: ?*const std.atomic.Value(bool),
     stdout_limit: std.Io.Limit,
 ) anyerror!std.process.RunResult {
-    const flag = cancel_flag orelse return runMcpKeychainChild(&.{
+    const flag = cancel_flag orelse return runScriptKeychainChild(&.{
         .alloc = alloc,
         .argv = argv,
         .stdout_limit = stdout_limit,
     });
-    var context = McpKeychainRunContext{
+    var context = ScriptKeychainRunContext{
         .alloc = alloc,
         .argv = argv,
         .stdout_limit = stdout_limit,
     };
-    var select_buffer: [2]McpKeychainRunEvent = undefined;
-    var select: std.Io.Select(McpKeychainRunEvent) = .init(
+    var select_buffer: [2]ScriptKeychainRunEvent = undefined;
+    var select: std.Io.Select(ScriptKeychainRunEvent) = .init(
         io_mod.getIo(),
         &select_buffer,
     );
-    select.concurrent(.process, runMcpKeychainChild, .{&context}) catch |err|
+    select.concurrent(.process, runScriptKeychainChild, .{&context}) catch |err|
         return err;
     select.concurrent(
         .cancelled,
-        waitForMcpKeychainCancellation,
+        waitForScriptKeychainCancellation,
         .{flag},
     ) catch |err| {
         select.cancelDiscard();
@@ -626,36 +558,36 @@ fn runMcpKeychainProcess(
     };
 }
 
-const McpStoreEvent = union(enum) {
+const ScriptStoreEvent = union(enum) {
     wait: anyerror!std.process.Child.Term,
     timeout: anyerror!void,
     cancelled: anyerror!void,
 };
 
-fn waitForMcpStoreChild(child: *std.process.Child) anyerror!std.process.Child.Term {
+fn waitForScriptStoreChild(child: *std.process.Child) anyerror!std.process.Child.Term {
     return child.wait(io_mod.getIo());
 }
 
-fn waitForMcpStoreTimeout() anyerror!void {
+fn waitForScriptStoreTimeout() anyerror!void {
     return std.Io.Timeout.sleep(keychain_process_timeout, io_mod.getIo());
 }
 
-fn waitForMcpStore(
+fn waitForScriptStore(
     child: *std.process.Child,
     cancel_flag: ?*const std.atomic.Value(bool),
 ) Error!std.process.Child.Term {
-    var select_buffer: [3]McpStoreEvent = undefined;
-    var select: std.Io.Select(McpStoreEvent) = .init(io_mod.getIo(), &select_buffer);
-    select.concurrent(.wait, waitForMcpStoreChild, .{child}) catch |err|
+    var select_buffer: [3]ScriptStoreEvent = undefined;
+    var select: std.Io.Select(ScriptStoreEvent) = .init(io_mod.getIo(), &select_buffer);
+    select.concurrent(.wait, waitForScriptStoreChild, .{child}) catch |err|
         return writeFailed("native_wait_start", err);
-    select.concurrent(.timeout, waitForMcpStoreTimeout, .{}) catch |err| {
+    select.concurrent(.timeout, waitForScriptStoreTimeout, .{}) catch |err| {
         select.cancelDiscard();
         return writeFailed("native_timeout_start", err);
     };
     if (cancel_flag) |flag| {
         select.concurrent(
             .cancelled,
-            waitForMcpKeychainCancellation,
+            waitForScriptKeychainCancellation,
             .{flag},
         ) catch |err| {
             select.cancelDiscard();
@@ -690,18 +622,18 @@ fn waitForMcpStore(
     }
 }
 
-fn storeMcpValueMac(service: []const u8, value: []const u8) Error!void {
-    return storeMcpValueMacControlled(service, value, null);
+fn storeScriptValueMac(service: []const u8, value: []const u8) Error!void {
+    return storeScriptValueMacControlled(service, value, null);
 }
 
-fn storeMcpValueMacControlled(
+fn storeScriptValueMacControlled(
     service: []const u8,
     value: []const u8,
     cancel_flag: ?*const std.atomic.Value(bool),
 ) Error!void {
     var account_buf: AccountBuffer = undefined;
     const account = try accountName(&account_buf);
-    const argv = mcpScriptArgv("store", account, service);
+    const argv = keychainScriptArgv("store", account, service);
     var child = std.process.spawn(io_mod.getIo(), .{
         .argv = &argv,
         .stdin = .pipe,
@@ -719,13 +651,13 @@ fn storeMcpValueMacControlled(
     input.close(io_mod.getIo());
     input_open = false;
 
-    const term = try waitForMcpStore(&child, cancel_flag);
+    const term = try waitForScriptStore(&child, cancel_flag);
     if (term != .exited or term.exited != 0) {
         return writeFailedTerm("native_exit", term);
     }
 }
 
-fn deleteMcpValueMac(
+fn deleteScriptValueMac(
     alloc: std.mem.Allocator,
     service: []const u8,
 ) Error!bool {
@@ -733,7 +665,7 @@ fn deleteMcpValueMac(
 
     var account_buf: AccountBuffer = undefined;
     const account = try accountName(&account_buf);
-    const argv = mcpScriptArgv("delete", account, service);
+    const argv = keychainScriptArgv("delete", account, service);
     const result = std.process.run(alloc, io_mod.getIo(), .{
         .argv = &argv,
         .stdout_limit = .limited(16),
@@ -822,25 +754,25 @@ test "stored key round-trips byte-identically with USER unset" {
     );
 }
 
-test "MCP Keychain storage round-trips values beyond the security prompt limit" {
+test "scripted Keychain storage round-trips values beyond the security prompt limit" {
     if (comptime builtin.target.os.tag != .macos) return error.SkipZigTest;
     if (isDisabled()) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
-    const test_mcp_service = "FX_TEST_MCP_OAUTH_CREDENTIALS_V1";
-    const written = text_utils.repeat("mcp-credential-section-", 32);
+    const test_service = "FX_TEST_KEYCHAIN_SCRIPT_V1";
+    const written = text_utils.repeat("credential-section-", 32);
 
-    storeMcpValueMac(test_mcp_service, written) catch return error.SkipZigTest;
-    defer _ = deleteMcpValueMac(alloc, test_mcp_service) catch false;
+    storeScriptValueMac(test_service, written) catch return error.SkipZigTest;
+    defer _ = deleteScriptValueMac(alloc, test_service) catch false;
 
-    const read_back = (try loadMcpValueMac(alloc, test_mcp_service)) orelse
+    const read_back = (try loadScriptValueMac(alloc, test_service)) orelse
         return error.KeychainItemNotFound;
     defer secret.zeroAndFree(alloc, read_back);
     try std.testing.expectEqualStrings(written, read_back);
-    try std.testing.expect(try deleteMcpValueMac(alloc, test_mcp_service));
+    try std.testing.expect(try deleteScriptValueMac(alloc, test_service));
     try std.testing.expectError(
         error.KeychainItemNotFound,
-        loadMcpValueMac(alloc, test_mcp_service),
+        loadScriptValueMac(alloc, test_service),
     );
 }
 
@@ -852,8 +784,8 @@ test "Keychain store command has no secret argument" {
     }
 }
 
-test "cancellable MCP Keychain runner interrupts and reaps a stalled child" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+test "cancellable scripted Keychain runner interrupts and reaps a stalled child" {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     const Canceller = struct {
@@ -871,7 +803,7 @@ test "cancellable MCP Keychain runner interrupts and reaps a stalled child" {
     const started_ms = io_mod.milliTimestamp();
     try std.testing.expectError(
         error.Cancelled,
-        runMcpKeychainProcess(
+        runScriptKeychainProcess(
             std.testing.allocator,
             &.{ "/bin/sh", "-c", "exec sleep 60" },
             &cancel,
@@ -883,7 +815,7 @@ test "cancellable MCP Keychain runner interrupts and reaps a stalled child" {
 }
 
 test "default Keychain availability probe is cancellable" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     const Canceller = struct {
@@ -911,8 +843,8 @@ test "default Keychain availability probe is cancellable" {
     try std.testing.expect(io_mod.milliTimestamp() - started_ms < 1_000);
 }
 
-test "cancellable MCP Keychain store wait interrupts a stalled child" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+test "cancellable scripted Keychain store wait interrupts a stalled child" {
+    if (comptime builtin.target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     const Canceller = struct {
@@ -937,7 +869,7 @@ test "cancellable MCP Keychain store wait interrupts a stalled child" {
     const started_ms = io_mod.milliTimestamp();
     try std.testing.expectError(
         error.Cancelled,
-        waitForMcpStore(&child, &cancel),
+        waitForScriptStore(&child, &cancel),
     );
     thread.join();
     try std.testing.expect(io_mod.milliTimestamp() - started_ms < 1_000);

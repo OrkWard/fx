@@ -3,7 +3,6 @@ const question_prompt = @import("../../core/agent/question_prompt.zig");
 const auth_runtime = @import("../../core/auth/auth_runtime.zig");
 const credentials = @import("../../core/auth/credentials.zig");
 const image_attachments = @import("../../core/images/image_attachments.zig");
-const mcp_menu_state = @import("../../core/mcp/menu_state.zig");
 const command_specs = @import("../../core/slash_commands/command_specs.zig");
 const display_width = @import("../../core/shared/display_width.zig");
 const list_window = @import("../../core/shared/list_window.zig");
@@ -29,7 +28,7 @@ pub const composeDividerRow = row_text.composeDividerRow;
 pub const appendClipped = row_text.appendClipped;
 pub const appendAbsoluteColumn = row_text.appendAbsoluteColumn;
 
-pub const PickerKind = enum { model_stage, provider_stage, models, file, slash, skills, help, settings, sessions, mcp, auth };
+pub const PickerKind = enum { model_stage, provider_stage, models, file, slash, skills, help, settings, sessions, auth };
 pub const CappedInputRows = struct {
     row_limit: usize,
     total_lines: u16,
@@ -538,10 +537,8 @@ pub fn composeHintRow(
         ""
     else if (danger_text.len > 0)
         danger_text
-    else if (ctx.upgrade_status.len > 0)
-        ctx.upgrade_status
     else
-        ctx.mcp_status;
+        ctx.upgrade_status;
     const right_width = display_width.visibleWidth(right_text);
     const danger_visible = danger_text.len > 0 and right_text.ptr == danger_text.ptr;
     const left_width: u16 = if (!danger_visible and right_width > 0 and width_usize > right_width)
@@ -603,99 +600,6 @@ pub fn composeModelsMenuHintRow(alloc: Allocator, width: u16, ctrl_c_pending: bo
 
 pub fn composeResumeMenuHintRow(alloc: Allocator, width: u16, ctrl_c_pending: bool) !std.ArrayList(u8) {
     return composeCatalogMenuHintRow(alloc, width, ctrl_c_pending, .scope);
-}
-
-/// fx's hint line: the widest of `variants` that fits, or the warning that
-/// a second Ctrl+C exits.
-pub fn composeVariantHintRow(alloc: Allocator, width: u16, ctrl_c_pending: bool, variants: []const []const u8) !std.ArrayList(u8) {
-    var row: std.ArrayList(u8) = .empty;
-    errdefer row.deinit(alloc);
-    if (ctrl_c_pending) {
-        try row.appendSlice(alloc, ui_render.statusline_style);
-        try row_text.appendClipped(alloc, &row, "press ctrl+c again to exit", width);
-        try row.appendSlice(alloc, ui_render.reset_style);
-        return row;
-    }
-    var hint = variants[variants.len - 1];
-    for (variants) |candidate| {
-        if (display_width.visibleWidth(candidate) <= width) {
-            hint = candidate;
-            break;
-        }
-    }
-    try row.appendSlice(alloc, ui_render.dim_style);
-    try row_text.appendClipped(alloc, &row, hint, width);
-    try row.appendSlice(alloc, ui_render.reset_style);
-    return row;
-}
-
-pub fn composeMcpMenuHintRow(
-    alloc: Allocator,
-    width: u16,
-    ctrl_c_pending: bool,
-    projection: render_input.McpMenuProjection,
-) !std.ArrayList(u8) {
-    const state = projection.state;
-
-    const root_variants = [_][]const u8{
-        "↑↓ move  tab section  enter inspect  s add Slack  a add  r reload  c help  esc close",
-        "↑↓ move  tab section  enter  s Slack  a add  r reload  c help  esc",
-        "tab enter s a r c esc",
-    };
-    const catalog_variants = [_][]const u8{
-        "↑↓ navigate     tab section     enter open     / filter     esc back",
-        "↑↓ move  tab section  enter  / filter  esc",
-        "tab enter / esc",
-    };
-    const preview_variants = [_][]const u8{
-        "↑↓ scroll     i insert     esc back",
-        "↑↓ scroll  i insert  esc",
-        "↑↓ i esc",
-    };
-    const add_variants = [_][]const u8{
-        "type field     enter next/save     tab transport     esc cancel",
-        "type  enter next/save  tab transport  esc",
-        "enter tab esc",
-    };
-    const argument_variants = [_][]const u8{
-        "type value  enter next/preview  tab complete  esc cancel",
-        "type  enter next  tab complete  esc",
-        "enter tab esc",
-    };
-    var details: std.ArrayList(u8) = .empty;
-    defer details.deinit(alloc);
-    if (projection.selectedServer()) |server| {
-        const labels = [_]struct { action: mcp_menu_state.Action, label: []const u8 }{
-            .{ .action = .authenticate, .label = "enter sign in  " },
-            .{ .action = .trust_approve, .label = "a approve  " },
-            .{ .action = .trust_reject, .label = "x reject  " },
-            .{ .action = .remove, .label = "d remove  " },
-            .{ .action = .logout, .label = "l logout  " },
-        };
-        for (labels) |item| if (mcp_menu_state.serverActionAvailable(item.action, server)) try details.appendSlice(alloc, item.label);
-    }
-    try details.appendSlice(alloc, "c help  esc back");
-    const details_variants = [_][]const u8{ details.items, "c help  esc back", "c esc" };
-    const confirm_variants = [_][]const u8{
-        "enter confirm     esc cancel",
-        "enter confirm  esc",
-        "enter esc",
-    };
-    const info_variants = [_][]const u8{
-        "esc back",
-        "esc",
-        "esc",
-    };
-    const variants = switch (state.screen) {
-        .browse => if (state.section == .servers) root_variants else catalog_variants,
-        .preview => preview_variants,
-        .add => add_variants,
-        .arguments => argument_variants,
-        .info => info_variants,
-        .details => details_variants,
-        .confirm => confirm_variants,
-    };
-    return composeVariantHintRow(alloc, width, ctrl_c_pending, &variants);
 }
 
 pub fn composeHelpMenuHintRow(alloc: Allocator, width: u16, ctrl_c_pending: bool) !std.ArrayList(u8) {

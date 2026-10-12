@@ -9,11 +9,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
-    inputs:
-      sdk_native:
-        description: Also build and load the libfx Node-API addon
-        type: boolean
-        default: false
 
 concurrency:
   group: macos-${{ github.event.pull_request.number || github.ref }}
@@ -29,7 +24,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       needed: ${{ steps.detect.outputs.needed }}
-      sdk_native: ${{ steps.detect.outputs.sdk_native }}
     steps:
       # A dispatch diffs the branch against main, so it runs at least the checks
       # its pull request run would.
@@ -42,7 +36,6 @@ jobs:
         id: detect
         env:
           MACOS_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && 'manual dispatch' || (contains(github.event.pull_request.labels.*.name, 'ci:macos') && 'ci:macos label' || '') }}
-          SDK_NATIVE_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.sdk_native || false }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             base="$(git merge-base origin/main HEAD)"
@@ -180,18 +173,6 @@ jobs:
           printf 'Running %s macOS platform E2E files:\n' "${#files[@]}"
           printf '  %s\n' "${files[@]}"
           ./ci-run-files.sh "${files[@]}"
-
-      - name: Setup Node
-        if: needs.detect.outputs.sdk_native == 'true' && matrix.shard.index == 0
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Build and load the native SDK addon
-        if: needs.detect.outputs.sdk_native == 'true' && matrix.shard.index == 0
-        run: |
-          zig build libfx-napi -Dnapi-surface=core -Doptimize=ReleaseSafe
-          npm run --prefix sdk test:node-napi
 
   macos:
     name: macOS arm64

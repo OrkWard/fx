@@ -546,7 +546,7 @@ const testing = std.testing;
 const test_tools = [_]Record{
     .{ .number = 7, .text = "T7 shell: zig build test\nResult:\n{\"exit_code\":1,\"output\":\"2 of 141 tests failed in src/core/app.zig\"}", .failed = true },
     .{ .number = 8, .text = "T8 read_file: src/core/app.zig\nResult:\nconst max_bytes = 16_384;\nfn resumeForWrite() void {}" },
-    .{ .number = 9, .text = "T9 shell: git log\nResult:\ncommit 707afac508e1 bumped libfx to 0.0.10" },
+    .{ .number = 9, .text = "T9 shell: git log\nResult:\ncommit 707afac508e1 bumped zlib to 0.0.10" },
 };
 const test_turns = [_]Record{.{ .number = 4, .text = "M4 turn: fix the tests\nUser 4:\nNever push to main. Keep the fix small.\n", .first_tool = 7, .last_tool = 9 }};
 const test_sources: Sources = .{
@@ -567,7 +567,7 @@ test "entries that name their source and state what it holds pass unmarked" {
     const arena = arena_state.allocator();
     const entries = [_]checkpoint.Entry{
         .{ .id = "F1", .text = "F1 (T7): 2 of 141 tests fail in `src/core/app.zig`" },
-        .{ .id = "F2", .text = "F2 (T8, T9): max_bytes is 16_384; libfx is at 0.0.10 since commit 707afac508e1" },
+        .{ .id = "F2", .text = "F2 (T8, T9): max_bytes is 16_384; zlib is at 0.0.10 since commit 707afac508e1" },
         .{ .id = "F3", .text = "F3 (M4): resumeForWrite lives in src/core/app.zig" },
         .{ .id = "R1", .text = "R1 (M4): \"never push to main\"" },
         .{ .id = "R2", .text = "R2 (turn in progress): \"keep the fix small\"" },
@@ -594,7 +594,7 @@ test "what an entry gets wrong is marked, and the entry stays" {
         .{ .id = "R1", .text = "R1 (M4): \"never force push\"" },
         .{ .id = "R2", .text = "R2 (M4): keep it small" },
         // Numbers with more around them and case count as found.
-        .{ .id = "F4", .text = "F4 (T9): LIBFX went to 0.0.10-dev after ~707AFAC508E1" },
+        .{ .id = "F4", .text = "F4 (T9): ZLIB went to 0.0.10-dev after ~707AFAC508E1" },
         .{ .id = "F5", .text = "F5 (turn 9): 141 tests" },
     };
     var counts: Counts = .{};
@@ -672,13 +672,13 @@ test "tool notes are checked against their call, and a failed call is not a succ
     const notes = [_]ledger.Note{
         .{ .number = 7, .text = "ran the tests; all 141 pass" },
         .{ .number = 8, .text = "read src/core/app.zig; max_bytes is 16_384" },
-        .{ .number = 9, .text = "found libfx 0.0.11" },
+        .{ .number = 9, .text = "found zlib 0.0.11" },
     };
     var counts: Counts = .{};
     const result = try checked(arena, .{ .tools = &notes }, &.{}, &counts);
     try testing.expectEqualStrings("ran the tests; all 141 pass [check: T7 failed]", result.tools[0].text);
     try testing.expectEqualStrings(notes[1].text, result.tools[1].text);
-    try testing.expectEqualStrings("found libfx 0.0.11 [check: not in the saved turns or tool calls: 0.0.11]", result.tools[2].text);
+    try testing.expectEqualStrings("found zlib 0.0.11 [check: not in the saved turns or tool calls: 0.0.11]", result.tools[2].text);
     try testing.expectEqual(@as(usize, 1), counts.failed_as_success);
 
     // A note on a failed call that says it failed passes.
@@ -692,7 +692,7 @@ test "a note shared by a run of calls is checked against the whole run" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const notes = [_]ledger.Note{.{ .number = 7, .text = "T7\u{2013}T9: found src/core/app.zig and libfx 0.0.10" }};
+    const notes = [_]ledger.Note{.{ .number = 7, .text = "T7\u{2013}T9: found src/core/app.zig and zlib 0.0.10" }};
     var counts: Counts = .{};
     const result = try checked(arena, .{ .tools = &notes }, &.{}, &counts);
     try testing.expectEqualStrings(notes[0].text, result.tools[0].text);
@@ -704,7 +704,7 @@ test "a value named under the wrong call passes; one found nowhere is marked" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const notes = [_]ledger.Note{
-        .{ .number = 4, .text = "Read core/app.zig:12 (T9) and bumped libfx to 0.0.10; edited lib/other.ts" },
+        .{ .number = 4, .text = "Read core/app.zig:12 (T9) and bumped zlib to 0.0.10; edited lib/other.ts" },
         // A path counts by its last two parts, code by its names; a quote
         // must be exact.
         .{ .number = 4, .text = "Read /repo/src/core/app.zig:40 and `resumeForWrite(void)`; the user wants \"exact CLI parity\"" },

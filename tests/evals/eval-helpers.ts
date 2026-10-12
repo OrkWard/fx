@@ -481,8 +481,6 @@ function captureFxProcessState(): string {
       encoding: "utf8",
     }).split("\n").filter((line) =>
       line.includes("/zig-out/bin/fx") ||
-      line.includes("mcp-modern-") ||
-      line.includes("mcp-legacy-") ||
       line.includes("bun test")
     ).join("\n");
   } catch {

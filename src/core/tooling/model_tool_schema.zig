@@ -134,22 +134,6 @@ pub fn builtinFunctionSchemaJsonAlloc(alloc: std.mem.Allocator, schema: Function
     return try out.toOwnedSlice();
 }
 
-/// Envelope for a dynamic (MCP) tool whose input schema is already rendered
-/// JSON. Caller owns the returned slice.
-pub fn dynamicFunctionSchemaJsonAlloc(
-    alloc: std.mem.Allocator,
-    name: []const u8,
-    description: []const u8,
-    input_schema_json: []const u8,
-) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    try writeFunctionSchemaOpen(&out.writer, name, description);
-    try out.writer.writeAll(input_schema_json);
-    try out.writer.writeByte('}');
-    return try out.toOwnedSlice();
-}
-
 pub fn writeObjectSchema(
     alloc: std.mem.Allocator,
     writer: *std.Io.Writer,
@@ -479,20 +463,4 @@ test "builtinFunctionSchemaJsonAlloc serializes every supported property shape" 
         "integer",
         record_items.get("properties").?.object.get("id").?.object.get("type").?.string,
     );
-}
-
-test "dynamicFunctionSchemaJsonAlloc wraps rendered input schema in the flattened envelope" {
-    const alloc = std.testing.allocator;
-    const description = text_utils.repeat("d", description_max_bytes + 1) ++ "tail";
-    const json = try dynamicFunctionSchemaJsonAlloc(alloc, "mcp_fs_read", description, "{\"type\":\"object\",\"properties\":{}}");
-    defer alloc.free(json);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
-    defer parsed.deinit();
-
-    try std.testing.expectEqualStrings("function", parsed.value.object.get("type").?.string);
-    try std.testing.expectEqualStrings("mcp_fs_read", parsed.value.object.get("name").?.string);
-    try std.testing.expectEqualStrings(description, parsed.value.object.get("description").?.string);
-    try std.testing.expect(parsed.value.object.get("inputSchema").?.object.get("properties") != null);
-    try std.testing.expect(parsed.value.object.get("function") == null);
 }

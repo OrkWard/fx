@@ -6,7 +6,6 @@
 //! a masked entry field and never reaches the composer.
 
 const std = @import("std");
-const host_target = @import("../hosts/target.zig");
 const model_provider = @import("../config/model_provider.zig");
 const provider_catalog = @import("provider_catalog.zig");
 const types = @import("../shared/types.zig");
@@ -109,16 +108,10 @@ pub fn parseMethod(value: []const u8) ?Method {
     return null;
 }
 
-fn providerVisible(id: model_provider.ProviderId) bool {
-    if (comptime host_target.is_wasm) return id != .grok;
-    return true;
-}
-
 /// Writes the visible provider slugs into `out` and returns how many landed.
 pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
     var count: usize = 0;
     for (&provider_catalog.entries) |*entry| {
-        if (!providerVisible(entry.id)) continue;
         out[count] = entry.slug;
         count += 1;
     }

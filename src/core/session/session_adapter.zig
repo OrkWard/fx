@@ -14,8 +14,7 @@
 //! - preferences, permissions, conversation language, title and usage are
 //!   `set` values in v1's encodings;
 //! - large bodies (tool results, tool images, command replay, web-fetch
-//!   downloads) are blobs of the session, each named by its hash (D44); an
-//!   ACP client's prompt and tool identities are settings (D46); hosted
+//!   downloads) are blobs of the session, each named by its hash (D44); hosted
 //!   terminal state lives in `~/.fx/terminal/{id}/` (D45). An older session
 //!   with a `~/.fx/session-files/{id}/` side folder moves on its first
 //!   writable open (D47, `tla/MoveSideFiles.tla`).
@@ -124,7 +123,6 @@ fn traceWiring(comptime action: []const u8, session_id: []const u8, comptime det
 }
 
 fn processId() i64 {
-    if (comptime builtin.target.os.tag == .wasi) return 0;
     return std.c.getpid();
 }
 
@@ -1612,57 +1610,6 @@ pub const Session = struct {
         _ = try self.write(&.{.{ .set = .{ .key = .permissions, .value = value } }});
     }
 
-    // -- an ACP client's settings (D46) ---------------------------------------
-
-    /// The system prompt the ACP client gave this session, or null. Caller
-    /// owns it.
-    pub fn clientPrompt(self: *Session, alloc: Allocator) !?[]u8 {
-        var scratch = std.heap.ArenaAllocator.init(self.alloc);
-        defer scratch.deinit();
-        const sa = scratch.allocator();
-        const raw = (try self.handle.state(sa)).client_prompt orelse return null;
-        return try alloc.dupe(u8, try std.json.parseFromSliceLeaky([]const u8, sa, raw, .{}));
-    }
-
-    /// Keeps the ACP client's system prompt with the session; the same
-    /// prompt again writes nothing.
-    pub fn setClientPrompt(self: *Session, text: []const u8) !void {
-        var scratch = std.heap.ArenaAllocator.init(self.alloc);
-        defer scratch.deinit();
-        try self.putSetting(scratch.allocator(), .client_prompt, try jsonString(scratch.allocator(), text));
-    }
-
-    /// The MCP tool identities this ACP session recorded for replay, as
-    /// their JSON object, or null. Caller owns it.
-    pub fn toolIdentities(self: *Session, alloc: Allocator) !?[]u8 {
-        var scratch = std.heap.ArenaAllocator.init(self.alloc);
-        defer scratch.deinit();
-        const raw = (try self.handle.state(scratch.allocator())).tool_identities orelse return null;
-        return try alloc.dupe(u8, raw);
-    }
-
-    /// Keeps the session's tool identity record, a JSON object; the same
-    /// record again writes nothing.
-    pub fn setToolIdentities(self: *Session, record_json: []const u8) !void {
-        var scratch = std.heap.ArenaAllocator.init(self.alloc);
-        defer scratch.deinit();
-        try self.putSetting(scratch.allocator(), .tool_identities, record_json);
-    }
-
-    /// Writes `key` only when its value changed, in `sa`.
-    fn putSetting(self: *Session, sa: Allocator, key: sm.SetKey, value: []const u8) !void {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        const state = try self.handle.state(sa);
-        const current = switch (key) {
-            .client_prompt => state.client_prompt,
-            .tool_identities => state.tool_identities,
-            else => unreachable,
-        };
-        if (current) |stored| if (std.mem.eql(u8, stored, value)) return;
-        _ = try self.write(&.{.{ .set = .{ .key = key, .value = value } }});
-    }
-
     /// A title the user chose. It differs from the derived one, so a
     /// generated title never replaces it.
     pub fn rename(self: *Session, title: []const u8) !void {
@@ -1905,16 +1852,6 @@ pub const Session = struct {
             try events.append(a, .{ .set = .{ .key = .moved_files, .value = value, .blobs = rest[0..take] } });
             rest = rest[take..];
         }
-        if (try readSideFile(a, side, moved_client_prompt_file, moved_client_prompt_max)) |text| {
-            if (std.unicode.utf8ValidateSlice(text)) {
-                try events.append(a, .{ .set = .{ .key = .client_prompt, .value = try jsonString(a, text) } });
-            } else debug_trace.logf("session", "event=sessions_v2_move_dropped session={s} file={s} reason=not_utf8", .{ self.id(), moved_client_prompt_file });
-        }
-        if (try readSideFile(a, side, moved_tool_identities_file, moved_tool_identities_max)) |record| {
-            if (isJsonObject(a, record)) {
-                try events.append(a, .{ .set = .{ .key = .tool_identities, .value = record } });
-            } else debug_trace.logf("session", "event=sessions_v2_move_dropped session={s} file={s} reason=not_a_json_object", .{ self.id(), moved_tool_identities_file });
-        }
         {
             self.mutex.lockUncancelable(io_mod.getIo());
             defer self.mutex.unlock(io_mod.getIo());
@@ -2036,36 +1973,8 @@ pub const Session = struct {
 /// The side-folder layouts an older session kept its bodies in (D47); the
 /// first three are `movedFolder`'s, and `images` holds prompt images.
 const moved_body_folders = [_][]const u8{ "tool-results", "logs/commands", "artifacts/web-fetch", "images" };
-/// The side files an ACP client's settings came from, as `acp`'s
-/// `client_instructions.file_name` and `tool_call_identities.file_name`
-/// name them under the `client` folder (D46).
-pub const moved_client_prompt_file = "client/system-prompt.txt";
-pub const moved_tool_identities_file = "client/mcp-tool-identities.json";
-const moved_client_prompt_max = 64 * 1024;
-const moved_tool_identities_max = 256 * 1024;
 /// Blobs listed on one `moved_files` line: about 270 KiB of hashes.
 const moved_refs_per_line = 4096;
-
-/// A side file's bytes, or null when it is missing; at most `max_bytes`.
-fn readSideFile(a: Allocator, side: *io_mod.VerifiedDir, name: []const u8, max_bytes: usize) !?[]u8 {
-    var file = side.dir.openFile(io_mod.getIo(), name, .{ .follow_symlinks = false }) catch |err| switch (err) {
-        error.FileNotFound => return null,
-        else => return err,
-    };
-    defer file.close(io_mod.getIo());
-    return io_mod.readFileToEnd(a, &file, max_bytes + 1) catch |err| switch (err) {
-        error.StreamTooLong => {
-            debug_trace.logf("session", "event=sessions_v2_move_dropped file={s} reason=too_large", .{name});
-            return null;
-        },
-        else => err,
-    };
-}
-
-fn isJsonObject(a: Allocator, bytes: []const u8) bool {
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, bytes, .{}) catch return false;
-    return parsed == .object;
-}
 
 /// Where replay reads a log: an open session's own handle, or the store by
 /// id without a lock, as for a finished child's result.
@@ -4180,7 +4089,7 @@ test "-c resumes the session this host last opened" {
     const again = try Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .app);
     defer again.close();
     try testing.expectEqualStrings(id, again.id());
-    try testing.expectError(error.NoRememberedSession, Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .acp));
+    try testing.expectError(error.NoRememberedSession, Session.resumeSession(testing.allocator, &t.store, .last_opened, "/w", .ask));
 }
 
 fn pathExists(t: *TestHome, parts: []const []const u8) bool {
@@ -4411,9 +4320,6 @@ const OldSideFolder = struct {
         try side.dir.writeFile(io, .{ .sub_path = "logs/commands/" ++ replay_handle, .data = "FXRPLY01" });
         try side.dir.createDirPath(io, "images");
         try side.dir.writeFile(io, .{ .sub_path = "images/" ++ image_name, .data = &png });
-        try side.dir.createDirPath(io, "client");
-        try side.dir.writeFile(io, .{ .sub_path = moved_client_prompt_file, .data = "You run inside Mini." });
-        try side.dir.writeFile(io, .{ .sub_path = moved_tool_identities_file, .data = "{\"mcp_mini_read\":{\"server\":\"mini\",\"tool\":\"read\",\"title\":null}}" });
         try side.dir.createDirPath(io, "terminal/state");
         try side.dir.writeFile(io, .{ .sub_path = "terminal/state/terminal-1.json", .data = "{}" });
     }
@@ -4454,14 +4360,14 @@ test "an older session moves off its side folder on its first writable open, and
     try t.init();
     defer t.deinit();
     var model = "m".*;
-    const s = try Session.create(testing.allocator, &t.store, "/w", .acp, testSeed(&model));
+    const s = try Session.create(testing.allocator, &t.store, "/w", .ask, testSeed(&model));
     const id = try testing.allocator.dupe(u8, s.id());
     defer testing.allocator.free(id);
     try OldSideFolder.write(&t, id);
     try OldSideFolder.commitTurn(&t, s);
     s.close();
 
-    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .acp);
+    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .ask);
     defer r.close();
     // One manager folder, and terminal state where the terminal store looks.
     try testing.expect(!pathExists(&t, &.{ ".fx", files_dir_name, id }));
@@ -4492,17 +4398,11 @@ test "an older session moves off its side folder on its first writable open, and
         for (try records.list(arena)) |name| count += @intFromBool(std.mem.eql(u8, name, "compacted-T9.txt"));
         try testing.expectEqual(@as(usize, 1), count);
     }
-    // The image is inside the turn now, and the client's settings are settings.
+    // The image is inside the turn now.
     var restored = try r.restore(testing.allocator);
     defer restored.deinit(testing.allocator);
     const image = restored.history[0].assistant.user.images[0];
     try testing.expectEqualSlices(u8, &OldSideFolder.png, image.inline_data.?);
-    const prompt = (try r.clientPrompt(testing.allocator)).?;
-    defer testing.allocator.free(prompt);
-    try testing.expectEqualStrings("You run inside Mini.", prompt);
-    const identities = (try r.toolIdentities(testing.allocator)).?;
-    defer testing.allocator.free(identities);
-    try testing.expect(std.mem.find(u8, identities, "mcp_mini_read") != null);
     try testing.expectEqual(@as(u64, 0), (try t.store.manager.verify(id)).bad_blobs);
 
     // An image whose blob is lost keeps its old path, as a lost snapshot does.
@@ -4631,34 +4531,6 @@ test "a move cut short is redone on the next open, and old names still resolve (
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("an old result body", body);
     try testing.expectEqual(@as(u64, 0), (try t.store.manager.verify(id)).bad_blobs);
-}
-
-test "an ACP client's prompt and tool identities are settings, written only when they change (D46)" {
-    var t: TestHome = undefined;
-    try t.init();
-    defer t.deinit();
-    var model = "m".*;
-    const s = try Session.create(testing.allocator, &t.store, "/w", .acp, testSeed(&model));
-    // Held with the session until its first turn, like the seed.
-    try testing.expectEqual(@as(?[]u8, null), try s.clientPrompt(testing.allocator));
-    try s.setClientPrompt("You run inside Mini.");
-    try s.setClientPrompt("You run inside Mini.");
-    try s.setToolIdentities("{\"a\":{\"server\":\"s\",\"tool\":\"t\",\"title\":null}}");
-    try s.commitTurn(assistantTurn("q", "a"), types.ConversationLanguage.default());
-    try s.setToolIdentities("{\"a\":{\"server\":\"s\",\"tool\":\"t\",\"title\":null}}");
-    const id = try testing.allocator.dupe(u8, s.id());
-    defer testing.allocator.free(id);
-    s.close();
-    try testing.expectEqual(@as(usize, 1), try countSettings(t.store.manager, id, .client_prompt));
-    try testing.expectEqual(@as(usize, 1), try countSettings(t.store.manager, id, .tool_identities));
-
-    const r = try Session.resumeSession(testing.allocator, &t.store, .{ .id = id }, "/w", .acp);
-    defer r.close();
-    const prompt = (try r.clientPrompt(testing.allocator)).?;
-    defer testing.allocator.free(prompt);
-    try testing.expectEqualStrings("You run inside Mini.", prompt);
-    try r.setClientPrompt("A new prompt.");
-    try testing.expectEqual(@as(usize, 2), try countSettings(t.store.manager, id, .client_prompt));
 }
 
 test "a prompt image's bytes ride inside the user's item, and an image without them encodes as v1's (D44)" {

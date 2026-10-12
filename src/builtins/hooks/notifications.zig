@@ -372,7 +372,7 @@ test "turn-end delivery waits for paced presentation while attention remains imm
 
     try std.testing.expect(state.enabled(.turn_end));
     try std.testing.expect(state.enabled(.attention_required));
-    for ([_]hooks.ScopeKind{ .ask, .acp, .subagent }) |scope| {
+    for ([_]hooks.ScopeKind{ .ask, .subagent }) |scope| {
         try std.testing.expect(!state.enabledForScope(.turn_end, scope));
         try std.testing.expect(!state.enabledForScope(.attention_required, scope));
     }

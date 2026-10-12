@@ -1,6 +1,6 @@
 //! The session index: the single derived owner of "which saved sessions exist
 //! and how they summarize". Every listing surface (the resume picker,
-//! `fx sessions`, `fx session last`, ACP listing, and latest-session resume)
+//! `fx sessions`, `fx session last`, and latest-session resume)
 //! reads it through `listActionableCatalog`, so no listing surface scans
 //! session directories on its own.
 //!
@@ -1023,7 +1023,7 @@ test "actionable catalog lists an unverifiable child marker without caching it" 
 extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
 
 test "catalog cache ignores a FIFO without blocking" {
-    if (comptime @import("builtin").target.os.tag == .windows or @import("builtin").target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -1,5 +1,4 @@
 const std = @import("std");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
 const app_lifecycle = @import("app_lifecycle.zig");
 const app_render_runtime = @import("app_render_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");

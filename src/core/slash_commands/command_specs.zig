@@ -1,8 +1,6 @@
 const std = @import("std");
 const io_mod = @import("../shared/io.zig");
 
-pub const mcp_add_usage = "mcp add slack | mcp add NAME COMMAND [ARGS...] | mcp add --transport http NAME URL";
-pub const mcp_auth_usage = "mcp auth NAME";
 const display_width = @import("../shared/display_width.zig");
 const list_window = @import("../shared/list_window.zig");
 const mod_registry = @import("../mods/registry.zig");
@@ -12,7 +10,6 @@ const Allocator = std.mem.Allocator;
 pub const TopLevelKind = enum {
     help,
     ask,
-    acp,
     pr,
     issue,
     login,
@@ -20,7 +17,6 @@ pub const TopLevelKind = enum {
     setup,
     status,
     permissions,
-    mcp,
     slack,
     models,
     provider,
@@ -56,7 +52,6 @@ pub const SlashKind = enum {
     stats,
     usage,
     undo,
-    mcp,
     skills,
     copy,
     feedback,
@@ -635,7 +630,6 @@ pub fn nthSlashCompletion(registry: SlashRegistry, prefix: []const u8, n: usize)
 /// known arg-completion commands. Returns 0 when
 /// the prefix is not an arg-completion command.
 pub fn argCompletionAnchor(prefix: []const u8) usize {
-    if (mcpVerbsOn() and argCompletionPrefix(prefix, "/mcp") != null) return "/mcp ".len;
     if (statuslineArgCompletionPrefix(prefix) != null) return "/statusline ".len;
     if (notificationsArgCompletionPrefix(prefix) != null) return "/sound ".len;
     if (permissionsArgCompletionPrefix(prefix) != null) return "/permissions ".len;
@@ -868,13 +862,6 @@ const allowlist_local_add_tool_completions = scopedAllowlistCompletions("local",
 const allowlist_user_add_tool_completions = scopedAllowlistCompletions("user", allowlist_add_tool_completions);
 const allowlist_local_remove_tool_completions = scopedAllowlistCompletions("local", allowlist_remove_tool_completions);
 const allowlist_user_remove_tool_completions = scopedAllowlistCompletions("user", allowlist_remove_tool_completions);
-
-/// MCP-v2's `/mcp` completes its verbs and server names. The
-/// check goes with FX_MCP_ENGINE when v1 is removed.
-fn mcpVerbsOn() bool {
-    const value = io_mod.getenv("FX_MCP_ENGINE") orelse return false;
-    return std.mem.eql(u8, value, "v2");
-}
 
 fn runtimeArgCommand(registry: SlashRegistry) []const u8 {
     const first = registry.arguments[0].full;
@@ -1637,7 +1624,7 @@ test "rendered top-level help is a complete CLI navigation page" {
     try std.testing.expect(std.mem.find(u8, text, "Must appear before the command. Accepted names:") == null);
     try std.testing.expect(std.mem.find(u8, text, "skill_description_bytes, skill_catalog_bytes") == null);
     try std.testing.expect(std.mem.find(u8, text, "FX_EXPERIMENTAL_WORKSPACE_ACCESS=1") == null);
-    try std.testing.expect(std.mem.find(u8, text, "Supported for interactive, resume, ask, ACP, PR, and issue launches") == null);
+    try std.testing.expect(std.mem.find(u8, text, "Supported for interactive, resume, ask, PR, and issue launches") == null);
     try std.testing.expect(std.mem.find(u8, text, "Examples:") != null);
     try std.testing.expect(std.mem.find(u8, text, "fx ask \"Explain the changes in this repository\"") != null);
     try std.testing.expect(std.mem.find(u8, text, "fx session resume last") != null);
@@ -1744,16 +1731,6 @@ test "per-command help preserves long resume usage without debug recording" {
     try std.testing.expect(std.mem.find(u8, text, "--record") == null);
 }
 
-test "ACP help documents accepted options" {
-    const text = try renderTopLevelCommandHelp(std.testing.allocator, testTopLevelRegistry(), .acp);
-    defer std.testing.allocator.free(text);
-
-    try std.testing.expect(std.mem.find(u8, text, "fx acp\n") != null);
-    try std.testing.expect(std.mem.find(u8, text, "Usage:\n  fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--model <id>") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--log-file <path>") != null);
-}
-
 test "hidden top-level commands do not reserve help usage width" {
     const registry = testTopLevelRegistry();
     var visible_width: usize = 0;
@@ -1827,7 +1804,7 @@ test "slash completion categories follow canonical entries" {
 test "help catalog groups visible commands and searches all command metadata" {
     const registry = testSlashRegistry();
 
-    try std.testing.expectEqual(@as(usize, 36), helpCatalogCount(registry, ""));
+    try std.testing.expectEqual(@as(usize, 35), helpCatalogCount(registry, ""));
     try std.testing.expectEqualStrings("/help", helpCatalogSpecAt(registry, "", 0).?.command);
     try std.testing.expectEqual(@as(usize, 5), helpCatalogCategoryCount(registry, "", .general));
     try std.testing.expectEqual(@as(usize, 3), helpCatalogCount(registry, "appearance"));
@@ -2207,7 +2184,6 @@ pub const slack_install_spec: TopLevelSpec = .{
     .details = &.{
         "install opens Slack authorization through fx.sh and saves the bot credentials on this computer.",
         "status shows local installation metadata; refresh renews tokens without browser authorization.",
-        "This is a workspace bot installer. Employee MCP login remains fx mcp auth NAME.",
         "Credentials are saved in ~/.fx/slack/installation.json with owner-only permissions.",
         "Refresh runs only when requested; no background service is installed.",
     },

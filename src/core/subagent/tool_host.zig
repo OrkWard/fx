@@ -12,7 +12,6 @@ const model_contract = @import("model_contract.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
-const mcp_access = @import("../mcp/access_policy.zig");
 const mode_registry = @import("../modes/mode_registry.zig");
 const model_provider = @import("../config/model_provider.zig");
 const permissions = @import("../permissions/permissions.zig");
@@ -1271,7 +1270,7 @@ test "subagent feedback waits for admitted work to install its worker" {
         consumed: usize = 0,
 
         fn resolve(_: ?*anyopaque, alloc: Allocator, _: []const u8) authority.HostResolveError!authority.HostAuthority {
-            return authority.HostAuthority.capture(alloc, &.{}, &.{}, .{}, &.{});
+            return authority.HostAuthority.capture(alloc, &.{}, .{}, &.{});
         }
 
         fn run(raw: ?*anyopaque, turn: *execution.TurnContext, message: domain.QueuedMessage, _: domain.AdmissionSnapshot, _: *std.atomic.Value(bool)) execution.ServiceError!execution.RunOutcome {
@@ -1396,7 +1395,7 @@ fn checkFailedStartBookkeeping(action: model_contract.Action) !void {
         runs: std.atomic.Value(usize) = .init(0),
 
         fn resolve(_: ?*anyopaque, alloc: Allocator, _: []const u8) authority.HostResolveError!authority.HostAuthority {
-            return authority.HostAuthority.capture(alloc, &.{}, &.{}, .{}, &.{});
+            return authority.HostAuthority.capture(alloc, &.{}, .{}, &.{});
         }
 
         fn run(raw: ?*anyopaque, _: *execution.TurnContext, _: domain.QueuedMessage, _: domain.AdmissionSnapshot, _: *std.atomic.Value(bool)) execution.ServiceError!execution.RunOutcome {
@@ -1501,7 +1500,7 @@ fn checkObservationFailureBookkeeping(fail_publication: bool) !void {
         cancel: ?*std.atomic.Value(bool) = null,
 
         fn resolve(_: ?*anyopaque, alloc: Allocator, _: []const u8) authority.HostResolveError!authority.HostAuthority {
-            return authority.HostAuthority.capture(alloc, &.{}, &.{}, .{}, &.{});
+            return authority.HostAuthority.capture(alloc, &.{}, .{}, &.{});
         }
 
         fn run(raw: ?*anyopaque, _: *execution.TurnContext, _: domain.QueuedMessage, _: domain.AdmissionSnapshot, cancel: *std.atomic.Value(bool)) execution.ServiceError!execution.RunOutcome {
@@ -1704,7 +1703,7 @@ const OverrideResolverFixture = struct {
     catalog: []const []const u8 = &.{ "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-fast", "openai/gpt-6-astra" },
 
     fn resolve(_: ?*anyopaque, alloc: Allocator, _: []const u8) authority.HostResolveError!authority.HostAuthority {
-        return authority.HostAuthority.capture(alloc, &.{}, &.{}, .{}, &.{});
+        return authority.HostAuthority.capture(alloc, &.{}, .{}, &.{});
     }
 
     fn run(raw: ?*anyopaque, turn: *execution.TurnContext, message: domain.QueuedMessage, _: domain.AdmissionSnapshot, _: *std.atomic.Value(bool)) execution.ServiceError!execution.RunOutcome {
@@ -2178,12 +2177,6 @@ fn captureAdmission(
         .rules = snapshot.rules,
         .grants = snapshot.grants,
         .permission_state = snapshot.permission_state,
-        .integration_names = snapshot.integrations,
-        .authority_generation = if (snapshot.mcp_view) |view|
-            mcp_access.authorityGeneration(view)
-        else
-            0,
-        .mcp_view = snapshot.mcp_view,
     }) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.AdmissionFailed,
@@ -2252,14 +2245,12 @@ pub const CapabilityPolicy = struct {
     mode: ModePolicy,
 };
 
-pub fn captureHostAuthorityWithMcpView(
+pub fn captureHostAuthority(
     alloc: Allocator,
     policy: CapabilityPolicy,
-    integration_names: []const []const u8,
     rules: types.PermissionRuleSet,
     grants: []const types.PermissionGrant,
     permission_state: session_permission_state.State,
-    mcp_view: ?*const mcp_access.View,
 ) !authority.HostAuthority {
     var tool_names: std.ArrayList([]const u8) = .empty;
     defer tool_names.deinit(alloc);
@@ -2268,13 +2259,11 @@ pub fn captureHostAuthorityWithMcpView(
         if (permissions.rulesDenyAllTargetsForTool(rules, registered_tool.name)) continue;
         try tool_names.append(alloc, registered_tool.name);
     }
-    return authority.HostAuthority.captureWithPermissionStateAndMcpView(
+    return authority.HostAuthority.captureWithPermissionState(
         alloc,
         tool_names.items,
-        integration_names,
         rules,
         grants,
         permission_state,
-        mcp_view,
     );
 }

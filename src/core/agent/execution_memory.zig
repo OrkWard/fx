@@ -621,140 +621,6 @@ pub fn dupePersistedToolCall(alloc: Allocator, call: ToolCall) !ToolCall {
     };
 }
 
-const ArgumentRedactionPolicy = struct {
-    web_fetch: bool = false,
-};
-
-/// Client-facing display projection of tool-call arguments (ACP replay).
-/// Persisted history keeps arguments verbatim; only display surfaces mask.
-pub fn redactToolArgumentsJson(
-    alloc: Allocator,
-    tool_name: []const u8,
-    arguments_json: []const u8,
-) ![]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments_json, .{}) catch {
-        return maskTextForDisplay(alloc, arguments_json);
-    };
-    defer parsed.deinit();
-
-    const policy = ArgumentRedactionPolicy{
-        .web_fetch = std.mem.eql(u8, tool_name, "web_fetch"),
-    };
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    try writeRedactedJsonValue(alloc, &out.writer, parsed.value, policy, false);
-    return out.toOwnedSlice() catch return error.OutOfMemory;
-}
-
-fn writeRedactedJsonValue(
-    alloc: Allocator,
-    writer: *std.Io.Writer,
-    value: std.json.Value,
-    policy: ArgumentRedactionPolicy,
-    redact_value: bool,
-) !void {
-    if (redact_value) {
-        try std.json.Stringify.value("[REDACTED]", .{}, writer);
-        return;
-    }
-
-    switch (value) {
-        .object => |object| {
-            try writer.writeByte('{');
-            var iter = object.iterator();
-            var first = true;
-            while (iter.next()) |entry| {
-                if (!first) try writer.writeByte(',');
-                first = false;
-                try std.json.Stringify.value(entry.key_ptr.*, .{}, writer);
-                try writer.writeByte(':');
-                if (policy.web_fetch and
-                    std.mem.eql(u8, entry.key_ptr.*, "url") and
-                    entry.value_ptr.* == .string)
-                {
-                    const display_url = try text_utils.redactUrlForDisplay(
-                        alloc,
-                        entry.value_ptr.string,
-                    );
-                    defer alloc.free(display_url);
-                    try writeMaskedJsonString(alloc, writer, display_url);
-                } else {
-                    try writeRedactedJsonValue(
-                        alloc,
-                        writer,
-                        entry.value_ptr.*,
-                        policy,
-                        shouldRedactArgumentValue(entry.key_ptr.*),
-                    );
-                }
-            }
-            try writer.writeByte('}');
-        },
-        .array => |array| {
-            try writer.writeByte('[');
-            for (array.items, 0..) |item, i| {
-                if (i > 0) try writer.writeByte(',');
-                try writeRedactedJsonValue(alloc, writer, item, policy, false);
-            }
-            try writer.writeByte(']');
-        },
-        .string => |text| try writeMaskedJsonString(alloc, writer, text),
-        else => try std.json.Stringify.value(value, .{}, writer),
-    }
-}
-
-fn writeMaskedJsonString(
-    alloc: Allocator,
-    writer: *std.Io.Writer,
-    text: []const u8,
-) !void {
-    const masked = text_utils.maskSecrets(alloc, text) catch return error.OutOfMemory;
-    defer if (masked.ptr != text.ptr) alloc.free(@constCast(masked));
-    try std.json.Stringify.value(masked, .{}, writer);
-}
-
-fn shouldRedactArgumentValue(key: []const u8) bool {
-    if (isCredentialArgumentKey(key)) return true;
-    return false;
-}
-
-fn isCredentialArgumentKey(key: []const u8) bool {
-    const exact = [_][]const u8{
-        "password",
-        "passwd",
-        "token",
-        "api_key",
-        "apikey",
-        "secret",
-        "secret_key",
-        "secretkey",
-        "client_secret",
-        "clientsecret",
-        "access_token",
-        "accesstoken",
-        "refresh_token",
-        "refreshtoken",
-        "auth_token",
-        "authtoken",
-        "id_token",
-        "idtoken",
-        "private_key",
-        "privatekey",
-        "access_key",
-        "accesskey",
-        "authorization",
-        "cookie",
-        "set_cookie",
-        "setcookie",
-        "credential",
-        "credentials",
-    };
-    for (exact) |candidate| {
-        if (std.ascii.eqlIgnoreCase(key, candidate)) return true;
-    }
-    return false;
-}
-
 fn makeFileEvidence(
     alloc: Allocator,
     call: ToolCall,
@@ -908,7 +774,7 @@ test "durable execution memory persists token-shaped values verbatim" {
     const preview = "TOKEN=abcdefghijklmnopqrstuvwxyz";
     const call = ToolCall{
         .id = "call_secret",
-        .name = "mcp__fixture__echo",
+        .name = "fixture_echo",
         .arguments_json = arguments_json,
     };
     const result = try makePersistedToolResult(
@@ -964,43 +830,6 @@ test "display masking preserves benign secret-like words" {
     defer alloc.free(masked);
 
     try std.testing.expectEqualStrings(input, masked);
-}
-
-test "redactToolArgumentsJson redacts credential keys without hiding benign metadata" {
-    const alloc = std.testing.allocator;
-    const arguments_json =
-        \\{"token_count":128,"authorization_docs":"public","cookie_policy":"strict","token":"secret-value-123456","client_secret":"hidden-value-123456"}
-    ;
-    const redacted = try redactToolArgumentsJson(alloc, "mcp__fixture__echo", arguments_json);
-    defer alloc.free(redacted);
-
-    var parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        alloc,
-        redacted,
-        .{},
-    );
-    defer parsed.deinit();
-    try std.testing.expectEqual(
-        @as(i64, 128),
-        parsed.value.object.get("token_count").?.integer,
-    );
-    try std.testing.expectEqualStrings(
-        "public",
-        parsed.value.object.get("authorization_docs").?.string,
-    );
-    try std.testing.expectEqualStrings(
-        "strict",
-        parsed.value.object.get("cookie_policy").?.string,
-    );
-    try std.testing.expectEqualStrings(
-        "[REDACTED]",
-        parsed.value.object.get("token").?.string,
-    );
-    try std.testing.expectEqualStrings(
-        "[REDACTED]",
-        parsed.value.object.get("client_secret").?.string,
-    );
 }
 
 test "durable execution memory pseudonymizes sensitive call ids consistently" {

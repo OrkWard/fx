@@ -491,7 +491,6 @@ pub const TurnContext = struct {
                 .generation = snapshot.generation,
                 .root_id = snapshot.root_id,
                 .tools = snapshot.tools,
-                .integrations = snapshot.integrations,
                 .rules = snapshot.rules,
                 .grants = snapshot.grants,
                 .permission_state = permission_state,

@@ -17,11 +17,8 @@ pub const prompt_history_file_name = "history.jsonl";
 pub const usage_file_name = "usage.jsonl";
 pub const usage_recovery_dir_name = "usage-recovery";
 pub const backups_dir_name = "backups";
-pub const mcp_credentials_dir_name = "mcp-credentials";
-pub const mcp_credentials_file_name = "credentials.json";
 
 const settings_file_name = "settings.json";
-const mcp_config_file_name = "mcp.json";
 const managed_skills_dir_name = "skills";
 const logs_dir_name = "logs";
 const trace_log_file_name = "trace.log";
@@ -33,23 +30,6 @@ pub fn rootDir(alloc: Allocator, home: []const u8) ![]u8 {
 
 pub fn settingsPath(alloc: Allocator, home: []const u8) ![]u8 {
     return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, settings_file_name });
-}
-
-pub fn mcpConfigPath(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, mcp_config_file_name });
-}
-
-pub fn mcpCredentialsDir(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, mcp_credentials_dir_name });
-}
-
-pub fn mcpCredentialsPath(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{
-        home,
-        root_dir_name,
-        mcp_credentials_dir_name,
-        mcp_credentials_file_name,
-    });
 }
 
 pub fn managedSkillsDir(alloc: Allocator, home: []const u8) ![]u8 {
@@ -109,24 +89,6 @@ test "profile path helpers preserve current default locations" {
     const settings = try settingsPath(alloc, "/tmp/fake-home");
     defer alloc.free(settings);
     try std.testing.expectEqualStrings("/tmp/fake-home/.fx/settings.json", settings);
-
-    const mcp = try mcpConfigPath(alloc, "/tmp/fake-home");
-    defer alloc.free(mcp);
-    try std.testing.expectEqualStrings("/tmp/fake-home/.fx/mcp.json", mcp);
-
-    const mcp_credentials_dir = try mcpCredentialsDir(alloc, "/tmp/fake-home");
-    defer alloc.free(mcp_credentials_dir);
-    try std.testing.expectEqualStrings(
-        "/tmp/fake-home/.fx/mcp-credentials",
-        mcp_credentials_dir,
-    );
-
-    const mcp_credentials = try mcpCredentialsPath(alloc, "/tmp/fake-home");
-    defer alloc.free(mcp_credentials);
-    try std.testing.expectEqualStrings(
-        "/tmp/fake-home/.fx/mcp-credentials/credentials.json",
-        mcp_credentials,
-    );
 
     const skills = try managedSkillsDir(alloc, "/tmp/fake-home");
     defer alloc.free(skills);

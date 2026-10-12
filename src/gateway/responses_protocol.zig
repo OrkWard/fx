@@ -647,7 +647,7 @@ pub fn writeTools(
             alloc,
             tool.name,
             tool.description,
-            .{ .static = tool.input_schema },
+            tool.input_schema,
         );
         count += 1;
     }
@@ -659,19 +659,7 @@ pub fn writeTools(
             alloc,
             tool.name,
             tool.description,
-            .{ .static = tool.input_schema },
-        );
-        count += 1;
-    }
-    for (tools.selected_dynamic) |tool| {
-        if (containsName(tools.advertised_names, tool.name)) continue;
-        if (count > 0) try out.writer.writeByte(',');
-        try writeFunctionTool(
-            &out.writer,
-            alloc,
-            tool.name,
-            tool.description,
-            .{ .dynamic = tool.input_schema },
+            tool.input_schema,
         );
         count += 1;
     }
@@ -2634,17 +2622,12 @@ fn unsignedField(object: std.json.ObjectMap, key: []const u8) ?u64 {
     return @intCast(value);
 }
 
-const InputSchema = union(enum) {
-    static: model_tool_schema.ObjectSchema,
-    dynamic: std.json.Value,
-};
-
 fn writeFunctionTool(
     writer: *std.Io.Writer,
     alloc: std.mem.Allocator,
     name: []const u8,
     description: []const u8,
-    input_schema: InputSchema,
+    input_schema: model_tool_schema.ObjectSchema,
 ) !void {
     if (name.len == 0) return error.InvalidToolSchema;
     try writer.writeAll("{\"type\":\"function\",\"name\":");
@@ -2654,13 +2637,7 @@ fn writeFunctionTool(
         try model_tool_schema.writeCappedDescriptionJsonString(alloc, writer, description);
     }
     try writer.writeAll(",\"parameters\":");
-    switch (input_schema) {
-        .static => |schema| try model_tool_schema.writeObjectSchema(alloc, writer, schema),
-        .dynamic => |schema| {
-            if (schema != .object) return error.InvalidToolSchema;
-            try std.json.Stringify.value(schema, .{}, writer);
-        },
-    }
+    try model_tool_schema.writeObjectSchema(alloc, writer, input_schema);
     try writer.writeAll(",\"strict\":false}");
 }
 
@@ -2669,7 +2646,7 @@ fn containsName(names: []const []const u8, expected: []const u8) bool {
     return false;
 }
 
-test "Responses tools serialize typed static and dynamic functions once" {
+test "Responses tools serialize typed static functions once" {
     const Tool = @import("../core/tooling/tool_dispatch.zig").Tool;
     const Static = struct {
         fn decode(_: @import("../core/tooling/tool_dispatch.zig").DispatchContext, _: []const u8) @import("../core/tooling/tool_dispatch.zig").DispatchError!@import("../core/tooling/tool_dispatch.zig").DecodeResult {
@@ -2701,32 +2678,18 @@ test "Responses tools serialize typed static and dynamic functions once" {
         .reads_only_fn = Static.readsOnly,
         .irreversible_fn = Static.irreversible,
     }};
-    var dynamic_schema = try std.json.parseFromSlice(
-        std.json.Value,
-        std.testing.allocator,
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}",
-        .{},
-    );
-    defer dynamic_schema.deinit();
-
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try std.testing.expectEqual(@as(usize, 2), try writeTools(
+    try std.testing.expectEqual(@as(usize, 1), try writeTools(
         &out.writer,
         std.testing.allocator,
         .{
             .registry = .{ .tools = &registered },
             .advertised_names = &.{"read_file"},
             .advertised_functions = &.{registered[0].model_schema},
-            .selected_dynamic = &.{.{
-                .name = "mcp_search",
-                .description = "Search.",
-                .input_schema = dynamic_schema.value,
-            }},
         },
     ));
     try std.testing.expect(std.mem.find(u8, out.written(), "\"name\":\"read_file\"") != null);
-    try std.testing.expect(std.mem.find(u8, out.written(), "\"name\":\"mcp_search\"") != null);
 }
 
 test "Responses usage projection retains optional cached and reasoning detail" {

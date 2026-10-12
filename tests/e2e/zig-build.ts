@@ -14,17 +14,3 @@ export function zigGlobalCacheDir(): string {
   return join(homedir(), ".cache", "zig");
 }
 
-// Compiles the MCP stdio dispatcher driver so each test's
-// `zig build run-mcp-stdio-dispatcher-e2e` only runs it.
-export function buildMcpDispatcherDriver(repoRoot: string): void {
-  const result = spawnSync("zig", ["build", "build-mcp-stdio-dispatcher-e2e"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `zig build build-mcp-stdio-dispatcher-e2e failed (${result.status ?? result.signal}):\n${result.stderr}`,
-    );
-  }
-}

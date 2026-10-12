@@ -8,7 +8,6 @@ const compactor = @import("../compactor/compactor.zig");
 const types = @import("../shared/types.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const settings_store = @import("settings_store.zig");
-const project_config = @import("../mcp/project_config.zig");
 const model_provider = @import("model_provider.zig");
 const model_preferences = @import("model_preferences.zig");
 const configured_provider = @import("configured_provider.zig");
@@ -96,18 +95,6 @@ pub const Settings = struct {
             alloc.free(order);
         }
         self.* = .{};
-    }
-};
-
-pub const ProjectMcpChoiceLoad = struct {
-    choices: project_config.ProjectMcpChoices = .{},
-    diagnostics: std.ArrayList(project_config.WorkspaceDiagnostic) = .empty,
-
-    pub fn deinit(self: *ProjectMcpChoiceLoad, alloc: Allocator) void {
-        self.choices.deinit(alloc);
-        for (self.diagnostics.items) |*diagnostic| diagnostic.deinit(alloc);
-        self.diagnostics.deinit(alloc);
-        self.* = undefined;
     }
 };
 
@@ -371,47 +358,6 @@ pub fn loadMergedSettings(alloc: Allocator, workspace_root: []const u8) !Setting
     var paths = try discoverPaths(alloc, workspace_root);
     defer paths.deinit(alloc);
     return loadMergedSettingsFromPaths(alloc, paths);
-}
-
-pub fn loadProjectMcpChoices(
-    alloc: Allocator,
-    workspace_root: []const u8,
-) !ProjectMcpChoiceLoad {
-    const home = io_mod.getenv("HOME") orelse return .{};
-    return loadProjectMcpChoicesFromHome(alloc, home, workspace_root);
-}
-
-pub fn loadProjectMcpChoicesFromHome(
-    alloc: Allocator,
-    home: []const u8,
-    workspace_root: []const u8,
-) !ProjectMcpChoiceLoad {
-    var store = try settings_store.Store.initFromHome(alloc, home, .read_only);
-    defer store.deinit(alloc);
-    var primary = try store.loadPrimary(alloc);
-    defer primary.deinit(alloc);
-    const bytes = switch (primary) {
-        .absent => return .{},
-        .valid => |value| value,
-        .invalid => return error.InvalidSettingsFormat,
-        .oversized => return error.SettingsPrimaryTooLarge,
-    };
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidSettingsFormat;
-    const workspaces = parsed.value.object.get("workspaces") orelse return .{};
-    if (workspaces != .object) return error.InvalidSettingsFormat;
-    const normalized_root = normalizeWorkspaceRoot(workspace_root);
-    const workspace = workspaces.object.get(normalized_root) orelse return .{};
-
-    var result: ProjectMcpChoiceLoad = .{};
-    errdefer result.deinit(alloc);
-    result.choices = project_config.parseChoices(
-        alloc,
-        workspace,
-        &result.diagnostics,
-    ) catch return error.InvalidSettingsFormat;
-    return result;
 }
 
 pub fn loadMergedSettingsFromHome(alloc: Allocator, home_dir: []const u8, workspace_root: []const u8) !Settings {
@@ -1148,26 +1094,6 @@ pub fn attemptUserPreferencesInHome(
             .cleanup = store.takeFailureCleanup(),
         } };
     };
-    return .{ .outcome = outcome };
-}
-
-pub fn attemptProjectMcpMutation(
-    alloc: Allocator,
-    workspace_root: []const u8,
-    action: project_config.ProjectMcpAction,
-) CommitAttempt {
-    const home = io_mod.getenv("HOME") orelse return .{ .failure = .{ .err = error.HomeNotSet } };
-    var store = settings_store.Store.initFromHome(alloc, home, .writable) catch |err| {
-        return .{ .failure = .{ .err = err } };
-    };
-    defer store.deinit(alloc);
-    const outcome = store.applyProjectMcpMutation(alloc, .{
-        .workspace_root = workspace_root,
-        .action = action,
-    }) catch |err| return .{ .failure = .{
-        .err = err,
-        .cleanup = store.takeFailureCleanup(),
-    } };
     return .{ .outcome = outcome };
 }
 
@@ -2551,7 +2477,7 @@ test "context limits resolve command line over workspace and global profile valu
     defer std.testing.allocator.free(workspace_root);
 
     const user_settings = try std.testing.allocator.print(
-        "{{\"context_limits\":{{\"skill_chunk_bytes\":111,\"mcp_description_bytes\":\"off\"}},\"workspaces\":{{\"{s}\":{{\"context_limits\":{{\"skill_chunk_bytes\":222}}}}}}}}",
+        "{{\"context_limits\":{{\"skill_chunk_bytes\":111,\"image_adapter_output_bytes\":\"off\"}},\"workspaces\":{{\"{s}\":{{\"context_limits\":{{\"skill_chunk_bytes\":222}}}}}}}}",
         .{workspace_root},
     );
     defer std.testing.allocator.free(user_settings);
@@ -2564,8 +2490,8 @@ test "context limits resolve command line over workspace and global profile valu
 
     try std.testing.expectEqual(@as(usize, 333), resolved.skill_chunk_bytes.effectiveBytes());
     try std.testing.expectEqual(context_limits.Source.command_line, resolved.skill_chunk_bytes.source);
-    try std.testing.expectEqual(context_limits.emergency_ceiling_bytes, resolved.mcp_description_bytes.effectiveBytes());
-    try std.testing.expectEqual(context_limits.Source.user_global, resolved.mcp_description_bytes.source);
+    try std.testing.expectEqual(context_limits.emergency_ceiling_bytes, resolved.image_adapter_output_bytes.effectiveBytes());
+    try std.testing.expectEqual(context_limits.Source.user_global, resolved.image_adapter_output_bytes.source);
     try std.testing.expectEqual(
         context_limits.Name.project_instruction_file_bytes.defaultBytes(),
         resolved.project_instruction_file_bytes.effectiveBytes(),

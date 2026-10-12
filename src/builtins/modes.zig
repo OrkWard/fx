@@ -10,7 +10,7 @@ pub const ModeSpec = mode_contract.ModeSpec;
 pub const ToolPolicy = mode_contract.ToolPolicy;
 pub const default_mode_id = "auto";
 
-/// The CLI's `/permissions` modes, in the order ACP lists them.
+/// The CLI's `/permissions` modes, in display order.
 pub const all = [_]ModeSpec{
     .{ .id = "auto", .name = "Auto", .description = "Check actions with an automatic safety review instead of asking", .permission_mode = .auto },
     .{ .id = "ask", .name = "Ask", .description = "Request permission before making any changes", .permission_mode = .ask },
@@ -26,7 +26,7 @@ pub fn lookup(id: []const u8) ?*const ModeSpec {
     return registry.lookup(id);
 }
 
-test "built-in modes register the CLI permission modes in ACP order" {
+test "built-in modes register the CLI permission modes in display order" {
     const expected = [_]struct { id: []const u8, name: []const u8, permission_mode: @TypeOf(all[0].permission_mode) }{
         .{ .id = "auto", .name = "Auto", .permission_mode = .auto },
         .{ .id = "ask", .name = "Ask", .permission_mode = .ask },

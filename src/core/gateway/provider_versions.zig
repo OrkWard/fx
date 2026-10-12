@@ -2,7 +2,6 @@ const std = @import("std");
 const io_mod = @import("../shared/io.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
-const host_target = @import("../hosts/target.zig");
 const update_target = @import("../upgrade/update_target.zig");
 
 const Allocator = std.mem.Allocator;
@@ -87,7 +86,6 @@ fn cacheFile(provider: Provider) []const u8 {
 }
 
 fn loadCache(_: ?*anyopaque, alloc: Allocator, provider: Provider) !?Cached {
-    if (comptime host_target.is_wasm) return null;
     const home = io_mod.getenv("HOME") orelse return null;
     var home_dir = std.Io.Dir.openDirAbsolute(io_mod.getIo(), home, .{}) catch |err| {
         if (err == error.FileNotFound) return null;
@@ -128,7 +126,6 @@ fn readCached(alloc: Allocator, dir: std.Io.Dir, provider: Provider) !?Cached {
 }
 
 fn saveCache(_: ?*anyopaque, alloc: Allocator, provider: Provider, cached: Cached) !void {
-    if (comptime host_target.is_wasm) return;
     const home = io_mod.getenv("HOME") orelse return;
     try saveCacheAtHome(alloc, provider, cached, home);
 }
@@ -188,7 +185,7 @@ test "provider version cache creates its profile from a fresh home" {
 }
 
 test "provider version cache rejects directories symlinks and hardlinks" {
-    if (comptime @import("builtin").target.os.tag == .windows or host_target.is_wasm) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const Kind = enum { directory, symlink, hardlink };
     for ([_]Provider{ .codex, .grok }) |provider| {

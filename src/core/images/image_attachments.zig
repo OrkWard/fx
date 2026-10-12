@@ -420,7 +420,7 @@ pub fn openVisionRegularFile(canonical_path: []const u8) !VisionRegularFile {
     };
     if (initial.kind != .file) return error.NotRegularFile;
 
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (comptime builtin.target.os.tag == .windows) {
         var file = cwd.openFile(io_mod.getIo(), canonical_path, .{
             .mode = .read_only,
             .allow_directory = false,
@@ -564,11 +564,11 @@ pub fn captureInlineImageBytes(
     var random_suffix: u64 = undefined;
     io_mod.getIo().random(std.mem.asBytes(&random_suffix));
     const source_name = try alloc.print(
-        "image-{d}.acp-source.{x}",
+        "image-{d}.inline-source.{x}",
         .{ image_id, random_suffix },
     );
     defer alloc.free(source_name);
-    defer deleteSnapshotFile(snapshot_dir_handle, source_name, "capture_acp_source");
+    defer deleteSnapshotFile(snapshot_dir_handle, source_name, "capture_inline_source");
 
     {
         var source = try snapshot_dir_handle.createFile(
@@ -606,7 +606,7 @@ pub fn captureInlineImageBytes(
 }
 
 /// Captures caller-supplied image bytes for sessions without a filesystem
-/// snapshot backend (libfx kernel sessions on native and wasm). Applies the
+/// snapshot backend. Applies the
 /// same size, media-type, and digest validation as the filesystem capture,
 /// but retains the decoded bytes on the attachment itself so request building
 /// and checkpoint serialization never touch a filesystem.

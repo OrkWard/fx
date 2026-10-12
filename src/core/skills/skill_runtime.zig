@@ -4015,7 +4015,7 @@ fn createTempSymlinkOrSkip(tmp: *std.testing.TmpDir, target_path: []const u8, li
 extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
 
 fn createTempFifoOrSkip(alloc: Allocator, tmp: *std.testing.TmpDir, sub_path: []const u8) !void {
-    if (comptime @import("builtin").target.os.tag == .windows or @import("builtin").target.os.tag == .wasi) {
+    if (comptime @import("builtin").target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     if (std.Io.Dir.path.dirname(sub_path)) |parent| {

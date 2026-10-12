@@ -370,7 +370,7 @@ test "path completion resolves parent and absolute forms without recursive trave
 }
 
 test "path completion follows listed symlinks and filters unsafe names" {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

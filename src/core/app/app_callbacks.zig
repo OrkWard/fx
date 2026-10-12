@@ -2,7 +2,6 @@ const std = @import("std");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
 const agent_runtime = @import("../agent/agent_runtime.zig");
-const tool_mcp_runtime = @import("../tooling/tool_mcp_runtime.zig");
 const agent_stream_provider = @import("../agent/stream_provider.zig");
 const command_admission = @import("../permissions/command_admission.zig");
 const permission_auto_classifier = @import("../permissions/auto_classifier.zig");
@@ -17,7 +16,6 @@ const provider_runtime = @import("provider_runtime.zig");
 const core_input_runtime = @import("../input/runtime.zig");
 const app_worker_runtime = @import("app_worker_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
 const change_tracker_mod = @import("../workspace/change_tracker.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const diagnostics = @import("../workspace/diagnostics.zig");
@@ -292,10 +290,6 @@ pub fn Bindings(comptime App: type) type {
                     app.agentStreamProvider()
                 else
                     agent_stream_provider.unavailable_provider,
-                .cooperative_transport_pulse = if (comptime @hasDecl(App, "cooperativeTransportPulse")) .{
-                    .ctx = @ptrCast(app),
-                    .run = cooperativeTransportPulse,
-                } else null,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry() else .{},
                 .context_registry = if (comptime @hasDecl(App, "contextRegistry")) app.contextRegistry() else null,
                 .context_enabled = if (comptime @hasField(App, "context_enabled")) app.context_enabled else false,
@@ -311,7 +305,6 @@ pub fn Bindings(comptime App: type) type {
                 .append_runtime_context = agentAppendRuntimeContext,
                 .append_static_context = agentAppendStaticContext,
                 .validate_tool_call = agentValidateToolCall,
-                .snapshot_mcp_definition = agentSnapshotMcpDefinition,
                 .prepare_skill_call = if (comptime @hasField(App, "skills") and @hasDecl(App, "toolRegistry")) agentPrepareSkillCall else null,
                 .check_tool_availability = agentCheckToolAvailability,
                 .request_tool_permission = agentRequestToolPermission,
@@ -707,24 +700,6 @@ pub fn Bindings(comptime App: type) type {
             try app_worker_runtime.Runtime(App).pushCommandOutput(app, lifecycle_id, stream, chunk);
         }
 
-        pub fn onMcpProgress(ctx: *anyopaque, lifecycle_id: types.ToolLifecycleId, text: []const u8) void {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            var label_buf: [512]u8 = undefined;
-            const label = std.mem.print(
-                &label_buf,
-                "{s}● {s}{s}",
-                .{ ui_render.bold_style, text, reset_style },
-            ) catch ui_render.bold_style ++ "● MCP progress" ++ reset_style;
-            app_worker_runtime.Runtime(App).pushToolLifecycle(app, .{ .progress = .{
-                .id = lifecycle_id,
-                .text = label,
-            } }) catch |err| {
-                debug_trace.logf("mcp", "failed to publish MCP tool progress err={s}", .{@errorName(err)});
-                return;
-            };
-            debug_trace.logf("mcp", "queued MCP tool progress turn_id={d}", .{lifecycle_id.turn_id});
-        }
-
         pub fn onToolProgress(ctx: *anyopaque, lifecycle_id: types.ToolLifecycleId, text: []const u8) void {
             const app: *App = @ptrCast(@alignCast(ctx));
             app_worker_runtime.Runtime(App).pushToolLifecycle(app, .{ .progress = .{
@@ -852,11 +827,6 @@ pub fn Bindings(comptime App: type) type {
             try app.appendRuntimeContextMessage(arena, messages);
         }
 
-        fn cooperativeTransportPulse(ctx: *anyopaque) !void {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            try app.cooperativeTransportPulse();
-        }
-
         fn agentFinalizeTurn(ctx: *anyopaque, turn_id: u64, outcome: types.TurnPresentationOutcome, _: ?types.ProviderCompletionDisposition) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             try app.worker.pushTurnFinished(std.heap.c_allocator, .{
@@ -933,19 +903,6 @@ pub fn Bindings(comptime App: type) type {
 
         fn agentResolveModelCapabilities(ctx: *anyopaque, _: Allocator, model: []const u8) model_capabilities.ResolveError!model_capabilities.Capabilities {
             const app: *App = @ptrCast(@alignCast(ctx));
-            if (comptime runtime_profile.allows(App, .cooperative_agent)) {
-                const settings = app.worker.effectiveAgentTurnSettings();
-                if (settings.fast_mode or settings.ultrafast_mode) {
-                    if (app.worker.isCancelRequested()) return error.Cancelled;
-                    app.ensureModelCache();
-                    // A host abort can settle the fetch before queued input reaches the worker.
-                    app.cooperativeTransportPulse() catch |err| {
-                        debug_trace.logf("gateway", "model catalog transport pulse failed err={s}", .{@errorName(err)});
-                        return error.Cancelled;
-                    };
-                    if (app.worker.isCancelRequested()) return error.Cancelled;
-                }
-            }
             if (comptime @hasDecl(App, "resolveModelCapabilitiesForRequest")) {
                 return app.resolveModelCapabilitiesForRequest(model);
             }
@@ -969,9 +926,9 @@ pub fn Bindings(comptime App: type) type {
             return model_capabilities.capabilitiesForModel(model);
         }
 
-        fn agentRequestToolPermission(ctx: *anyopaque, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority, revalidation: ?agent_runtime.LivePermissionRevalidation, advertised_dynamic_tool_names: []const []const u8, mcp_review_schema_json: ?[]const u8) !command_admission.PermissionOutcome {
+        fn agentRequestToolPermission(ctx: *anyopaque, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority, revalidation: ?agent_runtime.LivePermissionRevalidation) !command_admission.PermissionOutcome {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.requestToolPermissionSyncWithAdvertised(arena, call, review_turn, permission_mode, local_grants, live_authority, revalidation, advertised_dynamic_tool_names, mcp_review_schema_json);
+            return app.requestToolPermissionSyncWithAdvertised(arena, call, review_turn, permission_mode, local_grants, live_authority, revalidation);
         }
 
         fn agentSnapshotRootPermissionMode(ctx: *anyopaque) PermissionMode {
@@ -979,15 +936,9 @@ pub fn Bindings(comptime App: type) type {
             return app_permission_runtime.Runtime(App).livePermissionSnapshot(app).mode;
         }
 
-        fn agentRequestPreparedFileMutationPermission(ctx: *anyopaque, arena: Allocator, call: ToolCall, prepared: *tool_admission.PreparedFileMutationCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority, advertised_dynamic_tool_names: []const []const u8) !command_admission.PermissionOutcome {
+        fn agentRequestPreparedFileMutationPermission(ctx: *anyopaque, arena: Allocator, call: ToolCall, prepared: *tool_admission.PreparedFileMutationCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority) !command_admission.PermissionOutcome {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.requestPreparedFileMutationPermissionSyncWithAdvertised(arena, call, prepared, review_turn, permission_mode, local_grants, live_authority, advertised_dynamic_tool_names);
-        }
-
-        fn agentSnapshotMcpDefinition(ctx: *anyopaque, arena: Allocator, name: []const u8, known: tool_mcp_runtime.Binding) !tool_mcp_runtime.DefinitionSnapshot {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            if (comptime @hasDecl(App, "snapshotMcpDefinition")) return app.snapshotMcpDefinition(arena, name, known);
-            return .unavailable;
+            return app.requestPreparedFileMutationPermissionSyncWithAdvertised(arena, call, prepared, review_turn, permission_mode, local_grants, live_authority);
         }
 
         fn agentValidateToolCall(ctx: *anyopaque, arena: Allocator, call: ToolCall) !agent_runtime.ToolCallValidationResult {
@@ -1023,24 +974,24 @@ pub fn Bindings(comptime App: type) type {
             return app.resolveToolActionDisplayTarget(arena, call);
         }
 
-        fn agentDescribeToolAction(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, advertised_dynamic_tool_names: []const []const u8) ![]const u8 {
+        fn agentDescribeToolAction(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.describeToolActionWithAdvertised(arena, call, display_target, advertised_dynamic_tool_names);
+            return app.describeToolActionWithAdvertised(arena, call, display_target);
         }
 
-        fn agentDescribeToolActionCompleted(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, advertised_dynamic_tool_names: []const []const u8) ![]const u8 {
+        fn agentDescribeToolActionCompleted(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.describeToolActionCompletedWithAdvertised(arena, call, display_target, advertised_dynamic_tool_names);
+            return app.describeToolActionCompletedWithAdvertised(arena, call, display_target);
         }
 
-        fn agentDescribeToolActionDenied(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, label: []const u8, advertised_dynamic_tool_names: []const []const u8) ![]const u8 {
+        fn agentDescribeToolActionDenied(ctx: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, label: []const u8) ![]const u8 {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.describeToolActionDeniedWithAdvertised(arena, call, display_target, label, advertised_dynamic_tool_names);
+            return app.describeToolActionDeniedWithAdvertised(arena, call, display_target, label);
         }
 
-        fn agentPermissionTargetForCall(ctx: *anyopaque, arena: Allocator, call: ToolCall, advertised_dynamic_tool_names: []const []const u8) ![]const u8 {
+        fn agentPermissionTargetForCall(ctx: *anyopaque, arena: Allocator, call: ToolCall) ![]const u8 {
             const app: *App = @ptrCast(@alignCast(ctx));
-            return app.permissionTargetForCallWithAdvertised(arena, call, advertised_dynamic_tool_names);
+            return app.permissionTargetForCallWithAdvertised(arena, call);
         }
 
         fn agentExecuteToolCall(
@@ -1197,15 +1148,6 @@ pub fn Bindings(comptime App: type) type {
             retained_from: ?types.ContextHistoryCut,
         ) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
-            if (comptime runtime_profile.allows(App, .cooperative_agent)) {
-                try app.worker.publishContextCompaction(std.heap.c_allocator, .{
-                    .summary = summary,
-                    .active_prefix = active_prefix,
-                    .retained_from = retained_from,
-                    .max_history_turns = app.session.max_history_turns,
-                }, app, workerBridgeContextCompaction);
-                return;
-            }
             try app_worker_runtime.Runtime(App).commitContextCompaction(
                 app,
                 summary,
@@ -1600,10 +1542,6 @@ pub fn Bindings(comptime App: type) type {
         }
 
         pub fn prepareFreshPrompt(app: *App, value: worker_runtime.FreshPromptPreparation) !worker_runtime.FreshPromptHistory {
-            if (comptime runtime_profile.allows(App, .cooperative_agent)) {
-                const current = app_session_runtime.Runtime(App).normalizeFreshPromptPreparation(app, value);
-                return app.worker.publishFreshPrompt(std.heap.c_allocator, current, app, workerBridgePrepareFreshPrompt);
-            }
             return app.worker.prepareFreshPrompt(std.heap.c_allocator, value);
         }
 
@@ -1990,7 +1928,7 @@ const FakeApp = struct {
         try messages.append(arena, .{ .role = .system, .content = "runtime" });
     }
 
-    fn requestToolPermissionSyncWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, _: ?agent_runtime.LiveToolAuthority, _: ?agent_runtime.LivePermissionRevalidation, _: []const []const u8, _: ?[]const u8) !command_admission.PermissionOutcome {
+    fn requestToolPermissionSyncWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, _: ?agent_runtime.LiveToolAuthority, _: ?agent_runtime.LivePermissionRevalidation) !command_admission.PermissionOutcome {
         _ = self;
         _ = arena;
         _ = call;
@@ -2003,7 +1941,7 @@ const FakeApp = struct {
         };
     }
 
-    fn requestPreparedFileMutationPermissionSyncWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, prepared: *tool_admission.PreparedFileMutationCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, _: ?agent_runtime.LiveToolAuthority, _: []const []const u8) !command_admission.PermissionOutcome {
+    fn requestPreparedFileMutationPermissionSyncWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, prepared: *tool_admission.PreparedFileMutationCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, _: ?agent_runtime.LiveToolAuthority) !command_admission.PermissionOutcome {
         _ = self;
         _ = call;
         _ = review_turn;
@@ -2026,22 +1964,22 @@ const FakeApp = struct {
         return null;
     }
 
-    fn describeToolActionWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn describeToolActionWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8) ![]const u8 {
         _ = self;
         return arena.print("run {s}", .{call.name});
     }
 
-    fn describeToolActionCompletedWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn describeToolActionCompletedWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8) ![]const u8 {
         _ = self;
         return arena.print("done {s}", .{call.name});
     }
 
-    fn describeToolActionDeniedWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8, _: []const []const u8) ![]const u8 {
+    fn describeToolActionDeniedWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8) ![]const u8 {
         _ = self;
         return arena.print("denied {s} {s}", .{ call.name, label });
     }
 
-    fn permissionTargetForCallWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall, _: []const []const u8) ![]const u8 {
+    fn permissionTargetForCallWithAdvertised(self: *FakeApp, arena: Allocator, call: ToolCall) ![]const u8 {
         _ = self;
         return arena.print("target:{s}", .{call.id});
     }
@@ -2501,88 +2439,6 @@ test "agent deps use request-time model capability resolution when available" {
     try std.testing.expect(model_capabilities.reasoningEffortSupported(capabilities, types.ReasoningEffort.literal("future-tier")));
 }
 
-test "cooperative speed capability resolution uses active request settings and honors cancellation" {
-    const App = struct {
-        pub const host_profile = runtime_profile.wasm;
-        worker: worker_runtime.WorkerRuntime = .{},
-        warmups: usize = 0,
-        pulses: usize = 0,
-        resolutions: usize = 0,
-        eligible: bool = true,
-        cancel_on_pulse: bool = false,
-        fail_pulse: bool = false,
-
-        pub fn ensureModelCache(self: *@This()) void {
-            self.warmups += 1;
-        }
-
-        pub fn cooperativeTransportPulse(self: *@This()) error{PulseFailed}!void {
-            self.pulses += 1;
-            if (self.cancel_on_pulse) self.worker.requestCancel();
-            if (self.fail_pulse) return error.PulseFailed;
-        }
-
-        pub fn resolveModelCapabilitiesForRequest(self: *@This(), _: []const u8) model_capabilities.ResolveError!model_capabilities.Capabilities {
-            self.resolutions += 1;
-            return .{
-                .supports_fast_mode = self.eligible and self.warmups > 0,
-                .supports_ultrafast_mode = self.eligible and self.warmups > 0,
-            };
-        }
-    };
-    const Case = struct {
-        fast: bool = false,
-        configured: bool = false,
-        active: ?bool = null,
-        eligible: bool = true,
-        cancel_before: bool = false,
-        cancel_on_pulse: bool = false,
-        fail_pulse: bool = false,
-        warmups: usize = 0,
-        cancelled: bool = false,
-    };
-    for ([_]Case{
-        .{},
-        .{ .configured = true, .active = false },
-        .{ .active = true, .warmups = 1 },
-        .{ .configured = true, .warmups = 1, .eligible = false },
-        .{ .active = true, .cancel_before = true, .cancelled = true },
-        .{ .active = true, .cancel_on_pulse = true, .warmups = 1, .cancelled = true },
-        .{ .active = true, .fail_pulse = true, .warmups = 1, .cancelled = true },
-        .{ .fast = true },
-        .{ .fast = true, .configured = true, .active = false },
-        .{ .fast = true, .active = true, .warmups = 1 },
-        .{ .fast = true, .configured = true, .warmups = 1, .eligible = false },
-        .{ .fast = true, .active = true, .cancel_before = true, .cancelled = true },
-        .{ .fast = true, .active = true, .cancel_on_pulse = true, .warmups = 1, .cancelled = true },
-        .{ .fast = true, .active = true, .fail_pulse = true, .warmups = 1, .cancelled = true },
-    }) |case| {
-        var app: App = .{ .eligible = case.eligible, .cancel_on_pulse = case.cancel_on_pulse, .fail_pulse = case.fail_pulse };
-        defer app.worker.deinit(std.testing.allocator);
-        app.worker.agent_turn_settings.fast_mode = case.fast and case.configured;
-        app.worker.agent_turn_settings.ultrafast_mode = !case.fast and case.configured;
-        if (case.active) |active| app.worker.setActiveAgentTurnSettings(.{
-            .fast_mode = case.fast and active,
-            .ultrafast_mode = !case.fast and active,
-        });
-        if (case.cancel_before) app.worker.requestCancel();
-        const resolver = Bindings(App).modelCapabilityResolver(&app);
-        if (case.cancelled) {
-            try std.testing.expectError(error.Cancelled, resolver.resolve(std.testing.allocator, "openai/test"));
-            try std.testing.expectEqual(@as(usize, 0), app.resolutions);
-        } else {
-            const capabilities = try resolver.resolve(std.testing.allocator, "openai/test");
-            try std.testing.expectEqual(@as(usize, 1), app.resolutions);
-            try std.testing.expectEqual(case.eligible and case.warmups > 0, capabilities.supports_fast_mode);
-            if (!case.fast and case.configured and !case.eligible) {
-                try std.testing.expectError(error.UltrafastUnavailable, model_capabilities.resolveUltrafastProviderOptions(capabilities, .gateway, "openai/test", .auto, false, true));
-            }
-        }
-        try std.testing.expectEqual(case.warmups, app.warmups);
-        try std.testing.expectEqual(case.warmups, app.pulses);
-    }
-}
-
 test "agent deps record rejected tool calls in feedback diagnostics" {
     var app = FakeApp.init(std.testing.allocator);
     defer app.deinit();
@@ -2857,28 +2713,6 @@ test "web progress callback keeps typed lifecycle facts during cancellation" {
         .query_started = "ignored",
     });
     try std.testing.expectEqual(@as(usize, 1), app.worker.events.items.len);
-}
-
-test "MCP progress callback publishes the owning tool lifecycle" {
-    var app = FakeApp.init(std.testing.allocator);
-    defer app.deinit();
-    const lifecycle_id = types.ToolLifecycleId{
-        .turn_id = 42,
-        .call_id = "mcp-progress",
-    };
-
-    Bindings(FakeApp).onMcpProgress(&app, lifecycle_id, "MCP fixture halfway");
-
-    try std.testing.expectEqual(@as(usize, 1), app.worker.events.items.len);
-    const lifecycle = app.worker.events.items[0].tool_lifecycle;
-    try std.testing.expect(lifecycle == .progress);
-    try std.testing.expectEqual(@as(u64, 42), lifecycle.progress.id.turn_id);
-    try std.testing.expectEqualStrings("mcp-progress", lifecycle.progress.id.call_id);
-    try std.testing.expect(std.mem.find(
-        u8,
-        lifecycle.progress.text,
-        "● MCP fixture halfway",
-    ) != null);
 }
 
 test "subagent status renderer honors session and parent workspace toggles" {

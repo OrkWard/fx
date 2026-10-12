@@ -72,10 +72,7 @@ const max_json_depth = 64;
 const Function = struct {
     name: []const u8,
     description: []const u8,
-    schema: union(enum) {
-        builtin: model_tool_schema.ObjectSchema,
-        dynamic: std.json.Value,
-    },
+    schema: model_tool_schema.ObjectSchema,
 };
 
 fn contains_name(names: []const []const u8, name: []const u8) bool {
@@ -85,7 +82,7 @@ fn contains_name(names: []const []const u8, name: []const u8) bool {
 
 fn validate_name(name: []const u8) Error!void {
     if (name.len == 0 or name.len > max_name_bytes) return error.InvalidToolName;
-    // fx advertises dotted built-in names as well as MCP names. Keep those
+    // fx advertises dotted built-in names. Keep those
     // literal identities; do not invent aliases that core cannot resolve.
     for (name) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '-' and byte != '.') return error.InvalidToolName;
 }
@@ -103,7 +100,7 @@ fn select_functions(alloc: Allocator, tools: stream_provider.ToolSelection, choi
     var functions: std.ArrayList(Function) = .empty;
     errdefer functions.deinit(alloc);
     if (choice == .none) return functions;
-    if (tools.advertised_names.len > max_selected_tools or tools.advertised_functions.len > max_selected_tools or tools.additional_functions.len > max_selected_tools or tools.selected_dynamic.len > max_selected_tools) return error.TooManyTools;
+    if (tools.advertised_names.len > max_selected_tools or tools.advertised_functions.len > max_selected_tools or tools.additional_functions.len > max_selected_tools) return error.TooManyTools;
     for (tools.advertised_names) |name| {
         const function = tools.advertisedFunction(name) orelse {
             const registered = tools.registry.lookup(name) orelse return error.InvalidToolSelection;
@@ -116,51 +113,14 @@ fn select_functions(alloc: Allocator, tools: stream_provider.ToolSelection, choi
             matches += 1;
         };
         if (matches != 1) return error.InvalidToolSelection;
-        try append_function(alloc, &functions, .{ .name = name, .description = function.description, .schema = .{ .builtin = function.input_schema } });
+        try append_function(alloc, &functions, .{ .name = name, .description = function.description, .schema = function.input_schema });
     }
     for (tools.additional_functions) |function| {
         if (contains_name(tools.advertised_names, function.name)) continue;
-        try append_function(alloc, &functions, .{ .name = function.name, .description = function.description, .schema = .{ .builtin = function.input_schema } });
-    }
-    var schema_budget: SchemaBudget = .{};
-    for (tools.selected_dynamic) |function| {
-        if (contains_name(tools.advertised_names, function.name)) continue;
-        if (function.input_schema != .object) return error.InvalidToolSchema;
-        try validate_dynamic_schema(function.input_schema, 0, &schema_budget);
-        try append_function(alloc, &functions, .{ .name = function.name, .description = function.description, .schema = .{ .dynamic = function.input_schema } });
+        try append_function(alloc, &functions, .{ .name = function.name, .description = function.description, .schema = function.input_schema });
     }
     if (choice == .required and functions.items.len == 0) return error.RequiredToolMissing;
     return functions;
-}
-
-const SchemaBudget = struct {
-    nodes: usize = 16 * 1024,
-    string_bytes: usize = 1024 * 1024,
-
-    fn consume_string(self: *SchemaBudget, text: []const u8) Error!void {
-        if (text.len > self.string_bytes or !std.unicode.utf8ValidateSlice(text)) return error.InvalidToolSchema;
-        self.string_bytes -= text.len;
-    }
-};
-
-fn validate_dynamic_schema(value: std.json.Value, depth: usize, budget: *SchemaBudget) Error!void {
-    if (depth > max_json_depth) return error.JsonTooDeep;
-    if (budget.nodes == 0) return error.InvalidToolSchema;
-    budget.nodes -= 1;
-    switch (value) {
-        .object => |fields| {
-            var iterator = fields.iterator();
-            while (iterator.next()) |entry| {
-                try budget.consume_string(entry.key_ptr.*);
-                try validate_dynamic_schema(entry.value_ptr.*, depth + 1, budget);
-            }
-        },
-        .array => |items| for (items.items) |item| try validate_dynamic_schema(item, depth + 1, budget),
-        .string => |text| try budget.consume_string(text),
-        .number_string => return error.InvalidToolSchema,
-        .float => |number| if (!std.math.isFinite(number)) return error.InvalidToolSchema,
-        .integer, .bool, .null => {},
-    }
 }
 
 fn validate_request(request: stream_provider.RequestData) Error!void {
@@ -585,10 +545,7 @@ fn write_request(writer: *std.Io.Writer, alloc: Allocator, request: stream_provi
             try writer.writeAll(",\"description\":");
             try model_tool_schema.writeCappedDescriptionJsonString(alloc, writer, function.description);
             try writer.writeAll(",\"parameters\":");
-            switch (function.schema) {
-                .builtin => |schema| try model_tool_schema.writeObjectSchema(alloc, writer, schema),
-                .dynamic => |schema| try std.json.Stringify.value(schema, .{}, writer),
-            }
+            try model_tool_schema.writeObjectSchema(alloc, writer, function.schema);
             try writer.writeAll("}}");
         }
         try writer.writeByte(']');
@@ -1787,19 +1744,16 @@ test "chat completions exact text wire preserves instruction order and opaque mo
     try std.testing.expectEqualStrings(body, again);
 }
 
-test "chat completions nested builtin additional and dynamic tool wire" {
+test "chat completions nested builtin and additional tool wire" {
     const alloc = std.testing.allocator;
-    var dynamic_schema = try std.json.parseFromSlice(std.json.Value, alloc, "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}", .{});
-    defer dynamic_schema.deinit();
     var request = test_tool_request();
     request.tools.additional_functions = &.{.{ .name = "permission_decision", .description = "Decide." }};
-    request.tools.selected_dynamic = &.{.{ .name = "mcp_docs", .description = "Find docs.", .input_schema = dynamic_schema.value }};
     const body = try build_request(alloc, request, .{});
     defer alloc.free(body);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
     defer parsed.deinit();
     const tools = parsed.value.object.get("tools").?.array.items;
-    try std.testing.expectEqual(@as(usize, 4), tools.len);
+    try std.testing.expectEqual(@as(usize, 3), tools.len);
     for (tools) |tool| {
         try std.testing.expectEqual(@as(u32, 2), tool.object.count());
         try std.testing.expectEqualStrings("function", tool.object.get("type").?.string);
@@ -1811,29 +1765,6 @@ test "chat completions nested builtin additional and dynamic tool wire" {
     const shell = tools[1].object.get("function").?.object;
     const nested = shell.get("parameters").?.object.get("properties").?.object.get("request").?.object;
     try std.testing.expectEqualStrings("command", nested.get("required").?.array.items[0].string);
-    try std.testing.expectEqualStrings("mcp_docs", tools[3].object.get("function").?.object.get("name").?.string);
-    var reducer = try Reducer.init(alloc, request, .{});
-    defer reducer.deinit();
-    try test_accept(&reducer, "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"mcp-1\",\"function\":{\"name\":\"mcp_docs\",\"arguments\":\"{\\\"query\\\":\\\"zig\\\"}\"}}]}}]}");
-    var result = try test_finish(&reducer, test_tools_finish);
-    defer result.deinit(alloc);
-    try std.testing.expectEqualStrings("mcp_docs", result.completed.completion.tool_calls[0].name);
-}
-
-test "chat completions bounds dynamic schema traversal before serialization" {
-    const alloc = std.testing.allocator;
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, text_utils.repeat("{\"items\":", 65) ++ "{}" ++ text_utils.repeat("}", 65), .{});
-    defer parsed.deinit();
-    var request = test_request();
-    request.tools.selected_dynamic = &.{.{ .name = "deep", .description = "Deep schema.", .input_schema = parsed.value }};
-    try std.testing.expectError(error.JsonTooDeep, build_request(alloc, request, .{}));
-
-    var exhausted_nodes = SchemaBudget{ .nodes = 0 };
-    try std.testing.expectError(error.InvalidToolSchema, validate_dynamic_schema(.null, 0, &exhausted_nodes));
-    var exhausted_strings = SchemaBudget{ .string_bytes = 2 };
-    try std.testing.expectError(error.InvalidToolSchema, validate_dynamic_schema(.{ .string = "abc" }, 0, &exhausted_strings));
-    var budget: SchemaBudget = .{};
-    try std.testing.expectError(error.InvalidToolSchema, validate_dynamic_schema(.{ .float = std.math.inf(f64) }, 0, &budget));
 }
 
 test "chat completions history correlation preserves canonical IDs and JSON strings" {

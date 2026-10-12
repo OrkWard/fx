@@ -176,7 +176,7 @@ fn clearConnection(control: TransferControl) void {
 }
 
 test "transfer interrupt wakes a blocked socket read" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const zio = io_mod.getIo();
     const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
     var server = try addr.listen(zio, .{});

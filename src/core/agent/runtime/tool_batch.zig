@@ -154,7 +154,6 @@ pub fn assembleParallelToolResults(
     parallel_status_started: []const bool,
     parallel_status_terminalized: []const bool,
     turn_id: u64,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
 ) !?ToolCall {
     var parallel_result_index: usize = 0;
@@ -176,7 +175,6 @@ pub fn assembleParallelToolResults(
                         parallel_status_started[original_index],
                         null,
                         "Cancelled",
-                        advertised_dynamic_tool_names,
                     );
                     continue;
                 },
@@ -209,7 +207,6 @@ pub fn assembleParallelToolResults(
                 safe_tool_output,
                 prepared.memory,
                 null,
-                advertised_dynamic_tool_names,
             );
             debug_trace.eventf("tool", "after_tool_execution", step_ctx, "call_id={s} name={s} result_kind={s} model_output_bytes={d}", .{ original_call.id, original_call.name, runtime_telemetry.toolExecutionResultKind(execution), safe_tool_output.len });
             if (hooks.tool_activity_recorder) |recorder| {
@@ -245,7 +242,6 @@ pub fn assembleParallelToolResults(
                 safe_tool_output,
                 prepared.memory,
                 null,
-                advertised_dynamic_tool_names,
             );
             debug_trace.eventf(
                 "tool",
@@ -274,7 +270,6 @@ pub fn assembleParallelToolResults(
                 safe_tool_output,
                 prepared.memory,
                 null,
-                advertised_dynamic_tool_names,
             );
         }
         for (execution.context_notices) |notice| {
@@ -319,7 +314,6 @@ pub fn processCommittedFileResult(
     display_target: ?[]const u8,
     is_file_mutation: bool,
     turn_id: u64,
-    advertised_dynamic_tool_names: []const []const u8,
     step_ctx: TraceContext,
 ) !void {
     if (!is_file_mutation) {
@@ -428,7 +422,6 @@ pub fn processCommittedFileResult(
         status_started,
         display_target,
         handoff.preview,
-        advertised_dynamic_tool_names,
     ) catch |err| {
         reporting_degraded = true;
         debug_trace.eventf(

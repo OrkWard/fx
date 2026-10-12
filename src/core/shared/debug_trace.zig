@@ -60,17 +60,14 @@ pub fn activeLogPath() ?[]const u8 {
 }
 
 pub fn nextTurnId() u64 {
-    if (comptime @import("builtin").target.os.tag == .wasi) return 1;
     return next_turn_id.fetchAdd(1, .seq_cst);
 }
 
 pub fn nextStepId() u64 {
-    if (comptime @import("builtin").target.os.tag == .wasi) return 1;
     return next_step_id.fetchAdd(1, .seq_cst);
 }
 
 pub fn nextSubagentId() u64 {
-    if (comptime @import("builtin").target.os.tag == .wasi) return 1;
     return next_subagent_id.fetchAdd(1, .seq_cst);
 }
 

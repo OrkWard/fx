@@ -597,7 +597,7 @@ fn callRun(
 }
 
 /// Adds the pending shell snapshot fallback notice to a JSON run result, so
-/// the model and ACP clients learn once that startup files run per command.
+/// the model learns once that startup files run per command.
 fn attachSnapshotNotice(
     alloc: Allocator,
     result: tool_dispatch.ToolResult,
@@ -2651,7 +2651,6 @@ test "running shell snapshot leaves continuation intent to the caller" {
 }
 
 test "registered shell empty observation waits through one managed execution" {
-    if (comptime @import("builtin").target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = managed_execution.Runtime.init(alloc);
     defer runtime.deinit();
@@ -2780,7 +2779,6 @@ test "registered shell empty observation waits through one managed execution" {
 }
 
 test "shell delivery advances only after result commit" {
-    if (comptime @import("builtin").target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = managed_execution.Runtime.init(alloc);
     defer runtime.deinit();

@@ -4,7 +4,6 @@ const browser_callback = @import("browser_callback.zig");
 const grok_session = @import("grok_session.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("../hosts/host.zig");
-const host_target = @import("../hosts/target.zig");
 const io_mod = @import("../shared/io.zig");
 const login_flow = @import("login_flow.zig");
 const oauth = @import("oauth.zig");
@@ -223,7 +222,6 @@ fn pollBrowserToken(
     cancel_flag: *std.atomic.Value(bool),
     deadline: std.Io.Clock.Timestamp,
 ) !oauth.PollResult {
-    if (comptime host_target.is_wasm) return error.GrokOAuthUnavailable;
     if (cancel_flag.load(.seq_cst)) return error.Cancelled;
     const context: *BrowserLoginContext = @ptrCast(@alignCast(raw.?));
     const manual_code = context.takeManualCode();

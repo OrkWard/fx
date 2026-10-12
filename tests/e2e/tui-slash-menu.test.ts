@@ -1036,7 +1036,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       ).toBe(69);
       expect(closedComposerRow).toBe(73);
       await session.sendLiteralText("/");
-      await session.waitForText("Commands 36", 5_000);
+      await session.waitForText("Commands 35", 5_000);
       const afterSlash = await capture("after-slash");
       expect(visibleTranscriptTailRow(afterSlash)).toBe(60);
       expect(composerRow(afterSlash)).toBe(64);
@@ -1184,157 +1184,6 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       expect(replay.stdout_bytes).toBeGreaterThan(0);
     },
     90_000,
-  );
-
-  test(
-    "slash menu renders its header described rows categories and controls",
-    async () => {
-      const workDir = mkdtempSync(join(tmpdir(), "fx-slash-main-menu-e2e-"));
-      workDirs.push(workDir);
-      const home = join(workDir, "home");
-      const workspace = join(workDir, "workspace");
-      mkdirSync(home, { recursive: true });
-      mkdirSync(workspace, { recursive: true });
-
-      session = await TmuxSession.create({
-        cwd: workspace,
-        env: {
-          HOME: home,
-          AI_GATEWAY_API_KEY: undefined,
-          VERCEL_OIDC_TOKEN: undefined,
-          FX_AUTO_UPGRADE: "0",
-        },
-        width: 100,
-        height: 30,
-      });
-      await session.waitForComposer(10_000);
-
-      await session.sendKeys("-l '/m'");
-      await session.waitForPane(
-        (pane) => pane.includes("Commands ") && pane.includes("/model"),
-        5_000,
-      );
-
-      const initialGrid = await session.capturePaneGrid();
-      const modelRow = initialGrid.find((line) =>
-        line.includes("/model") && line.includes("choose what model and reasoning effort to use")
-      );
-      expect(modelRow).toBeDefined();
-      expect(modelRow!.trimStart().startsWith("/model")).toBe(true);
-      const metadataColumn = modelRow!.lastIndexOf("Model");
-
-      await session.sendKeys("Down");
-      await session.waitForText(
-        "manage local and remote MCP servers, resources, prompts, and project trust",
-        5_000,
-      );
-      const scrolledGrid = await session.capturePaneGrid();
-      const mcpRow = scrolledGrid.find((line) =>
-        line.includes("/mcp") &&
-        line.includes("manage local and remote MCP servers, resources, prompts, and project trust")
-      );
-      expect(mcpRow).toBeDefined();
-      expect(mcpRow!.indexOf("Extensions")).toBe(metadataColumn);
-      expect(mcpRow!.indexOf("Extensions") + "Extensions".length).toBe(99);
-      expect(modelRow).toContain("Model");
-      expect(scrolledGrid.join("\n")).toContain("↑↓ navigate     enter use     esc close");
-      expect(session.isAlive()).toBe(true);
-
-      await session.sendKeys("C-u");
-      await session.sendText("/quit");
-      expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
-      session = null;
-    },
-    TEST_TIMEOUT,
-  );
-
-  test(
-    "settings can hide slash menu metadata and persist the choice",
-    async () => {
-      const { home, workspace } = createSkillsMenuFixture();
-      const settingsPath = join(home, ".fx", "settings.json");
-
-      const launch = () =>
-        TmuxSession.create({
-          cwd: workspace,
-          env: {
-            HOME: home,
-            AI_GATEWAY_API_KEY: undefined,
-            VERCEL_OIDC_TOKEN: undefined,
-            FX_AUTO_UPGRADE: "0",
-          },
-          width: 100,
-          height: 30,
-        });
-
-      session = await launch();
-      await session.waitForComposer(10_000);
-      await session.sendText("/settings");
-      let grid = await waitForSettingsMenu(session);
-      expect(grid.join("\n")).toContain("Slash menu categories");
-
-      for (let index = 0; index < 3; index += 1) {
-        await session.sendKeys("Down");
-      }
-      await session.sendKeys("Left");
-      await waitForSettingValue(settingsPath, "slash_menu_categories", false);
-      grid = await waitForSettingsMenu(session);
-      expect(grid.join("\n")).toContain("Slash menu categories");
-
-      await session.sendKeys("Escape");
-      await session.waitForPane(
-        (pane) => hasEmptyComposer(pane) && !pane.includes("←→ change"),
-        5_000,
-      );
-      await session.sendLiteralText("/m");
-      await session.waitForPane(
-        (pane) => pane.includes("Results ") && pane.includes("/model"),
-        5_000,
-      );
-      grid = await session.capturePaneGrid();
-      const modelRow = grid.find((line) => line.includes("/model"));
-      const mcpRow = grid.find((line) => line.includes("/mcp"));
-      expect(modelRow).toContain("choose what model and reasoning effort to use");
-      expect(modelRow).not.toContain("Model");
-      expect(mcpRow).toContain(
-        "manage local and remote MCP servers, resources, prompts, and project trust",
-      );
-      expect(mcpRow).not.toContain("Extensions");
-
-      await session.sendKeys("C-u");
-      await session.sendLiteralText("/managed-menu");
-      await session.waitForText("managed menu first line", 5_000);
-      grid = await session.capturePaneGrid();
-      const skillRow = grid.find((line) => line.includes("managed menu first line"));
-      expect(skillRow).toContain("managed-menu");
-      expect(skillRow).not.toContain("global .fx");
-
-      await session.sendKeys("C-u");
-      await session.sendText("/quit");
-      expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
-      session = null;
-
-      session = await launch();
-      await session.waitForComposer(10_000);
-      await session.sendLiteralText("/m");
-      await session.waitForPane(
-        (pane) => pane.includes("Results ") && pane.includes("/model"),
-        5_000,
-      );
-      grid = await session.capturePaneGrid();
-      const restartedModelRow = grid.find((line) => line.includes("/model"));
-      const restartedMcpRow = grid.find((line) => line.includes("/mcp"));
-      expect(restartedModelRow).toBeDefined();
-      expect(restartedMcpRow).toBeDefined();
-      expect(restartedModelRow).not.toContain("Model");
-      expect(restartedMcpRow).not.toContain("Extensions");
-
-      await session.sendKeys("C-u");
-      await session.sendText("/quit");
-      expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
-      session = null;
-    },
-    TEST_TIMEOUT,
   );
 
   test(
@@ -1561,7 +1410,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       await session.waitForComposer(10_000);
 
       await session.sendText("/help");
-      let grid = await waitForHelpMenu(session, 36);
+      let grid = await waitForHelpMenu(session, 35);
       let pane = grid.join("\n");
       expect(pane).toContain("𝒇x");
       expect(pane).toContain("Run /help for commands");
@@ -1577,7 +1426,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       grid = await waitForHelpMenu(session, 5);
       expect(grid.join("\n")).toContain("[General]");
       await session.sendKeys("BTab");
-      grid = await waitForHelpMenu(session, 36);
+      grid = await waitForHelpMenu(session, 35);
       expect(grid.join("\n")).toContain("[All]");
 
       await session.sendLiteralText("clipboard");
@@ -1588,11 +1437,11 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       expect(pane).not.toContain("/clear");
 
       await session.sendKeys("C-u");
-      await waitForHelpMenu(session, 36);
+      await waitForHelpMenu(session, 35);
       await session.sendKeys("Down");
       await session.sendKeys("Enter");
       pane = await session.waitForPane(
-        (current) => hasEmptyComposer(current) && !current.includes("Commands 36"),
+        (current) => hasEmptyComposer(current) && !current.includes("Commands 35"),
         5_000,
       );
       expect(composerContains(pane, "/clear")).toBe(false);
@@ -1601,7 +1450,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
 
       await session.sendKeys("C-u");
       await session.sendText("/help");
-      await waitForHelpMenu(session, 36);
+      await waitForHelpMenu(session, 35);
       await session.sendLiteralText("additional directories");
       await waitForHelpMenu(session, 1);
       await session.sendKeys("Enter");
@@ -1618,7 +1467,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
 
       await session.sendKeys("C-u");
       await session.sendText("/help");
-      await waitForHelpMenu(session, 36);
+      await waitForHelpMenu(session, 35);
       await session.sendLiteralText("no command can match this query");
       await session.waitForText("No commands found.", 5_000);
       await session.sendKeys("Escape");
@@ -2647,7 +2496,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       expect(alternateCount("\x1b[?1049l")).toBe(leavesBeforeSkills);
 
       await session.sendText("/help");
-      grid = await waitForHelpMenu(session, 36);
+      grid = await waitForHelpMenu(session, 35);
       expect(grid.join("\n")).toContain("Run /help for commands");
       expect(alternateCount("\x1b[?1049h")).toBe(entersBeforeSkills);
       expect(alternateCount("\x1b[?1049l")).toBe(leavesBeforeSkills);
@@ -3789,7 +3638,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       await session.waitForComposer(10_000);
 
       await session.sendLiteralText("/");
-      await session.waitForText("Commands 36", 5_000);
+      await session.waitForText("Commands 35", 5_000);
 
       for (let i = 0; i < 5; i += 1) {
         await session.sendKeys("Down");

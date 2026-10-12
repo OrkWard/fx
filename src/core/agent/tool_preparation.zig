@@ -28,25 +28,17 @@ pub const ClassifierFn = *const fn (
     call: ToolCall,
 ) anyerror!?CallbackTerminal;
 
-pub const CandidateClassifierFn = *const fn (
-    ctx: ?*anyopaque,
-    alloc: Allocator,
-    call: ToolCall,
-) anyerror!bool;
-
 pub const Classifiers = struct {
     ctx: ?*anyopaque = null,
     idempotent: ClassifierFn,
     validation: ClassifierFn,
     availability: ClassifierFn,
-    deferred_dynamic: ?CandidateClassifierFn = null,
 };
 
 pub const Config = struct {
     tool_registry: tool_dispatch.Registry,
     workspace_root: []const u8,
     access_scope: ?workspace_access.AccessScope = null,
-    advertised_dynamic_tool_names: []const []const u8 = &.{},
     cancel_flag: ?*std.atomic.Value(bool) = null,
     classifiers: Classifiers,
 };
@@ -80,8 +72,6 @@ pub const Terminal = struct {
 
 pub const CandidateKind = enum {
     registered,
-    advertised_dynamic,
-    deferred_dynamic,
     /// Applicability projection could not prove a canonical target, so the
     /// owning loop must preserve the existing permission/dispatch path.
     legacy_target_resolution,
@@ -165,35 +155,8 @@ pub fn prepareReadyCall(alloc: Allocator, call: ToolCall, config: Config) !Resul
     }
     try checkCancellation(config.cancel_flag);
 
-    const tool = config.tool_registry.lookup(call.name) orelse {
-        if (isAdvertisedDynamic(config.advertised_dynamic_tool_names, call.name)) {
-            if (try classifyWithCallback(
-                alloc,
-                config.cancel_flag,
-                config.classifiers,
-                config.classifiers.validation,
-                call,
-            )) |terminal| {
-                return .{ .terminal = terminalFromCallback(.validation_failure, terminal) };
-            }
-            if (try classifyWithCallback(
-                alloc,
-                config.cancel_flag,
-                config.classifiers,
-                config.classifiers.availability,
-                call,
-            )) |terminal| {
-                return .{ .terminal = terminalFromCallback(.availability_failure, terminal) };
-            }
-            return .{ .candidate = .{ .kind = .advertised_dynamic } };
-        }
-        if (config.classifiers.deferred_dynamic) |classify| {
-            if (try classify(config.classifiers.ctx, alloc, call)) {
-                return .{ .candidate = .{ .kind = .deferred_dynamic } };
-            }
-        }
+    const tool = config.tool_registry.lookup(call.name) orelse
         return .{ .terminal = .{ .kind = .unsupported } };
-    };
 
     if (try classifyWithCallback(
         alloc,
@@ -302,13 +265,6 @@ fn checkCancellationWithOutput(
     };
 }
 
-fn isAdvertisedDynamic(names: []const []const u8, name: []const u8) bool {
-    for (names) |candidate| {
-        if (std.mem.eql(u8, candidate, name)) return true;
-    }
-    return false;
-}
-
 const RegisteredTargetPreparation = union(enum) {
     prepared: []context_contract.ApplicableTarget,
     legacy_candidate,
@@ -339,12 +295,6 @@ fn prepareRegisteredApplicableTargets(
             .directory,
         ) };
     }
-
-    // Host tools own their effects; the kernel has no typed target contract
-    // for them. Skipping permission-target projection keeps a host tool that
-    // reuses a reserved name (e.g. write_file) out of the builtin mutation
-    // path entirely.
-    if (tool.executor_kind == .host) return .{ .prepared = @constCast(&.{}) };
 
     var permission_targets = permissions.permissionTargetsForCallInScope(
         alloc,
@@ -414,7 +364,6 @@ pub fn ordinaryApplicableTargetsFreshInScope(
     candidate: *const Candidate,
 ) Allocator.Error!bool {
     switch (candidate.kind) {
-        .advertised_dynamic, .deferred_dynamic => return true,
         .registered => if (candidate.applicable_targets.len == 0) return true,
         .legacy_target_resolution => {},
     }
@@ -689,77 +638,6 @@ test "retained context target call budget prevents old target reads" {
     var targets = try retainedContextTargets(alloc, &.{}, .{ .tool_steps = @constCast(&steps) }, "/tmp", registry, null);
     defer targets.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 0), targets.items.len);
-}
-
-test "advertised dynamic calls stay opaque while unsupported calls are terminal" {
-    const alloc = std.testing.allocator;
-    const empty_registry = tool_dispatch.Registry{ .tools = &.{} };
-    const advertised = [_][]const u8{"mcp_filesystem"};
-
-    var dynamic = try prepareReadyCall(alloc, .{
-        .id = "dynamic",
-        .name = "mcp_filesystem",
-        .arguments_json = "{not parsed by Fx",
-    }, .{
-        .tool_registry = empty_registry,
-        .workspace_root = "/tmp/workspace",
-        .advertised_dynamic_tool_names = &advertised,
-        .classifiers = test_classifiers,
-    });
-    defer dynamic.deinit(alloc);
-    try std.testing.expectEqual(CandidateKind.advertised_dynamic, dynamic.candidate.kind);
-    try std.testing.expectEqual(@as(usize, 0), dynamic.candidate.applicable_targets.len);
-    try std.testing.expect(try ordinaryApplicableTargetsFresh(
-        alloc,
-        .{ .id = "dynamic", .name = "mcp_filesystem", .arguments_json = "{not parsed by Fx" },
-        empty_registry,
-        "/tmp/workspace",
-        &dynamic.candidate,
-    ));
-
-    var unsupported = try prepareReadyCall(alloc, .{
-        .id = "unsupported",
-        .name = "not_advertised",
-        .arguments_json = "{}",
-    }, .{
-        .tool_registry = empty_registry,
-        .workspace_root = "/tmp/workspace",
-        .classifiers = test_classifiers,
-    });
-    defer unsupported.deinit(alloc);
-    try std.testing.expectEqual(TerminalKind.unsupported, unsupported.terminal.kind);
-    try std.testing.expect(unsupported.terminal.model_output == null);
-}
-
-test "live deferred dynamic calls reach dispatch while true unknown calls stay terminal" {
-    const Fixture = struct {
-        fn classify(_: ?*anyopaque, _: Allocator, call: ToolCall) anyerror!bool {
-            return std.mem.eql(u8, call.name, "mcp_reload_tool");
-        }
-    };
-    var classifiers = test_classifiers;
-    classifiers.deferred_dynamic = Fixture.classify;
-    const config = Config{
-        .tool_registry = .{ .tools = &.{} },
-        .workspace_root = "/tmp/workspace",
-        .classifiers = classifiers,
-    };
-
-    var deferred = try prepareReadyCall(std.testing.allocator, .{
-        .id = "deferred",
-        .name = "mcp_reload_tool",
-        .arguments_json = "{}",
-    }, config);
-    defer deferred.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CandidateKind.deferred_dynamic, deferred.candidate.kind);
-
-    var unknown = try prepareReadyCall(std.testing.allocator, .{
-        .id = "unknown",
-        .name = "unknown_tool",
-        .arguments_json = "{}",
-    }, config);
-    defer unknown.deinit(std.testing.allocator);
-    try std.testing.expectEqual(TerminalKind.unsupported, unknown.terminal.kind);
 }
 
 test "classifiers are ordered" {

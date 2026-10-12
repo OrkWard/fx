@@ -4,8 +4,6 @@ const credentials = @import("../auth/credentials.zig");
 const doctor_runtime = @import("../cli/doctor_runtime.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
-const mcp_contract = @import("../mcp/mcp_contract.zig");
-const mcp_health = @import("../mcp/health.zig");
 const mode_contract = @import("../modes/mode_contract.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
 const permissions = @import("../permissions/permissions.zig");
@@ -404,70 +402,6 @@ fn writeConnectedProvidersText(writer: *std.Io.Writer, auth: auth_runtime.Status
     if (!wrote_provider) try writer.writeAll("none");
 }
 
-pub const McpLocalSnapshot = struct {
-    servers: []const mcp_health.ConfiguredServerSnapshot = &.{},
-    configuration_issues: []const mcp_health.ConfigurationIssue = &.{},
-    inspection_error: ?[]const u8 = null,
-
-    fn writeText(self: McpLocalSnapshot, writer: *std.Io.Writer, alloc: Allocator, prefix: []const u8) !void {
-        try writer.print("[{s}] mcp_connection_check=not_checked\n", .{prefix});
-        try writer.print(
-            "[{s}] mcp_servers={d} mcp_configuration_issues={d}\n",
-            .{ prefix, self.servers.len, self.configuration_issues.len },
-        );
-        for (self.servers) |server| {
-            try writer.print("[{s}] mcp_server=", .{prefix});
-            try writeTerminalSafe(writer, alloc, server.configured_name);
-            try writer.print(
-                " source={s} scope={s} admission={s} transport={s} connection=not_checked authentication=not_checked\n",
-                .{
-                    @tagName(server.source),
-                    @tagName(server.scope),
-                    if (server.workspace_admission) |admission| @tagName(admission) else "not_applicable",
-                    @tagName(server.transport),
-                },
-            );
-        }
-        for (self.configuration_issues) |issue| {
-            try writer.print("[{s}] mcp_configuration_issue=", .{prefix});
-            try writeTerminalSafe(writer, alloc, issue.message);
-            try writer.writeByte('\n');
-        }
-        if (self.inspection_error) |error_name| {
-            try writer.print("[{s}] mcp_inspection_error={s}\n", .{ prefix, error_name });
-        }
-    }
-
-    fn writeJson(self: McpLocalSnapshot, writer: *std.Io.Writer) !void {
-        try writer.writeAll("{\"connection_check\":\"not_checked\",\"servers\":[");
-        for (self.servers, 0..) |server, index| {
-            if (index > 0) try writer.writeByte(',');
-            try std.json.Stringify.value(.{
-                .name = server.configured_name,
-                .source = server.source,
-                .scope = server.scope,
-                .admission = server.workspace_admission,
-                .required = server.required,
-                .transport = server.transport,
-                .connection = "not_checked",
-                .authentication = "not_checked",
-            }, .{}, writer);
-        }
-        try writer.writeAll("],\"configuration_issues\":[");
-        for (self.configuration_issues, 0..) |issue, index| {
-            if (index > 0) try writer.writeByte(',');
-            try std.json.Stringify.value(issue.message, .{}, writer);
-        }
-        try writer.writeAll("],\"inspection_error\":");
-        if (self.inspection_error) |error_name| {
-            try std.json.Stringify.value(error_name, .{}, writer);
-        } else {
-            try writer.writeAll("null");
-        }
-        try writer.writeByte('}');
-    }
-};
-
 pub const StatusSnapshot = struct {
     model: []const u8,
     /// Where startup found `model`: FX_MODEL, settings, or default.
@@ -481,11 +415,8 @@ pub const StatusSnapshot = struct {
     build_revision: []const u8 = "",
     auth: auth_runtime.StatusSnapshot = .{},
     auth_help: ?[]const u8 = null,
-    mcp: ?McpLocalSnapshot = null,
-    mcp_config_error: ?[]const u8 = null,
-    mcp_config_warning: ?mcp_contract.ProfileConfigWarning = null,
     permission_mode: types.PermissionMode,
-    /// The session modes ACP offers and the one a new session starts in,
+    /// The session modes fx offers and the one a new session starts in,
     /// when the caller has a mode registry with modes.
     modes: ?SessionModes = null,
     workspace_root: []const u8,
@@ -523,23 +454,6 @@ pub const StatusSnapshot = struct {
         if (self.build_revision.len > 0) {
             try out.writer.print("[status] build_revision={s}\n", .{self.build_revision});
         }
-        if (self.mcp_config_error) |error_name| {
-            try out.writer.print("[status] mcp_config_error={s}\n", .{error_name});
-        }
-        if (self.mcp_config_warning) |warning| {
-            try out.writer.print(
-                "[status] mcp_config_warning={s}",
-                .{@tagName(warning.cause)},
-            );
-            if (warning.key()) |key| {
-                try out.writer.writeAll(" key=");
-                try writeTerminalSafe(&out.writer, alloc, key);
-            }
-            try out.writer.print(
-                " additional_matches={d}\n",
-                .{warning.additional_matches},
-            );
-        }
         try out.writer.print("[status] auth={s}\n", .{self.auth.activeSourceLabel()});
         if (self.provider != .gateway) {
             try out.writer.writeAll("[status] connected_providers=");
@@ -560,7 +474,6 @@ pub const StatusSnapshot = struct {
         try out.writer.print("[status] session_permission_grants={d}\n", .{self.session_permission_grants});
         try out.writer.print("[status] agent_step_limit={d}\n", .{self.agent_step_limit});
         try out.writer.print("[status] ultrafast_requested={}\n", .{self.ultrafast_requested});
-        if (self.mcp) |mcp| try mcp.writeText(&out.writer, alloc, "status");
         return try out.toOwnedSlice();
     }
 
@@ -638,24 +551,6 @@ pub const StatusSnapshot = struct {
         try std.json.Stringify.value(self.build_channel, .{}, writer);
         try writer.writeAll(",\"build_revision\":");
         try std.json.Stringify.value(self.build_revision, .{}, writer);
-        if (self.mcp_config_error) |error_name| {
-            try writer.writeAll(",\"mcp_config_error\":");
-            try std.json.Stringify.value(error_name, .{}, writer);
-        }
-        if (self.mcp_config_warning) |warning| {
-            try writer.writeAll(",\"mcp_config_warning\":{\"cause\":");
-            try std.json.Stringify.value(@tagName(warning.cause), .{}, writer);
-            try writer.writeAll(",\"key\":");
-            if (warning.key()) |key| {
-                try std.json.Stringify.value(key, .{}, writer);
-            } else {
-                try writer.writeAll("null");
-            }
-            try writer.print(
-                ",\"additional_matches\":{d}}}",
-                .{warning.additional_matches},
-            );
-        }
         try writer.writeAll(",\"auth\":");
         try std.json.Stringify.value(self.auth.activeSourceLabel(), .{}, writer);
         if (self.provider != .gateway) {
@@ -715,10 +610,6 @@ pub const StatusSnapshot = struct {
         try writer.print(",\"session_permission_grants\":{d}", .{self.session_permission_grants});
         try writer.print(",\"agent_step_limit\":{d}", .{self.agent_step_limit});
         try writer.print(",\"ultrafast_requested\":{}", .{self.ultrafast_requested});
-        if (self.mcp) |mcp| {
-            try writer.writeAll(",\"mcp\":");
-            try mcp.writeJson(writer);
-        }
         try writer.writeByte('}');
     }
 };
@@ -1415,7 +1306,6 @@ pub const DoctorSnapshot = struct {
     permission_mode: types.PermissionMode,
     agent_step_limit: usize,
     checks: []const doctor_runtime.Check,
-    mcp: ?McpLocalSnapshot = null,
 
     pub fn render(self: DoctorSnapshot, alloc: Allocator, format: OutputFormat) ![]u8 {
         return switch (format) {
@@ -1446,7 +1336,6 @@ pub const DoctorSnapshot = struct {
         }
         try out.writer.print("[doctor] permission_mode={s}\n", .{permissions.permissionModeDisplayLabel(self.permission_mode)});
         try out.writer.print("[doctor] agent_step_limit={d}\n", .{self.agent_step_limit});
-        if (self.mcp) |mcp| try mcp.writeText(&out.writer, alloc, "doctor");
 
         for (self.checks) |entry| {
             try out.writer.print("[{s}] ", .{checkStatusLabel(entry.status)});
@@ -1505,10 +1394,6 @@ pub const DoctorSnapshot = struct {
         }
 
         try writer.writeByte(']');
-        if (self.mcp) |mcp| {
-            try writer.writeAll(",\"mcp\":");
-            try mcp.writeJson(writer);
-        }
         try writer.writeByte('}');
     }
 };
@@ -2150,125 +2035,6 @@ test "status JSON lists the session modes after the permission mode" {
     const plain = try snapshot.renderJson(std.testing.allocator);
     defer std.testing.allocator.free(plain);
     try std.testing.expect(std.mem.find(u8, plain, "\"modes\"") == null);
-}
-
-test "MCP config diagnostic renders in status text and JSON but not interactive body" {
-    const snapshot = StatusSnapshot{
-        .model = "alpha",
-        .permission_mode = .ask,
-        .workspace_root = "/tmp/fx",
-        .history_turns = 0,
-        .session_permission_grants = 0,
-        .agent_step_limit = 24,
-        .mcp_config_error = "McpConfigInvalidJson",
-    };
-
-    const text = try snapshot.renderText(std.testing.allocator);
-    defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.find(
-        u8,
-        text,
-        "[status] mcp_config_error=McpConfigInvalidJson\n",
-    ) != null);
-
-    const json = try snapshot.renderJson(std.testing.allocator);
-    defer std.testing.allocator.free(json);
-    try std.testing.expect(std.mem.find(
-        u8,
-        json,
-        "\"mcp_config_error\":\"McpConfigInvalidJson\"",
-    ) != null);
-
-    const interactive = try snapshot.renderInteractiveBody(std.testing.allocator);
-    defer std.testing.allocator.free(interactive);
-    try std.testing.expect(std.mem.find(u8, interactive, "mcp_config_error") == null);
-}
-
-test "MCP config warning renders bounded status text and JSON" {
-    const snapshot = StatusSnapshot{
-        .model = "test-model",
-        .permission_mode = .ask,
-        .workspace_root = "/tmp/project",
-        .history_turns = 0,
-        .session_permission_grants = 0,
-        .agent_step_limit = 10,
-        .mcp_config_warning = mcp_contract.ProfileConfigWarning.init(
-            .suspicious_server_key,
-            "MCP-Servers",
-            1,
-        ),
-    };
-    const text = try snapshot.renderText(std.testing.allocator);
-    defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.find(
-        u8,
-        text,
-        "[status] mcp_config_warning=suspicious_server_key key=MCP-Servers additional_matches=1\n",
-    ) != null);
-
-    const json = try snapshot.renderJson(std.testing.allocator);
-    defer std.testing.allocator.free(json);
-    try std.testing.expect(std.mem.find(u8, json, "\"mcp_config_warning\":{") != null);
-    try std.testing.expect(std.mem.find(u8, json, "\"key\":\"MCP-Servers\"") != null);
-}
-
-test "status and doctor share a side-effect-free MCP inspection contract" {
-    const servers = [_]mcp_health.ConfiguredServerSnapshot{.{
-        .configured_name = @constCast("project-docs"),
-        .source = .workspace,
-        .scope = .profile,
-        .workspace_admission = .pending,
-        .required = false,
-        .transport = .http,
-    }};
-    const issues = [_]mcp_health.ConfigurationIssue{.{
-        .message = @constCast("broken entry was ignored"),
-    }};
-    const mcp = McpLocalSnapshot{
-        .servers = &servers,
-        .configuration_issues = &issues,
-    };
-    const status = StatusSnapshot{
-        .model = "alpha",
-        .permission_mode = .auto,
-        .workspace_root = "/tmp/fx",
-        .history_turns = 0,
-        .session_permission_grants = 0,
-        .agent_step_limit = 24,
-        .mcp = mcp,
-    };
-    const status_text = try status.renderText(std.testing.allocator);
-    defer std.testing.allocator.free(status_text);
-    try std.testing.expect(std.mem.find(
-        u8,
-        status_text,
-        "[status] mcp_server=project-docs source=workspace scope=profile admission=pending transport=http connection=not_checked authentication=not_checked",
-    ) != null);
-    const status_json = try status.renderJson(std.testing.allocator);
-    defer std.testing.allocator.free(status_json);
-    try std.testing.expect(std.mem.find(
-        u8,
-        status_json,
-        "\"mcp\":{\"connection_check\":\"not_checked\"",
-    ) != null);
-    try std.testing.expect(std.mem.find(u8, status_json, "\"connection\":\"not_checked\"") != null);
-    try std.testing.expect(std.mem.find(u8, status_json, "broken entry was ignored") != null);
-
-    const doctor = DoctorSnapshot{
-        .workspace_root = "/tmp/fx",
-        .model = "alpha",
-        .permission_mode = .auto,
-        .agent_step_limit = 24,
-        .checks = &.{},
-        .mcp = mcp,
-    };
-    const doctor_json = try doctor.renderJson(std.testing.allocator);
-    defer std.testing.allocator.free(doctor_json);
-    try std.testing.expect(std.mem.find(
-        u8,
-        doctor_json,
-        "\"mcp\":{\"connection_check\":\"not_checked\"",
-    ) != null);
 }
 
 test "core permissions snapshot text and json stay stable" {
@@ -2964,7 +2730,7 @@ test "core doctor snapshot text and json stay stable" {
 
 test "doctor text escapes hostile check details while json preserves data" {
     const checks = [_]doctor_runtime.Check{.{
-        .name = "mcp_config",
+        .name = "config",
         .status = .warn,
         .detail = "warning key=bad\n\x1b]0;pwn\x07",
     }};

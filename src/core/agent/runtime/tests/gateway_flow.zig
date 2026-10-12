@@ -6779,24 +6779,6 @@ test "processQueuedPrompt starts network pacing independently from the shared re
     try std.testing.expectEqual(@as(u64, 0), network_status.delay_seconds);
 }
 
-test "processQueuedPrompt does not retry opaque JS host stream failures" {
-    const alloc = std.testing.allocator;
-    const completions = [_]FakeCompletion{.{ .stream_error = error.JsHostStreamFailed }};
-    var gateway = FakeGateway.init(alloc, &completions);
-    defer gateway.deinit();
-    var hooks = FakeAgentRuntimeDeps.init(alloc);
-    defer hooks.deinit();
-    var fixture = PromptFixture{};
-
-    try std.testing.expectError(
-        error.JsHostStreamFailed,
-        runFakePrompt(&gateway, &hooks, fixture.config(), fixture.job()),
-    );
-
-    try std.testing.expectEqual(@as(usize, 1), gateway.request_models.items.len);
-    try std.testing.expectEqual(@as(usize, 0), hooks.route_recovery_statuses.items.len);
-}
-
 test "processQueuedPrompt reserves and settles durable attempts before history commit cleanup" {
     const alloc = std.testing.allocator;
     const completions = [_]FakeCompletion{.{ .content = "Done" }};

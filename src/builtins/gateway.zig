@@ -325,12 +325,6 @@ fn buildAgentToolsJson(
         first = false;
         try model_tool_schema.writeBuiltinFunctionSchema(alloc, &out.writer, tool);
     }
-    for (request.tools.selected_dynamic) |tool| {
-        if (toolNameSelected(request.tools.advertised_names, tool.name)) continue;
-        if (!first) try out.writer.writeByte(',');
-        first = false;
-        try writeDynamicFunctionTool(&out.writer, tool);
-    }
     if (request.vision_mode == .optional and
         !toolNameSelected(request.tools.advertised_names, "vision"))
     {
@@ -346,19 +340,6 @@ fn buildAgentToolsJson(
 fn toolNameSelected(names: []const []const u8, expected: []const u8) bool {
     for (names) |name| if (std.mem.eql(u8, name, expected)) return true;
     return false;
-}
-
-fn writeDynamicFunctionTool(
-    writer: *std.Io.Writer,
-    tool: agent_stream_provider_contract.DynamicFunctionTool,
-) !void {
-    try writer.writeAll("{\"type\":\"function\",\"name\":");
-    try std.json.Stringify.value(tool.name, .{}, writer);
-    try writer.writeAll(",\"description\":");
-    try std.json.Stringify.value(tool.description, .{}, writer);
-    try writer.writeAll(",\"inputSchema\":");
-    try std.json.Stringify.value(tool.input_schema, .{}, writer);
-    try writer.writeByte('}');
 }
 
 fn finalizeAgentRequestBody(
@@ -462,37 +443,6 @@ test "agent request builder scopes the product user agent to GLM 5.2" {
     }
 }
 
-test "agent request builder overlays selected dynamic schemas" {
-    const messages = [_]shared_types.ChatMessage{.{ .role = .user, .content = "question" }};
-    var selected_schema = try std.json.parseFromSlice(
-        std.json.Value,
-        std.testing.allocator,
-        "{\"type\":\"object\",\"properties\":{}}",
-        .{},
-    );
-    defer selected_schema.deinit();
-    const body = try buildAgentRequest(std.testing.allocator, .{
-        .model = "anthropic/claude",
-        .messages = &messages,
-        .tool_choice = .auto,
-        .tools = .{ .selected_dynamic = &.{.{
-            .name = "mcp_fs_read",
-            .description = "Read",
-            .input_schema = selected_schema.value,
-        }} },
-        .provider_options = resolveGatewayProviderOptions(
-            "anthropic/claude",
-            .auto,
-            false,
-        ),
-        .max_output_tokens = 64_000,
-    });
-    defer std.testing.allocator.free(body);
-
-    try std.testing.expect(std.mem.find(u8, body, "\"name\":\"mcp_fs_read\"") != null);
-    try std.testing.expect(std.mem.find(u8, body, "\"maxOutputTokens\":64000") != null);
-}
-
 test "required vision request contains only the registered vision schema" {
     const Callbacks = struct {
         fn decode(_: tool_dispatch.DispatchContext, _: []const u8) tool_dispatch.DispatchError!tool_dispatch.DecodeResult {
@@ -531,23 +481,11 @@ test "required vision request contains only the registered vision schema" {
         .description = "Read",
         .input_schema = .{},
     };
-    var dynamic_schema = try std.json.parseFromSlice(
-        std.json.Value,
-        std.testing.allocator,
-        "{\"type\":\"object\",\"properties\":{}}",
-        .{},
-    );
-    defer dynamic_schema.deinit();
     const body = try buildAgentRequest(std.testing.allocator, .{
         .model = "zai/glm-5.2",
         .tools = .{
             .registry = .{ .tools = registered_tools[0..] },
             .additional_functions = &.{read_file_schema},
-            .selected_dynamic = &.{.{
-                .name = "mcp_fs_read",
-                .description = "Read",
-                .input_schema = dynamic_schema.value,
-            }},
         },
         .messages = &messages,
         .tool_choice = .none,
@@ -565,7 +503,6 @@ test "required vision request contains only the registered vision schema" {
     try std.testing.expect(std.mem.find(u8, body, "\"name\":\"vision\"") != null);
     try std.testing.expect(std.mem.find(u8, body, "registry-owned vision schema sentinel") != null);
     try std.testing.expect(std.mem.find(u8, body, "\"name\":\"read_file\"") == null);
-    try std.testing.expect(std.mem.find(u8, body, "\"name\":\"mcp_fs_read\"") == null);
     try std.testing.expect(std.mem.find(u8, body, "\"maxOutputTokens\":128000") != null);
 }
 

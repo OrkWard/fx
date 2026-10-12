@@ -110,17 +110,6 @@ pub const AttemptEvidence = struct {
     network_failure: ?NetworkFailureEvidence = null,
 };
 
-/// Gives a cooperative single-threaded host a chance to publish UI and runtime
-/// state while provider transport remains pending.
-pub const CooperativePulse = struct {
-    ctx: *anyopaque,
-    run: *const fn (ctx: *anyopaque) anyerror!void,
-
-    pub fn pulse(self: CooperativePulse) anyerror!void {
-        try self.run(self.ctx);
-    }
-};
-
 pub const VisionMode = enum {
     unavailable,
     optional,
@@ -138,19 +127,11 @@ pub const StructuredResponseFormat = struct {
     schema: std.json.Value,
 };
 
-pub const DynamicFunctionTool = struct {
-    name: []const u8,
-    description: []const u8,
-    input_schema: std.json.Value,
-    mcp_binding: ?types.McpToolBinding = null,
-};
-
 pub const ToolSelection = struct {
     registry: tool_dispatch.Registry = .{},
     advertised_names: []const []const u8 = &.{},
     advertised_functions: []const model_tool_schema.FunctionSchema = &.{},
     additional_functions: []const model_tool_schema.FunctionSchema = &.{},
-    selected_dynamic: []const DynamicFunctionTool = &.{},
 
     pub fn advertisedFunction(self: ToolSelection, name: []const u8) ?model_tool_schema.FunctionSchema {
         for (self.advertised_functions) |function| {
@@ -239,7 +220,6 @@ pub const ModelRequest = struct {
     /// Optional absolute provider deadline. Transports that support bounded
     /// execution must stop in-flight I/O before returning `error.Timeout`.
     deadline: ?std.Io.Clock.Timestamp = null,
-    cooperative_pulse: ?CooperativePulse = null,
     delivery: *DeliveryCertainty,
     attempt_evidence: *AttemptEvidence,
     events: EventSink,

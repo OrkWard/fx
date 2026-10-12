@@ -1611,7 +1611,6 @@ fn testAuthority(input: StartCapturedInput) command_admission.CommandExecutionAu
 }
 
 test "captured managed execution yields one handle and delivers ordered output once" {
-    if (comptime builtin.target.os.tag == .wasi) return;
     const alloc = testing_allocator.no_resize;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();
@@ -1661,7 +1660,7 @@ test "captured managed execution yields one handle and delivers ordered output o
 }
 
 test "process-exit termination joins a command a cancelled foreground wait is already joining" {
-    if (comptime builtin.target.os.tag == .wasi or builtin.target.os.tag == .windows) return;
+    if (comptime builtin.target.os.tag == .windows) return;
     const alloc = std.testing.allocator;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();
@@ -1717,7 +1716,6 @@ test "process-exit termination joins a command a cancelled foreground wait is al
 }
 
 test "captured stop returns lost when its worker cannot settle" {
-    if (comptime builtin.target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();
@@ -1811,7 +1809,6 @@ test "captured stop returns lost when its worker cannot settle" {
 }
 
 test "generated captured execution identities do not depend on provider call ids" {
-    if (comptime builtin.target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();
@@ -1847,7 +1844,6 @@ test "generated captured execution identities do not depend on provider call ids
 }
 
 test "captured managed execution capacity rejects before spawn" {
-    if (comptime builtin.target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();
@@ -1879,7 +1875,6 @@ test "captured managed execution capacity rejects before spawn" {
 }
 
 test "captured managed execution exposes full output only by opaque replay handle" {
-    if (comptime builtin.target.os.tag == .wasi) return;
     const alloc = std.testing.allocator;
     var runtime = Runtime.init(alloc);
     defer runtime.deinit();

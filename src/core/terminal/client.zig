@@ -10,7 +10,6 @@
 const std = @import("std");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const builtin = @import("builtin");
-const host_target = @import("../hosts/target.zig");
 const contracts = @import("contracts.zig");
 const operation = @import("operation.zig");
 const native_session = @import("native_session.zig");
@@ -314,7 +313,6 @@ pub const Runtime = struct {
         correlation_id: contracts.CorrelationId,
         request: contracts.ActionRequest,
     ) AdmissionError!void {
-        if (comptime host_target.is_wasm) return error.TerminalUnavailable;
         try correlation_id.validate();
         var intent = Intent{
             .correlation_id = correlation_id,

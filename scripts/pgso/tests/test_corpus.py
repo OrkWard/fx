@@ -33,11 +33,6 @@ TRAINING_E2E_TESTS = (
     "web-fetch-fake-network.test.ts",
     "web-search-fake-gateway.test.ts",
     "vision-route-fake-gateway.test.ts",
-    "acp.test.ts",
-    "mcp-http.test.ts",
-    "mcp-legacy-remote.test.ts",
-    "mcp-stdio.test.ts",
-    "mcp-auth.test.ts",
     "session-recovery.test.ts",
     "tui-startup.test.ts",
     "permission-errors.test.ts",
@@ -59,7 +54,6 @@ VERIFICATION_E2E_TESTS = (
     "review-model-override.test.ts",
     "configured-providers.test.ts",
     "oauth-keychain-migration.test.ts",
-    "mcp-verbs.test.ts",
     "tui-auth-source-selection.test.ts",
     "tui-compaction-activity.test.ts",
     "compaction-policy.test.ts",
@@ -372,8 +366,8 @@ class PgsoCorpusTests(unittest.TestCase):
             EXCLUDED_E2E_TESTS,
             tuple(test_file for test_file, _ in corpus.intentional_exclusions),
         )
-        self.assertEqual(35, len(corpus.scenarios))
-        self.assertEqual(60, len(corpus.candidate_scenarios))
+        self.assertEqual(30, len(corpus.scenarios))
+        self.assertEqual(54, len(corpus.candidate_scenarios))
         self.assertEqual(
             {
                 "direct-help": 100,
@@ -388,7 +382,7 @@ class PgsoCorpusTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            ("e2e-cli", "e2e-mcp-auth"),
+            ("e2e-cli",),
             tuple(
                 scenario.name
                 for scenario in corpus.scenarios

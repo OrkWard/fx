@@ -1,5 +1,13 @@
 # fx
 
+## Unreleased
+
+### Breaking Changes
+
+- Removed MCP support: `/mcp`, `fx mcp`, `~/.fx/mcp.json`, and the MCP discovery tools.
+- Removed the ACP server (`fx acp`).
+- Removed libfx, the JavaScript library (`sdk/`, `examples/`, and the Node-API and WebAssembly builds).
+
 ## 0.0.13
 
 <!-- release:start -->

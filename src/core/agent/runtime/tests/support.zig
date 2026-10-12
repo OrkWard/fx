@@ -164,7 +164,6 @@ const test_tools = [_]tool_dispatch.Tool{
     builtin_tools.skill,
     builtin_tools.install_skill,
     builtin_tools.subagent,
-    builtin_tools.mcp_select_tool,
     builtin_tools.ask_user_question,
     builtin_tools.read_tool_result,
 };
@@ -471,7 +470,6 @@ pub const PermissionRequestOverride = struct {
         []const PermissionGrant,
         ?runtime_tool_contracts.LiveToolAuthority,
         ?runtime_tool_contracts.LivePermissionRevalidation,
-        []const []const u8,
     ) anyerror!command_admission.PermissionOutcome,
 };
 
@@ -507,8 +505,6 @@ pub const FakeAgentRuntimeDeps = struct {
     context_registry: ?context_contract.Registry = null,
     context_enabled: bool = false,
     root_permission_mode: ?PermissionMode = null,
-    validation_mcp_runtime_generation: ?u64 = null,
-    validation_mcp_tool_name: ?[]const u8 = null,
     execute_mutex: std.Io.Mutex = .init,
     log: std.ArrayList([]u8) = .empty,
     texts: std.ArrayList([]u8) = .empty,
@@ -535,7 +531,6 @@ pub const FakeAgentRuntimeDeps = struct {
     validated_names: std.ArrayList([]u8) = .empty,
     availability_checked_names: std.ArrayList([]u8) = .empty,
     execution_classification_complete: std.ArrayList(bool) = .empty,
-    execution_mcp_runtime_generations: std.ArrayList(?u64) = .empty,
     last_validated_arguments: ?[]u8 = null,
     last_permission_arguments: ?[]u8 = null,
     last_executed_arguments: ?[]u8 = null,
@@ -550,7 +545,6 @@ pub const FakeAgentRuntimeDeps = struct {
     last_execute_grants: std.ArrayList(PermissionGrant) = .empty,
     last_live_authority_generation: ?u64 = null,
     last_live_authority_tool_count: usize = 0,
-    last_live_authority_integration_count: usize = 0,
     last_live_authority_rule_count: usize = 0,
     last_live_authority_grant_count: usize = 0,
     last_frozen_file_grants: std.ArrayList(PermissionGrant) = .empty,
@@ -739,7 +733,6 @@ pub const FakeAgentRuntimeDeps = struct {
         freeStringList(self.alloc, &self.validated_names);
         freeStringList(self.alloc, &self.availability_checked_names);
         self.execution_classification_complete.deinit(self.alloc);
-        self.execution_mcp_runtime_generations.deinit(self.alloc);
         if (self.last_validated_arguments) |value| self.alloc.free(value);
         if (self.last_permission_arguments) |value| self.alloc.free(value);
         if (self.last_executed_arguments) |value| self.alloc.free(value);
@@ -1080,16 +1073,7 @@ pub const FakeAgentRuntimeDeps = struct {
                 return .{ .failure = try arena.print("{s} arguments failed registered-tool validation", .{call.name}) };
             }
         }
-        const mcp_runtime_generation = if (self.validation_mcp_tool_name) |name|
-            if (std.mem.eql(u8, name, call.name))
-                self.validation_mcp_runtime_generation
-            else
-                null
-        else
-            null;
-        return .{ .valid = .{
-            .mcp_runtime_generation = mcp_runtime_generation,
-        } };
+        return .{ .valid = .{} };
     }
 
     fn checkToolAvailability(raw: *anyopaque, arena: Allocator, call: ToolCall) !?[]const u8 {
@@ -1127,8 +1111,6 @@ pub const FakeAgentRuntimeDeps = struct {
         local_grants: []const PermissionGrant,
         live_authority: ?runtime_tool_contracts.LiveToolAuthority,
         revalidation: ?runtime_tool_contracts.LivePermissionRevalidation,
-        advertised_dynamic_tool_names: []const []const u8,
-        _: ?[]const u8,
     ) !command_admission.PermissionOutcome {
         const self: *FakeAgentRuntimeDeps = @ptrCast(@alignCast(raw));
         if (self.permission_request_override) |override| {
@@ -1141,7 +1123,6 @@ pub const FakeAgentRuntimeDeps = struct {
                 local_grants,
                 live_authority,
                 revalidation,
-                advertised_dynamic_tool_names,
             );
         }
         try self.permission_names.append(self.alloc, try self.alloc.dupe(u8, call.name));
@@ -1396,25 +1377,25 @@ pub const FakeAgentRuntimeDeps = struct {
         return try arena.dupe(u8, value);
     }
 
-    fn describeAction(_: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn describeAction(_: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
         return if (display_target) |target|
             arena.print("start {s} {s}", .{ call.name, target })
         else
             arena.print("start {s}", .{call.name});
     }
 
-    fn describeCompleted(_: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8, _: []const []const u8) ![]const u8 {
+    fn describeCompleted(_: *anyopaque, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
         return if (display_target) |target|
             arena.print("done {s} {s}", .{ call.name, target })
         else
             arena.print("done {s}", .{call.name});
     }
 
-    fn describeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8, _: []const []const u8) ![]const u8 {
+    fn describeDenied(_: *anyopaque, arena: Allocator, call: ToolCall, _: ?[]const u8, label: []const u8) ![]const u8 {
         return arena.print("{s} {s}", .{ label, call.name });
     }
 
-    fn permissionTarget(raw: *anyopaque, arena: Allocator, call: ToolCall, _: []const []const u8) ![]const u8 {
+    fn permissionTarget(raw: *anyopaque, arena: Allocator, call: ToolCall) ![]const u8 {
         const self: *FakeAgentRuntimeDeps = @ptrCast(@alignCast(raw));
         if (self.resolve_permission_target) {
             return permissions.permissionTargetForCall(
@@ -1451,10 +1432,6 @@ pub const FakeAgentRuntimeDeps = struct {
             try self.execution_classification_complete.append(
                 self.alloc,
                 request.classification_complete,
-            );
-            try self.execution_mcp_runtime_generations.append(
-                self.alloc,
-                request.expected_mcp_runtime_generation,
             );
             try self.execute_timeout_started_ms.append(
                 self.alloc,
@@ -1496,13 +1473,11 @@ pub const FakeAgentRuntimeDeps = struct {
             if (request.live_authority) |live| {
                 self.last_live_authority_generation = live.generation;
                 self.last_live_authority_tool_count = live.tools.len;
-                self.last_live_authority_integration_count = live.integrations.len;
                 self.last_live_authority_rule_count = live.rules.rules.len;
                 self.last_live_authority_grant_count = live.grants.len;
             } else {
                 self.last_live_authority_generation = null;
                 self.last_live_authority_tool_count = 0;
-                self.last_live_authority_integration_count = 0;
                 self.last_live_authority_rule_count = 0;
                 self.last_live_authority_grant_count = 0;
             }

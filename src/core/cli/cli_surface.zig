@@ -5,7 +5,6 @@ const app_lifecycle = @import("../app/app_lifecycle.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
 const chatgpt_oauth = @import("../auth/chatgpt_oauth.zig");
 const grok_oauth = @import("../auth/grok_oauth.zig");
-const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
@@ -44,14 +43,6 @@ else
     struct {};
 const context_contract = @import("../workspace/context_contract.zig");
 const mode_registry = @import("../modes/mode_registry.zig");
-const mcp_contract = @import("../mcp/mcp_contract.zig");
-const mcp_command_provider = @import("../mcp/command_provider.zig");
-const mcp_health = @import("../mcp/health.zig");
-const project_config = @import("../mcp/project_config.zig");
-const mcp_runtime = @import("../mcp/mcp_runtime.zig");
-const mcp_host = @import("../mcp_host/host.zig");
-const mcp_verbs = @import("../mcp_host/verbs.zig");
-const mcp_auth = @import("../mcp/mcp_auth.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
 const tool_set_contract = @import("../tooling/tool_set.zig");
@@ -68,7 +59,6 @@ pub const Command = union(enum) {
     interactive,
     help,
     ask: []const [:0]const u8,
-    acp: []const [:0]const u8,
     pr: []const [:0]const u8,
     issue: []const [:0]const u8,
     login: []const [:0]const u8,
@@ -76,7 +66,6 @@ pub const Command = union(enum) {
     setup: []const [:0]const u8,
     status: []const [:0]const u8,
     permissions: []const [:0]const u8,
-    mcp: []const [:0]const u8,
     slack: []const [:0]const u8,
     models: []const [:0]const u8,
     provider: []const [:0]const u8,
@@ -238,16 +227,6 @@ pub const Config = struct {
     context_registry: context_contract.Registry,
     mode_registry: mode_registry.Registry,
     tool_set: tool_set_contract.ToolSet,
-    inspect_mcp_profile_config: mcp_contract.InspectProfileConfigFn,
-    inspect_mcp_local_config: mcp_health.InspectLocalConfigFn =
-        mcp_health.inspectLocalConfigUnavailable,
-    load_mcp_runtime: mcp_runtime.LoadRuntimeFn,
-    load_mcp_host: ?mcp_host.LoadFn = null,
-    add_mcp_profile_server: mcp_command_provider.AddProfileServerFn =
-        mcp_command_provider.addProfileServerUnavailable,
-    remove_mcp_profile_server: mcp_command_provider.RemoveProfileServerFn =
-        mcp_command_provider.removeProfileServerUnavailable,
-    acp_runner: acp_runner.Runner,
 };
 
 const LocalSurfaceOptions = struct {
@@ -336,12 +315,6 @@ const SessionRecoveryOptions = struct {
         alloc.free(self.session_id);
         self.* = undefined;
     }
-};
-
-const AcpOptions = struct {
-    model: ?[]const u8 = null,
-    ultrafast_override: ?bool = null,
-    log_file: ?[]const u8 = null,
 };
 
 const WorkflowOptions = struct {
@@ -588,7 +561,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
         },
         'a' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .ask)) return .{ .ask = args[1..] };
-            if (command_specs.matchesTopLevel(command_catalog, command, .acp)) return .{ .acp = args[1..] };
         },
         'b' => if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] },
         'c' => {
@@ -605,7 +577,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
             if (command_specs.matchesTopLevel(command_catalog, command, .logout)) return .{ .logout = args[1..] };
         },
         'm' => {
-            if (command_specs.matchesTopLevel(command_catalog, command, .mcp)) return .{ .mcp = args[1..] };
             if (command_specs.matchesTopLevel(command_catalog, command, .models)) return .{ .models = args[1..] };
         },
         'p' => {
@@ -1060,10 +1031,7 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
         return .handled_failure;
     };
     switch (parsed_launch) {
-        .interactive => |launch| {
-            try writeMcpProfileWarningIfPresent(alloc, cfg, deps);
-            return .{ .interactive = launch };
-        },
+        .interactive => |launch| return .{ .interactive = launch },
         .noninteractive => |value| {
             var noninteractive = value;
             defer noninteractive.deinit(alloc);
@@ -1090,11 +1058,7 @@ fn runNonInteractiveWithDeps(
         return .handled_failure;
     }
 
-    const acp_ultrafast_override = switch (parsed_command) {
-        .acp => global_args.modifiers.hasOnlyUltrafastOverride(),
-        else => false,
-    };
-    if (global_args.modifiers.hasModelOverrides() and !acp_ultrafast_override) {
+    if (global_args.modifiers.hasModelOverrides()) {
         try writeModelModifierUsage(deps);
         return .handled_failure;
     }
@@ -1109,13 +1073,12 @@ fn runNonInteractiveWithDeps(
         return .handled_success;
     }
 
-    // MCP-v2's verbs print their own help, and pass `-h` after `--` to the server.
-    if (topLevelHelpRequest(cfg.command_catalog, effective_args)) |kind| if (kind != .mcp or !mcp_host.selected()) {
+    if (topLevelHelpRequest(cfg.command_catalog, effective_args)) |kind| {
         const text = try command_specs.renderTopLevelCommandHelp(alloc, cfg.command_catalog, kind);
         defer alloc.free(text);
         try writeStdout(deps, text);
         return .handled_success;
-    };
+    }
 
     switch (parsed_command) {
         .interactive, .resume_session => unreachable,
@@ -1124,45 +1087,8 @@ fn runNonInteractiveWithDeps(
             return .handled_success;
         },
         .ask => |rest| {
-            try writeMcpProfileWarningIfPresent(alloc, cfg, deps);
             const exit_code = try cli_ask.run(alloc, rest, workflowConfigWithLaunchModifiers(cfg, global_args.modifiers), cfg.context_registry, cfg.tool_set);
             return if (exit_code == 0) .handled_success else .handled_failure;
-        },
-        .acp => |rest| {
-            const acp_opts = parseAcpArgs(rest) catch {
-                try writeStderr(deps, "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n");
-                return .handled_failure;
-            };
-            try cfg.acp_runner.run(alloc, .{
-                .auth_mode = cfg.auth_mode,
-                .default_model = cfg.default_model,
-                .default_agent_step_limit = cfg.default_agent_step_limit,
-                .gateway_retry_count = cfg.gateway_retry_count,
-                .gateway_chat_url = cfg.gateway_provider.chat_url.resolve(cfg.gateway_chat_url),
-                .gateway_models_path = cfg.models_path,
-                .gateway_provider = cfg.gateway_provider,
-                .provider_set = cfg.provider_set,
-                .process_provider = cfg.process_provider,
-                .secret_store = cfg.secret_store,
-                .prompt_policy = cfg.prompt_policy,
-                .ignored_list_entries = cfg.ignored_list_entries,
-                .max_list_entries = cfg.max_list_entries,
-                .max_read_file_bytes = cfg.max_read_file_bytes,
-                .max_read_file_lines = cfg.max_read_file_lines,
-                .max_read_file_line_len = cfg.max_read_file_line_len,
-                .max_command_output_bytes = cfg.max_command_output_bytes,
-                .max_tool_result_bytes = cfg.max_tool_result_bytes,
-                .max_history_turns = cfg.max_history_turns,
-                .context_registry = cfg.context_registry,
-                .mode_registry = cfg.mode_registry,
-                .context_limit_overrides = global_args.modifiers.context_limit_overrides,
-                .additional_directories = global_args.modifiers.additional_directories,
-                .saved_directories_suppressed = global_args.modifiers.saved_directories_suppressed,
-                .model_override = acp_opts.model,
-                .ultrafast_override = acp_opts.ultrafast_override orelse global_args.modifiers.ultrafast_override,
-                .log_file = acp_opts.log_file,
-            });
-            return .handled_success;
         },
         .pr => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .pull_request),
         .issue => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .issue),
@@ -1377,18 +1303,12 @@ fn runNonInteractiveWithDeps(
                 );
             defer startup.deinit(alloc);
             try writeConfigDiagnostics(alloc, deps, startup.config_diagnostics);
-            var mcp_inspection = try cfg.inspect_mcp_local_config(
-                alloc,
-                startup.workspace_root,
-            );
-            defer mcp_inspection.deinit(alloc);
 
             var snapshot = statusSnapshotFromStartupWithBuild(startup, .{
                 .channel = cfg.build_channel,
                 .version = cfg.version,
                 .revision = cfg.revision,
-            }, mcp_inspection.profile_diagnostic);
-            snapshot.mcp = localMcpView(&mcp_inspection);
+            });
             snapshot.provider_endpoint = startup.provider_endpoint;
             snapshot.modes = statusModes(cfg.mode_registry, snapshot.permission_mode);
             if (opts.format == .json) {
@@ -1444,9 +1364,6 @@ fn runNonInteractiveWithDeps(
             defer alloc.free(text);
             try writeFormattedOutput(deps, text, opts.format);
             return .handled_success;
-        },
-        .mcp => |rest| {
-            return runTopLevelMcp(alloc, rest, cfg, deps);
         },
         .models => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
@@ -1545,25 +1462,16 @@ fn runNonInteractiveWithDeps(
                 return .handled_failure;
             };
 
-            const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-            defer alloc.free(workspace_root);
-            var mcp_inspection = try cfg.inspect_mcp_local_config(
-                alloc,
-                workspace_root,
-            );
-            defer mcp_inspection.deinit(alloc);
             var snapshot = try doctor_runtime.collect(
                 alloc,
                 cfg.secret_store,
                 cfg.default_model,
                 cfg.default_agent_step_limit,
-                mcp_inspection.profile_diagnostic,
                 sessions_v2,
             );
             defer snapshot.deinit(alloc);
 
-            var output_snapshot = doctorSnapshotFromRuntime(snapshot);
-            output_snapshot.mcp = localMcpView(&mcp_inspection);
+            const output_snapshot = doctorSnapshotFromRuntime(snapshot);
             if (opts.format == .json) {
                 try writeDoctorJsonLine(alloc, deps, output_snapshot);
                 return .handled_success;
@@ -2268,13 +2176,12 @@ fn statusSnapshotFromStartup(startup: app_lifecycle.StartupStatus) output_contra
         .channel = .stable,
         .version = "",
         .revision = "",
-    }, .clear);
+    });
 }
 
 fn statusSnapshotFromStartupWithBuild(
     startup: app_lifecycle.StartupStatus,
     build: update_target.CurrentBuild,
-    mcp_config_diagnostic: mcp_contract.ProfileConfigDiagnostic,
 ) output_contracts.StatusSnapshot {
     return .{
         .model = startup.selected_model,
@@ -2292,14 +2199,6 @@ fn statusSnapshotFromStartupWithBuild(
         .update_channel = startup.update_channel.label(),
         .build_channel = build.channel.label(),
         .build_revision = build.revision,
-        .mcp_config_error = switch (mcp_config_diagnostic) {
-            .clear, .warning => null,
-            .failed => |err| @errorName(err),
-        },
-        .mcp_config_warning = switch (mcp_config_diagnostic) {
-            .warning => |warning| warning,
-            .clear, .failed => null,
-        },
     };
 }
 
@@ -2356,574 +2255,6 @@ fn writeTopLevelUsage(command_catalog: CommandCatalog, deps: RunDeps, kind: TopL
     try writeStderr(deps, "usage: fx ");
     try writeStderr(deps, command_specs.topLevelUsage(command_catalog, kind));
     try writeStderr(deps, "\n");
-}
-
-const McpCommandRuntime = struct {
-    startup: app_lifecycle.StartupState,
-    runtime: ?*mcp_runtime.McpRuntime,
-
-    fn deinit(self: *McpCommandRuntime, alloc: Allocator) void {
-        if (self.runtime) |runtime| {
-            runtime.deinit();
-            alloc.destroy(runtime);
-        }
-        self.startup.deinit(alloc);
-        self.* = undefined;
-    }
-};
-
-fn localMcpView(
-    inspection: *const mcp_health.LocalConfigInspection,
-) output_contracts.McpLocalSnapshot {
-    return .{
-        .servers = inspection.snapshot.servers,
-        .configuration_issues = inspection.snapshot.configuration_issues,
-        .inspection_error = inspection.inspection_error,
-    };
-}
-
-fn loadMcpCommandRuntime(
-    alloc: Allocator,
-    cfg: Config,
-    deps: RunDeps,
-) !McpCommandRuntime {
-    var startup = try deps.load_startup_state_without_credentials(
-        alloc,
-        cfg.default_model,
-        cfg.default_agent_step_limit,
-    );
-    errdefer startup.deinit(alloc);
-    const runtime = try cfg.load_mcp_runtime(
-        alloc,
-        startup.workspace_root,
-        .{ .form = true, .url = true },
-    );
-    return .{ .startup = startup, .runtime = runtime };
-}
-
-fn runTopLevelMcp(
-    alloc: Allocator,
-    rest: []const [:0]const u8,
-    cfg: Config,
-    deps: RunDeps,
-) !RunResult {
-    if (mcp_host.selected()) return runMcpVerbs(alloc, rest, cfg, deps);
-    if (rest.len == 0) {
-        const help = try command_specs.renderTopLevelCommandHelp(alloc, cfg.command_catalog, .mcp);
-        defer alloc.free(help);
-        try writeStdout(deps, help);
-        return .handled_success;
-    }
-    const operation = rest[0];
-    if (std.mem.eql(u8, operation, "add")) {
-        var tokens: std.ArrayList([]const u8) = .empty;
-        defer tokens.deinit(alloc);
-        try tokens.ensureTotalCapacity(alloc, rest.len - 1);
-        for (rest[1..]) |token| tokens.appendAssumeCapacity(token);
-        const intent = mcp_command_provider.parseAddIntent(tokens.items) catch |err| {
-            if (err == error.McpAddUsage) {
-                try writeMcpAddUsage(deps);
-            } else {
-                try writeMcpOperationFailure(alloc, deps, "add", err);
-            }
-            return .handled_failure;
-        };
-        var result = cfg.add_mcp_profile_server(alloc, intent) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "add", err);
-            return .handled_failure;
-        };
-        defer result.deinit(alloc);
-        if (result.warning) |warning| try writeMcpProfileWarning(alloc, deps, warning);
-        if (intent == .slack) return authenticateMcpCommand(alloc, "slack", true, cfg, deps);
-        const name = switch (intent) {
-            .slack => unreachable,
-            .local => |local| local.name,
-            .http => |http| http.name,
-        };
-        try writeMcpProfileMutationSuccess(
-            alloc,
-            deps,
-            "Saved",
-            "to",
-            name,
-            result.profile_path,
-        );
-        return .handled_success;
-    }
-    if (std.mem.eql(u8, operation, "trust")) {
-        const action = parseTopLevelProjectMcpAction(rest[1..]) catch {
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
-        };
-        const workspace_root = io_mod.realpathAlloc(alloc, ".") catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "trust", err);
-            return .handled_failure;
-        };
-        defer alloc.free(workspace_root);
-        var attempt = config_runtime.attemptProjectMcpMutation(
-            alloc,
-            workspace_root,
-            action,
-        );
-        defer attempt.deinit(alloc);
-        switch (attempt) {
-            .failure => |failure| {
-                try writeMcpOperationFailure(alloc, deps, "trust", failure.err);
-                return .handled_failure;
-            },
-            .outcome => {},
-        }
-        try writeMcpTrustSuccess(alloc, deps, workspace_root, action);
-        return .handled_success;
-    }
-    if (std.mem.eql(u8, operation, "path")) {
-        if (rest.len != 1) {
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
-        }
-        const home = deps.getenv(deps.env_ctx, "HOME") orelse {
-            try writeMcpOperationFailure(alloc, deps, "path", error.HomeNotSet);
-            return .handled_failure;
-        };
-        const path = try profile_paths.mcpConfigPath(alloc, home);
-        defer alloc.free(path);
-        var encoded_path = try text_utils.encodeTerminalSafe(alloc, path, 512);
-        defer encoded_path.deinit(alloc);
-        try writeStdout(deps, encoded_path.bytes);
-        try writeStdout(deps, "\n");
-        return .handled_success;
-    }
-    if (std.mem.eql(u8, operation, "remove")) {
-        if (rest.len != 2 or rest[1].len == 0) {
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
-        }
-        var result = cfg.remove_mcp_profile_server(alloc, rest[1]) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "remove", err);
-            return .handled_failure;
-        };
-        defer result.deinit(alloc);
-        if (result.warning) |warning| try writeMcpProfileWarning(alloc, deps, warning);
-        if (!result.removed) {
-            var encoded_name = try text_utils.encodeTerminalSafe(alloc, rest[1], 160);
-            defer encoded_name.deinit(alloc);
-            var out: std.Io.Writer.Allocating = .init(alloc);
-            defer out.deinit();
-            try out.writer.print(
-                "MCP server '{s}' was not found in the profile.\n",
-                .{encoded_name.bytes},
-            );
-            try writeStderr(deps, out.written());
-            return .handled_failure;
-        }
-        try writeMcpProfileMutationSuccess(
-            alloc,
-            deps,
-            "Removed",
-            "from",
-            rest[1],
-            result.profile_path,
-        );
-        return .handled_success;
-    }
-    if (std.mem.eql(u8, operation, "list")) {
-        const connect = rest.len == 2 and std.mem.eql(u8, rest[1], "--connect");
-        if (rest.len != 1 and !connect) {
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
-        }
-        var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "list", err);
-            return .handled_failure;
-        };
-        defer loaded.deinit(alloc);
-        try writeConfigDiagnostics(alloc, deps, loaded.startup.config_diagnostics);
-        const listing = if (loaded.runtime) |runtime| listing: {
-            if (connect) {
-                runtime.connectAll(cfg.tool_set.registry);
-            } else {
-                try runtime.loadStoredCredentialsForHealthSnapshot();
-            }
-            break :listing try runtime.listServersAndTools(alloc);
-        } else try alloc.dupe(u8, "No MCP servers configured.\n");
-        defer alloc.free(listing);
-        try writeStdout(deps, listing);
-        return .handled_success;
-    }
-    if (std.mem.eql(u8, operation, "auth")) {
-        if (rest.len != 2 or rest[1].len == 0) {
-            try writeStderr(deps, "usage: fx " ++ command_specs.mcp_auth_usage ++ "\n");
-            return .handled_failure;
-        }
-        return authenticateMcpCommand(alloc, rest[1], false, cfg, deps);
-    }
-    if (std.mem.eql(u8, operation, "logout")) {
-        if (rest.len != 2 or rest[1].len == 0) {
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
-        }
-        var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "logout", err);
-            return .handled_failure;
-        };
-        defer loaded.deinit(alloc);
-        try writeConfigDiagnostics(alloc, deps, loaded.startup.config_diagnostics);
-        const runtime = loaded.runtime orelse {
-            try writeMcpOperationFailure(alloc, deps, "logout", error.McpServerNotFound);
-            return .handled_failure;
-        };
-        const result = runtime.logoutServer(rest[1]) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "logout", err);
-            return .handled_failure;
-        };
-        var encoded_name = try text_utils.encodeTerminalSafe(alloc, rest[1], 160);
-        defer encoded_name.deinit(alloc);
-        var out: std.Io.Writer.Allocating = .init(alloc);
-        defer out.deinit();
-        if (!result.removed) {
-            try out.writer.print(
-                "No stored MCP credentials found for '{s}'.\n",
-                .{encoded_name.bytes},
-            );
-        } else if (result.local_only) {
-            try out.writer.print(
-                "Logged out of MCP server '{s}' locally.\n",
-                .{encoded_name.bytes},
-            );
-        } else if (result.revocation_failed) {
-            try out.writer.print(
-                "Logged out of MCP server '{s}' locally; remote revocation failed.\n",
-                .{encoded_name.bytes},
-            );
-        } else {
-            try out.writer.print(
-                "Logged out of MCP server '{s}'.\n",
-                .{encoded_name.bytes},
-            );
-        }
-        try writeStdout(deps, out.written());
-        return .handled_success;
-    }
-
-    try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-    return .handled_failure;
-}
-
-/// `fx mcp` on MCP-v2: the verbs `/mcp` shares.
-fn runMcpVerbs(alloc: Allocator, rest: []const [:0]const u8, cfg: Config, deps: RunDeps) !RunResult {
-    const home = deps.getenv(deps.env_ctx, "HOME") orelse {
-        try writeStderr(deps, "fx mcp: HOME isn't set\n");
-        return .handled_failure;
-    };
-    const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    defer alloc.free(workspace_root);
-    const args = try alloc.alloc([]const u8, rest.len);
-    defer alloc.free(args);
-    for (rest, args) |r, *a| a.* = r;
-    var out_buffer: [1024]u8 = undefined;
-    var err_buffer: [512]u8 = undefined;
-    var out: DepsWriter = .init(deps, .stdout, &out_buffer);
-    var err: DepsWriter = .init(deps, .stderr, &err_buffer);
-    var hosts: CliMcpHosts = .{ .alloc = alloc, .cfg = cfg, .workspace_root = workspace_root };
-    const code = mcp_verbs.run(.{
-        .gpa = alloc,
-        .out = &out.interface,
-        .err = &err.interface,
-        .surface = .cli,
-        .home = home,
-        .workspace_root = workspace_root,
-        .hosts = .{ .context = &hosts, .get = CliMcpHosts.get, .release = CliMcpHosts.release, .changed = CliMcpHosts.changed },
-    }, args);
-    return switch (code) {
-        0 => .handled_success,
-        1 => .handled_failure,
-        else => .{ .handled_exit = code },
-    };
-}
-
-/// A host made for one `fx mcp` command.
-const CliMcpHosts = struct {
-    alloc: Allocator,
-    cfg: Config,
-    workspace_root: []const u8,
-
-    fn get(context: *anyopaque, notify: ?mcp_verbs.Notify) anyerror!?*mcp_host.Host {
-        const self: *CliMcpHosts = @ptrCast(@alignCast(context));
-        const load = self.cfg.load_mcp_host orelse return null;
-        return load(self.alloc, self.workspace_root, self.cfg.tool_set.registry, .{ .notify = notify });
-    }
-
-    /// `fx mcp` exits after its one command, so nothing waits for the
-    /// servers; a logout already waited for its revocation.
-    fn release(_: *anyopaque, _: *mcp_host.Host) void {
-        mcp_host.signalServersForExit();
-    }
-
-    fn changed(_: *anyopaque) void {}
-};
-
-/// Streams through `deps`, so `login` shows its address while it waits.
-const DepsWriter = struct {
-    deps: RunDeps,
-    stream: enum { stdout, stderr },
-    interface: std.Io.Writer,
-
-    fn init(deps: RunDeps, stream: @FieldType(DepsWriter, "stream"), buffer: []u8) DepsWriter {
-        return .{ .deps = deps, .stream = stream, .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
-    }
-
-    fn emit(self: *DepsWriter, bytes: []const u8) std.Io.Writer.Error!void {
-        if (bytes.len == 0) return;
-        const written = switch (self.stream) {
-            .stdout => writeStdout(self.deps, bytes),
-            .stderr => writeStderr(self.deps, bytes),
-        };
-        written catch return error.WriteFailed;
-    }
-
-    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-        const self: *DepsWriter = @alignCast(@fieldParentPtr("interface", w));
-        try self.emit(w.buffered());
-        w.end = 0;
-        var n: usize = 0;
-        for (data[0 .. data.len - 1]) |d| {
-            try self.emit(d);
-            n += d.len;
-        }
-        const last = data[data.len - 1];
-        for (0..splat) |_| try self.emit(last);
-        return n + last.len * splat;
-    }
-};
-
-fn authenticateMcpCommand(
-    alloc: Allocator,
-    name: []const u8,
-    connect_slack: bool,
-    cfg: Config,
-    deps: RunDeps,
-) !RunResult {
-    var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
-        try writeMcpOperationFailure(alloc, deps, "auth", err);
-        return .handled_failure;
-    };
-    defer loaded.deinit(alloc);
-    try writeConfigDiagnostics(alloc, deps, loaded.startup.config_diagnostics);
-    const runtime = loaded.runtime orelse {
-        try writeMcpOperationFailure(alloc, deps, "auth", error.McpServerNotFound);
-        return .handled_failure;
-    };
-    if (connect_slack) {
-        runtime.connectAll(cfg.tool_set.registry);
-        var health = try runtime.snapshotHealth(alloc, @intCast(@max(io_mod.milliTimestamp(), 0)));
-        defer health.deinit(alloc);
-        for (health.servers) |server| {
-            if (std.mem.eql(u8, server.identity(), name) and server.connection == .ready) {
-                try writeStdout(deps, "Slack is already connected.\n");
-                return .handled_success;
-            }
-        }
-        try writeStdout(deps, "Connecting Slack. Keep fx running while you authorize in your browser.\n");
-    }
-    var opener = McpCliAuthorization{ .opener = cfg.url_opener, .deps = deps };
-    var result = runtime.authenticateServer(
-        name,
-        &opener,
-        openTopLevelMcpUrl,
-    ) catch |err| {
-        try writeMcpOperationFailure(alloc, deps, "auth", err);
-        return .handled_failure;
-    };
-    defer result.deinit();
-    switch (result) {
-        .authenticated => |authenticated| {
-            if (connect_slack) {
-                runtime.reconnectAuthenticatedServer(name, null) catch |err| {
-                    try writeMcpOperationFailure(alloc, deps, "connect Slack", err);
-                    return .handled_failure;
-                };
-                try writeStdout(deps, "Slack connected. You can now use Slack.\n");
-                return .handled_success;
-            }
-            var encoded_name = try text_utils.encodeTerminalSafe(alloc, name, 160);
-            defer encoded_name.deinit(alloc);
-            var out: std.Io.Writer.Allocating = .init(alloc);
-            defer out.deinit();
-            try out.writer.print("Authenticated MCP server '{s}'.", .{encoded_name.bytes});
-            if (authenticated.repaired_entries > 0) {
-                try out.writer.print(
-                    " Removed {d} unreadable MCP credential {s}.",
-                    .{
-                        authenticated.repaired_entries,
-                        if (authenticated.repaired_entries == 1) "entry" else "entries",
-                    },
-                );
-            }
-            try out.writer.writeByte('\n');
-            try writeStdout(deps, out.written());
-            return .handled_success;
-        },
-        .issuer_mismatch => {
-            try writeMcpOperationFailure(
-                alloc,
-                deps,
-                "auth",
-                error.McpAuthorizationIssuerMismatch,
-            );
-            return .handled_failure;
-        },
-    }
-}
-
-fn parseTopLevelProjectMcpAction(
-    args: []const [:0]const u8,
-) error{InvalidProjectMcpTrustArgs}!project_config.ProjectMcpAction {
-    if (args.len == 1 and std.mem.eql(u8, args[0], "approve-all")) return .approve_all;
-    if (args.len == 1 and std.mem.eql(u8, args[0], "reset")) return .reset;
-    if (args.len != 2 or args[1].len == 0) return error.InvalidProjectMcpTrustArgs;
-    if (std.mem.eql(u8, args[0], "approve")) return .{ .approve = args[1] };
-    if (std.mem.eql(u8, args[0], "reject")) return .{ .reject = args[1] };
-    return error.InvalidProjectMcpTrustArgs;
-}
-
-fn writeMcpTrustSuccess(
-    alloc: Allocator,
-    deps: RunDeps,
-    workspace_root: []const u8,
-    action: project_config.ProjectMcpAction,
-) !void {
-    var encoded_root = try text_utils.encodeTerminalSafe(alloc, workspace_root, 512);
-    defer encoded_root.deinit(alloc);
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    switch (action) {
-        .approve => |name| {
-            var encoded_name = try text_utils.encodeTerminalSafe(alloc, name, 160);
-            defer encoded_name.deinit(alloc);
-            try out.writer.print(
-                "Approved project MCP server '{s}' for {s}.\n",
-                .{ encoded_name.bytes, encoded_root.bytes },
-            );
-        },
-        .reject => |name| {
-            var encoded_name = try text_utils.encodeTerminalSafe(alloc, name, 160);
-            defer encoded_name.deinit(alloc);
-            try out.writer.print(
-                "Rejected project MCP server '{s}' for {s}.\n",
-                .{ encoded_name.bytes, encoded_root.bytes },
-            );
-        },
-        .approve_all => try out.writer.print(
-            "Approved all project MCP servers for {s}.\n",
-            .{encoded_root.bytes},
-        ),
-        .reset => try out.writer.print(
-            "Reset project MCP trust for {s}.\n",
-            .{encoded_root.bytes},
-        ),
-    }
-    try writeStdout(deps, out.written());
-}
-
-const McpCliAuthorization = struct {
-    opener: host.UrlOpener,
-    deps: RunDeps,
-};
-
-fn openTopLevelMcpUrl(
-    raw: ?*anyopaque,
-    alloc: Allocator,
-    url: []const u8,
-) anyerror!bool {
-    const presentation: *const McpCliAuthorization = @ptrCast(@alignCast(raw.?));
-    var encoded_url = try text_utils.encodeTerminalSafe(alloc, url, std.math.maxInt(usize));
-    defer encoded_url.deinit(alloc);
-    try writeStdout(presentation.deps, "Open this URL to authenticate the MCP server:\n");
-    try writeStdout(presentation.deps, encoded_url.bytes);
-    try writeStdout(presentation.deps, "\n\nWaiting for browser authorization...\n");
-    if (io_mod.getenv("FX_NO_OPEN_BROWSER") == null) {
-        _ = try presentation.opener.open(alloc, url);
-    }
-    return true;
-}
-
-fn writeMcpProfileMutationSuccess(
-    alloc: Allocator,
-    deps: RunDeps,
-    action: []const u8,
-    preposition: []const u8,
-    name: []const u8,
-    path: []const u8,
-) !void {
-    var encoded_name = try text_utils.encodeTerminalSafe(alloc, name, 160);
-    defer encoded_name.deinit(alloc);
-    var encoded_path = try text_utils.encodeTerminalSafe(alloc, path, 512);
-    defer encoded_path.deinit(alloc);
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    try out.writer.print(
-        "{s} MCP server '{s}' {s} {s}.\n",
-        .{ action, encoded_name.bytes, preposition, encoded_path.bytes },
-    );
-    try writeStdout(deps, out.written());
-}
-
-fn writeMcpAddUsage(deps: RunDeps) !void {
-    return writeStderr(
-        deps,
-        "usage: fx " ++ command_specs.mcp_add_usage ++ "\n",
-    );
-}
-
-fn writeMcpOperationFailure(
-    alloc: Allocator,
-    deps: RunDeps,
-    operation: []const u8,
-    err: anyerror,
-) !void {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    try out.writer.print(
-        "fx mcp {s} failed: {s}.\n",
-        .{ operation, mcp_auth.authentication_error_message(err) },
-    );
-    try writeStderr(deps, out.written());
-}
-
-fn writeMcpProfileWarningIfPresent(
-    alloc: Allocator,
-    cfg: Config,
-    deps: RunDeps,
-) !void {
-    const diagnostic = try cfg.inspect_mcp_profile_config(alloc);
-    const warning = switch (diagnostic) {
-        .warning => |value| value,
-        .clear, .failed => return,
-    };
-    try writeMcpProfileWarning(alloc, deps, warning);
-}
-
-fn writeMcpProfileWarning(
-    alloc: Allocator,
-    deps: RunDeps,
-    warning: mcp_contract.ProfileConfigWarning,
-) !void {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    try out.writer.print(
-        "fx: ~/.fx/mcp.json warning: {s}",
-        .{@tagName(warning.cause)},
-    );
-    if (warning.key()) |key| {
-        var encoded = try text_utils.encodeTerminalSafe(alloc, key, 128);
-        defer encoded.deinit(alloc);
-        try out.writer.print(" key={s}", .{encoded.bytes});
-    }
-    try out.writer.print(
-        " additional_matches={d}\n",
-        .{warning.additional_matches},
-    );
-    try writeStderr(deps, out.written());
 }
 
 fn writeUsageOrJsonError(
@@ -3040,7 +2371,7 @@ fn workflowLanguagePlaceholder() types.ConversationLanguage {
 }
 
 /// The session modes `fx status` reports, so a client can show the mode
-/// choice before an ACP session exists. Null for a registry without modes.
+/// choice before a session exists. Null for a registry without modes.
 fn statusModes(registry: mode_registry.Registry, permission_mode: types.PermissionMode) ?output_contracts.StatusSnapshot.SessionModes {
     if (registry.modes.len == 0) return null;
     return .{ .current = registry.startingModeId(permission_mode), .all = registry.modes };
@@ -3713,8 +3044,6 @@ fn workflowConfig(cfg: Config) @import("cli_ask.zig").Config {
         .max_tool_result_bytes = cfg.max_tool_result_bytes,
         .max_history_turns = cfg.max_history_turns,
         .mode_registry = cfg.mode_registry,
-        .load_mcp_runtime = cfg.load_mcp_runtime,
-        .load_mcp_host = cfg.load_mcp_host,
     };
 }
 
@@ -3732,7 +3061,7 @@ fn workflowConfigWithLaunchModifiers(
 
 fn commandSupportsWorkspaceModifiers(command: Command) bool {
     return switch (command) {
-        .interactive, .ask, .acp, .pr, .issue, .resume_session => true,
+        .interactive, .ask, .pr, .issue, .resume_session => true,
         else => false,
     };
 }
@@ -3740,7 +3069,7 @@ fn commandSupportsWorkspaceModifiers(command: Command) bool {
 fn writeWorkspaceModifierUsage(deps: RunDeps) !void {
     try writeStderr(
         deps,
-        "fx: --add-dir and --no-additional-dirs are only supported for interactive, resume, ask, ACP, PR, and issue launches\n",
+        "fx: --add-dir and --no-additional-dirs are only supported for interactive, resume, ask, PR, and issue launches\n",
     );
 }
 
@@ -3767,46 +3096,6 @@ fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
         error.ConflictingProviderStrictFlags => "--provider-strict and --no-provider-strict cannot be used together",
         else => null,
     };
-}
-
-fn parseAcpArgs(args: []const [:0]const u8) !AcpOptions {
-    var opts = AcpOptions{};
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--model")) {
-            if (opts.model != null or i + 1 >= args.len) return error.InvalidAcpArgs;
-            i += 1;
-            opts.model = args[i];
-        } else if (std.mem.eql(u8, args[i], "--ultrafast") or std.mem.eql(u8, args[i], "--no-ultrafast")) {
-            const enabled = std.mem.eql(u8, args[i], "--ultrafast");
-            if (opts.ultrafast_override != null and opts.ultrafast_override.? != enabled) return error.InvalidAcpArgs;
-            opts.ultrafast_override = enabled;
-        } else if (std.mem.eql(u8, args[i], "--log-file")) {
-            if (opts.log_file != null or i + 1 >= args.len) return error.InvalidAcpArgs;
-            i += 1;
-            opts.log_file = args[i];
-        } else {
-            return error.InvalidAcpArgs;
-        }
-    }
-    return opts;
-}
-
-test "ACP arguments accept an explicit ultrafast override" {
-    const enabled = try parseAcpArgs(&.{
-        @constCast("--model"),
-        @constCast("provider/astra"),
-        @constCast("--ultrafast"),
-    });
-    try std.testing.expectEqualStrings("provider/astra", enabled.model.?);
-    try std.testing.expectEqual(@as(?bool, true), enabled.ultrafast_override);
-
-    const disabled = try parseAcpArgs(&.{@constCast("--no-ultrafast")});
-    try std.testing.expectEqual(@as(?bool, false), disabled.ultrafast_override);
-    try std.testing.expectError(
-        error.InvalidAcpArgs,
-        parseAcpArgs(&.{ @constCast("--ultrafast"), @constCast("--no-ultrafast") }),
-    );
 }
 
 fn parseLocalSurfaceArgs(args: []const [:0]const u8) !LocalSurfaceOptions {
@@ -4194,10 +3483,6 @@ test "parse recognizes every top-level command and preserves unknown commands" {
         .ask => |rest| try std.testing.expectEqual(@as(usize, 1), rest.len),
         else => return error.TestExpectedEqual,
     }
-    switch (parse(command_catalog, &.{ @constCast("acp"), @constCast("--model"), @constCast("m") })) {
-        .acp => |rest| try std.testing.expectEqual(@as(usize, 2), rest.len),
-        else => return error.TestExpectedEqual,
-    }
     switch (parse(command_catalog, &.{ @constCast("pr"), @constCast("ready") })) {
         .pr => |rest| try std.testing.expectEqual(@as(usize, 1), rest.len),
         else => return error.TestExpectedEqual,
@@ -4220,10 +3505,6 @@ test "parse recognizes every top-level command and preserves unknown commands" {
     }
     switch (parse(command_catalog, &.{ @constCast("models"), @constCast("--json") })) {
         .models => |rest| try std.testing.expectEqual(@as(usize, 1), rest.len),
-        else => return error.TestExpectedEqual,
-    }
-    switch (parse(command_catalog, &.{ @constCast("mcp"), @constCast("add"), @constCast("fixture"), @constCast("node") })) {
-        .mcp => |rest| try std.testing.expectEqual(@as(usize, 3), rest.len),
         else => return error.TestExpectedEqual,
     }
     switch (parse(command_catalog, &.{@constCast("doctor")})) {
@@ -4314,7 +3595,7 @@ test "global launch modifiers preserve repeatable context limits before the comm
     var parsed = try parseGlobalLaunchArgs(std.testing.allocator, &.{
         @constCast("--context-limit"),
         @constCast("skill_chunk_bytes=4096"),
-        @constCast("--context-limit=mcp_description_bytes=off"),
+        @constCast("--context-limit=image_adapter_output_bytes=off"),
         @constCast("ask"),
         @constCast("hello"),
     });
@@ -4323,7 +3604,7 @@ test "global launch modifiers preserve repeatable context limits before the comm
     try std.testing.expectEqual(@as(usize, 2), parsed.modifiers.context_limit_overrides.len);
     try std.testing.expectEqual(config_runtime.context_limits.Name.skill_chunk_bytes, parsed.modifiers.context_limit_overrides[0].name);
     try std.testing.expectEqual(@as(usize, 4096), parsed.modifiers.context_limit_overrides[0].value.bytes);
-    try std.testing.expectEqual(config_runtime.context_limits.Name.mcp_description_bytes, parsed.modifiers.context_limit_overrides[1].name);
+    try std.testing.expectEqual(config_runtime.context_limits.Name.image_adapter_output_bytes, parsed.modifiers.context_limit_overrides[1].name);
     try std.testing.expect(parsed.modifiers.context_limit_overrides[1].value == .off);
     try std.testing.expectEqualStrings("ask", parsed.remaining[0]);
     try std.testing.expectEqualStrings("hello", parsed.remaining[1]);
@@ -4507,123 +3788,6 @@ test "additional directory flags fail closed when malformed" {
     try std.testing.expectError(
         error.DuplicateAdditionalDirectorySuppression,
         parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--no-additional-dirs"), @constCast("--no-additional-dirs") }),
-    );
-}
-
-test "parse acp args extracts known flags and rejects invalid arguments" {
-    const opts = try parseAcpArgs(&.{
-        @constCast("--model"),
-        @constCast("openai/gpt-4o"),
-        @constCast("--log-file"),
-        @constCast("/tmp/fx.log"),
-    });
-    try std.testing.expectEqualStrings("openai/gpt-4o", opts.model.?);
-    try std.testing.expectEqualStrings("/tmp/fx.log", opts.log_file.?);
-
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--unknown")}));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--model")}));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--log-file")}));
-    try std.testing.expectError(
-        error.InvalidAcpArgs,
-        parseAcpArgs(&.{ @constCast("--model"), @constCast("first"), @constCast("--model"), @constCast("second") }),
-    );
-}
-
-test "ACP command routes parsed options and launch config through the injected runner" {
-    const Capture = struct {
-        expected: Config,
-        calls: usize = 0,
-        config_matches: bool = false,
-        launch_matches: bool = false,
-
-        fn run(raw: ?*anyopaque, _: Allocator, cfg: acp_runner.Config) anyerror!void {
-            const self: *@This() = @ptrCast(@alignCast(raw.?));
-            self.calls += 1;
-            const expected = self.expected;
-            self.config_matches =
-                std.mem.eql(u8, cfg.default_model, expected.default_model) and
-                cfg.default_agent_step_limit == expected.default_agent_step_limit and
-                cfg.gateway_retry_count == expected.gateway_retry_count and
-                std.mem.eql(
-                    u8,
-                    cfg.gateway_chat_url,
-                    expected.gateway_provider.chat_url.resolve(expected.gateway_chat_url),
-                ) and
-                std.mem.eql(u8, cfg.gateway_models_path, expected.models_path) and
-                cfg.gateway_provider.chat_url.resolve_fn == expected.gateway_provider.chat_url.resolve_fn and
-                std.mem.eql(u8, cfg.prompt_policy.system_prompt, expected.prompt_policy.system_prompt) and
-                cfg.ignored_list_entries.len == expected.ignored_list_entries.len and
-                cfg.max_list_entries == expected.max_list_entries and
-                cfg.max_read_file_bytes == expected.max_read_file_bytes and
-                cfg.max_read_file_lines == expected.max_read_file_lines and
-                cfg.max_read_file_line_len == expected.max_read_file_line_len and
-                cfg.max_command_output_bytes == expected.max_command_output_bytes and
-                cfg.max_tool_result_bytes == expected.max_tool_result_bytes and
-                cfg.max_history_turns == expected.max_history_turns and
-                std.mem.eql(
-                    u8,
-                    cfg.context_registry.defaultProvider().id,
-                    expected.context_registry.defaultProvider().id,
-                ) and
-                std.mem.eql(u8, cfg.mode_registry.default_mode_id, expected.mode_registry.default_mode_id) and
-                cfg.provider_set.gateway.permission_reviewer.?.review_fn == expected.provider_set.gateway.permission_reviewer.?.review_fn;
-
-            const limit_matches = cfg.context_limit_overrides.len == 1 and
-                cfg.context_limit_overrides[0].name == .project_instructions_total_bytes and
-                switch (cfg.context_limit_overrides[0].value) {
-                    .bytes => |bytes| bytes == 1234,
-                    .off => false,
-                };
-            self.launch_matches =
-                limit_matches and
-                cfg.additional_directories.len == 1 and
-                std.mem.eql(u8, cfg.additional_directories[0], "/tmp/acp-extra") and
-                cfg.saved_directories_suppressed and
-                std.mem.eql(u8, cfg.model_override.?, "model-override") and
-                std.mem.eql(u8, cfg.log_file.?, "/tmp/acp.log");
-        }
-    };
-
-    var cfg = testConfig();
-    cfg.provider_set.gateway.permission_reviewer = test_builtin_gateway.permission_reviewer.provider;
-    var capture = Capture{ .expected = cfg };
-    cfg.acp_runner = .{ .context = &capture, .run_fn = Capture.run };
-    const result = try runIfRequestedWithDeps(
-        std.testing.allocator,
-        &.{
-            @constCast("--context-limit"),
-            @constCast("project_instructions_total_bytes=1234"),
-            @constCast("--add-dir"),
-            @constCast("/tmp/acp-extra"),
-            @constCast("--no-additional-dirs"),
-            @constCast("acp"),
-            @constCast("--model"),
-            @constCast("model-override"),
-            @constCast("--log-file"),
-            @constCast("/tmp/acp.log"),
-        },
-        cfg,
-        .{},
-    );
-
-    try std.testing.expectEqual(RunResult.handled_success, result);
-    try std.testing.expectEqual(@as(usize, 1), capture.calls);
-    try std.testing.expect(capture.config_matches);
-    try std.testing.expect(capture.launch_matches);
-}
-
-test "ACP runner errors preserve their identity" {
-    const Fixture = struct {
-        fn run(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-            return error.TestAcpRunnerFailed;
-        }
-    };
-
-    var cfg = testConfig();
-    cfg.acp_runner = .{ .run_fn = Fixture.run };
-    try std.testing.expectError(
-        error.TestAcpRunnerFailed,
-        runIfRequested(std.testing.allocator, &.{@constCast("acp")}, cfg),
     );
 }
 
@@ -5073,132 +4237,6 @@ test "runIfRequested help writes top-level help" {
     try std.testing.expectEqualStrings("", capture.stderr.written());
 }
 
-test "top-level MCP add mutates through the focused provider without startup" {
-    const alloc = std.testing.allocator;
-    var capture = CaptureOutput.init(alloc);
-    defer capture.deinit();
-    var cfg = testConfig();
-    cfg.add_mcp_profile_server = captureMcpProfileAddForTest;
-    mcp_profile_add_calls_for_test = 0;
-    var deps = capture.deps();
-    deps.load_startup_state = failingStartupState;
-
-    const result = try runIfRequestedWithDeps(
-        alloc,
-        &.{
-            @constCast("mcp"),
-            @constCast("add"),
-            @constCast("fixture"),
-            @constCast("node"),
-            @constCast("server.js"),
-        },
-        cfg,
-        deps,
-    );
-    try std.testing.expectEqual(RunResult.handled_success, result);
-    try std.testing.expectEqual(@as(usize, 1), mcp_profile_add_calls_for_test);
-    try std.testing.expectEqualStrings(
-        "Saved MCP server 'fixture' to /tmp/test-home/.fx/mcp.json.\n",
-        capture.stdout.written(),
-    );
-    try std.testing.expectEqualStrings("", capture.stderr.written());
-}
-
-test "top-level MCP list loads configuration without discovery and remove uses its provider" {
-    const alloc = std.testing.allocator;
-    {
-        var capture = CaptureOutput.init(alloc);
-        defer capture.deinit();
-        var cfg = testConfig();
-        cfg.load_mcp_runtime = configuredMcpRuntimeForTest;
-        var deps = capture.deps();
-        deps.load_startup_state_without_credentials = stubLoadStartupStateWithoutCredentials;
-
-        const result = try runIfRequestedWithDeps(
-            alloc,
-            &.{ @constCast("mcp"), @constCast("list") },
-            cfg,
-            deps,
-        );
-        try std.testing.expectEqual(RunResult.handled_success, result);
-        try std.testing.expect(std.mem.find(
-            u8,
-            capture.stdout.written(),
-            "fixture source=profile scope=profile",
-        ) != null);
-        try std.testing.expect(std.mem.find(
-            u8,
-            capture.stdout.written(),
-            "state=disconnected",
-        ) != null);
-        try std.testing.expectEqualStrings("", capture.stderr.written());
-    }
-
-    {
-        var capture = CaptureOutput.init(alloc);
-        defer capture.deinit();
-        var cfg = testConfig();
-        cfg.remove_mcp_profile_server = captureMcpProfileRemoveForTest;
-        mcp_profile_remove_calls_for_test = 0;
-
-        const result = try runIfRequestedWithDeps(
-            alloc,
-            &.{ @constCast("mcp"), @constCast("remove"), @constCast("fixture") },
-            cfg,
-            capture.deps(),
-        );
-        try std.testing.expectEqual(RunResult.handled_success, result);
-        try std.testing.expectEqual(@as(usize, 1), mcp_profile_remove_calls_for_test);
-        try std.testing.expectEqualStrings(
-            "Removed MCP server 'fixture' from /tmp/test-home/.fx/mcp.json.\n",
-            capture.stdout.written(),
-        );
-        try std.testing.expectEqualStrings("", capture.stderr.written());
-    }
-}
-
-test "top-level MCP trust persists project approval without interactive startup" {
-    const alloc = std.testing.allocator;
-    const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    defer alloc.free(workspace_root);
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(home);
-    var environ = std.process.Environ.Map.init(alloc);
-    defer environ.deinit();
-    try environ.put("HOME", home);
-    try environ.put("PATH", "");
-    const stable_environ = try stableCliTestEnviron();
-    io_mod.setEnvironMap(&environ);
-    defer io_mod.setEnvironMap(stable_environ);
-
-    var capture = CaptureOutput.init(alloc);
-    defer capture.deinit();
-    var deps = capture.deps();
-    deps.load_startup_state_without_credentials = failingStartupStateWithoutCredentials;
-
-    const result = try runIfRequestedWithDeps(
-        alloc,
-        &.{ @constCast("mcp"), @constCast("trust"), @constCast("approve"), @constCast("fixture") },
-        testConfig(),
-        deps,
-    );
-    try std.testing.expectEqual(RunResult.handled_success, result);
-    const expected = try alloc.print(
-        "Approved project MCP server 'fixture' for {s}.\n",
-        .{workspace_root},
-    );
-    defer alloc.free(expected);
-    try std.testing.expectEqualStrings(expected, capture.stdout.written());
-    try std.testing.expectEqualStrings("", capture.stderr.written());
-
-    var choices = try config_runtime.loadProjectMcpChoices(alloc, workspace_root);
-    defer choices.deinit(alloc);
-    try std.testing.expectEqual(@as(usize, 1), choices.choices.approved.len);
-    try std.testing.expectEqualStrings("fixture", choices.choices.approved[0]);
-}
-
 test "workspace launch modifiers preserve supported command help" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
@@ -5228,7 +4266,7 @@ test "workspace launch modifiers still reject unsupported local command help" {
     );
     try std.testing.expectEqual(RunResult.handled_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
-    try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "only supported for interactive, resume, ask, ACP, PR, and issue launches") != null);
+    try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "only supported for interactive, resume, ask, PR, and issue launches") != null);
 }
 
 test "global workspace launch option errors use user-facing copy" {
@@ -5441,23 +4479,23 @@ test "runIfRequested rejects removed record flag as unknown input" {
     try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "fx: unknown subcommand: --record") != null);
 }
 
-test "global ultrafast launch modifier is ACP-only" {
-    var acp = try parseGlobalLaunchArgs(
+test "global ultrafast launch modifier parses before the command" {
+    var parsed = try parseGlobalLaunchArgs(
         std.testing.allocator,
-        &.{ @constCast("--ultrafast"), @constCast("acp") },
+        &.{ @constCast("--ultrafast"), @constCast("ask") },
     );
-    defer acp.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?bool, true), acp.modifiers.ultrafast_override);
-    try std.testing.expect(acp.modifiers.hasOnlyUltrafastOverride());
-    try std.testing.expectEqualStrings("acp", acp.remaining[0]);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?bool, true), parsed.modifiers.ultrafast_override);
+    try std.testing.expect(parsed.modifiers.hasOnlyUltrafastOverride());
+    try std.testing.expectEqualStrings("ask", parsed.remaining[0]);
 
     try std.testing.expectError(error.ConflictingFastFlags, parseGlobalLaunchArgs(
         std.testing.allocator,
-        &.{ @constCast("--ultrafast"), @constCast("--fast"), @constCast("acp") },
+        &.{ @constCast("--ultrafast"), @constCast("--fast"), @constCast("ask") },
     ));
     try std.testing.expectError(error.ConflictingUltrafastFlags, parseGlobalLaunchArgs(
         std.testing.allocator,
-        &.{ @constCast("--fast"), @constCast("--ultrafast"), @constCast("acp") },
+        &.{ @constCast("--fast"), @constCast("--ultrafast"), @constCast("ask") },
     ));
 }
 
@@ -5544,24 +4582,6 @@ test "CLI surface uses the supplied command catalog for parsing usage and help" 
     try std.testing.expectEqualStrings("usage: fx start\n", usage_capture.stderr.written());
 }
 
-test "workflow config does not carry placeholder gateway tools" {
-    const skill_roots = [_]skill_contract.RootSpec{
-        .{ .source = .workspace_shared, .path = "skills" },
-    };
-    var chat_url_probe = ChatUrlProbe{};
-    var surface_cfg = testConfig();
-    surface_cfg.skill_root_policy.workspace_roots = &skill_roots;
-    surface_cfg.gateway_provider.chat_url = chat_url_probe.provider();
-    const cfg = workflowConfig(surface_cfg);
-    try std.testing.expect(!@hasField(@TypeOf(cfg), "gateway_tools_json"));
-    try std.testing.expect(!@hasField(@TypeOf(cfg), "context_registry"));
-    try std.testing.expectEqualStrings("test-model", cfg.default_model);
-    try std.testing.expectEqualStrings("http://127.0.0.1:43123/chat", cfg.gateway_chat_url);
-    try std.testing.expect(chat_url_probe.called);
-    try std.testing.expectEqualStrings("surface", cfg.mode_registry.default_mode_id);
-    try std.testing.expectEqualStrings("skills", cfg.skill_root_policy.workspace_roots[0].path);
-    try std.testing.expect(cfg.load_mcp_runtime == noMcpRuntimeForTest);
-}
 test "runIfRequested invalid local flags write usage" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
@@ -5983,85 +5003,6 @@ test "runIfRequested credits failures use nonzero text and json contracts" {
     try std.testing.expectEqualStrings("", json_capture.stderr.written());
 }
 
-test "runIfRequested local json success appends exactly one newline" {
-    var capture = CaptureOutput.init(std.testing.allocator);
-    defer capture.deinit();
-
-    var deps = capture.deps();
-    deps.load_startup_status = stubLoadStartupStatus;
-
-    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--json") }, testConfig(), deps);
-    try std.testing.expectEqual(RunResult.handled_success, result);
-    try std.testing.expectEqualStrings(
-        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"auto\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":false,\"mcp\":{\"connection_check\":\"not_checked\",\"servers\":[],\"configuration_issues\":[],\"inspection_error\":null}}\n",
-        capture.stdout.written(),
-    );
-    try std.testing.expect(!std.mem.endsWith(u8, capture.stdout.written(), "\n\n"));
-}
-
-test "status and doctor inspect MCP configuration once per command" {
-    const alloc = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(home);
-
-    var environ = std.process.Environ.Map.init(alloc);
-    defer environ.deinit();
-    try environ.put("HOME", home);
-    try environ.put("PATH", "");
-    const stable_environ = try stableCliTestEnviron();
-    io_mod.setEnvironMap(&environ);
-    defer io_mod.setEnvironMap(stable_environ);
-
-    mcp_local_inspection_calls_for_test = 0;
-    var cfg = testConfig();
-    cfg.inspect_mcp_local_config = failingMcpLocalInspectionForTest;
-
-    var status_capture = CaptureOutput.init(alloc);
-    defer status_capture.deinit();
-    var status_deps = status_capture.deps();
-    status_deps.load_startup_status = stubLoadStartupStatus;
-    const status_result = try runIfRequestedWithDeps(
-        alloc,
-        &.{ @constCast("status"), @constCast("--json") },
-        cfg,
-        status_deps,
-    );
-    try std.testing.expectEqual(RunResult.handled_success, status_result);
-    try std.testing.expectEqual(@as(usize, 1), mcp_local_inspection_calls_for_test);
-    try std.testing.expect(std.mem.find(
-        u8,
-        status_capture.stdout.written(),
-        "\"mcp_config_error\":\"McpConfigInvalidJson\"",
-    ) != null);
-
-    mcp_local_inspection_calls_for_test = 0;
-    var doctor_capture = CaptureOutput.init(alloc);
-    defer doctor_capture.deinit();
-    const doctor_result = try runIfRequestedWithDeps(
-        alloc,
-        &.{ @constCast("doctor"), @constCast("--json") },
-        cfg,
-        doctor_capture.deps(),
-    );
-    try std.testing.expectEqual(RunResult.handled_success, doctor_result);
-    try std.testing.expectEqual(@as(usize, 1), mcp_local_inspection_calls_for_test);
-    try std.testing.expectEqual(
-        @as(usize, 1),
-        std.mem.count(
-            u8,
-            doctor_capture.stdout.written(),
-            "\"name\":\"mcp_config\"",
-        ),
-    );
-    try std.testing.expect(std.mem.find(
-        u8,
-        doctor_capture.stdout.written(),
-        "\"detail\":\"failed to load ~/.fx/mcp.json: McpConfigInvalidJson\"",
-    ) != null);
-}
-
 test "writeRenderedJsonLine falls back to heap and appends exactly one newline" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
@@ -6236,82 +5177,6 @@ const test_surface_context_registry = context_contract.Registry{ .default_provid
     .append_transient_fn = appendNoopTransientContextForTest,
 } };
 
-fn noMcpRuntimeForTest(_: Allocator, _: []const u8, _: @import("../mcp/elicitation.zig").Capabilities) !?*mcp_runtime.McpRuntime {
-    return null;
-}
-
-fn clearMcpConfigInspectionForTest(
-    _: Allocator,
-) error{OutOfMemory}!mcp_contract.ProfileConfigDiagnostic {
-    return .clear;
-}
-
-var mcp_local_inspection_calls_for_test: usize = 0;
-var mcp_profile_add_calls_for_test: usize = 0;
-var mcp_profile_remove_calls_for_test: usize = 0;
-
-fn captureMcpProfileAddForTest(
-    alloc: Allocator,
-    intent: mcp_command_provider.AddIntent,
-) anyerror!mcp_command_provider.ProfileAddResult {
-    mcp_profile_add_calls_for_test += 1;
-    switch (intent) {
-        .slack => return error.TestUnexpectedResult,
-        .local => |local| {
-            try std.testing.expectEqualStrings("fixture", local.name);
-            try std.testing.expectEqualStrings("node", local.command);
-            try std.testing.expectEqualSlices([]const u8, &.{"server.js"}, local.args);
-        },
-        .http => return error.TestUnexpectedResult,
-    }
-    return .{
-        .profile_path = try alloc.dupe(u8, "/tmp/test-home/.fx/mcp.json"),
-    };
-}
-
-fn captureMcpProfileRemoveForTest(
-    alloc: Allocator,
-    name: []const u8,
-) anyerror!mcp_command_provider.ProfileRemoveResult {
-    mcp_profile_remove_calls_for_test += 1;
-    try std.testing.expectEqualStrings("fixture", name);
-    return .{
-        .profile_path = try alloc.dupe(u8, "/tmp/test-home/.fx/mcp.json"),
-        .removed = true,
-    };
-}
-
-fn configuredMcpRuntimeForTest(
-    alloc: Allocator,
-    workspace_root: []const u8,
-    _: @import("../mcp/elicitation.zig").Capabilities,
-) !?*mcp_runtime.McpRuntime {
-    try std.testing.expectEqualStrings("/tmp/fx", workspace_root);
-    const runtime = try alloc.create(mcp_runtime.McpRuntime);
-    errdefer alloc.destroy(runtime);
-    runtime.* = mcp_runtime.McpRuntime.init(alloc);
-    errdefer runtime.deinit();
-    try runtime.addServer(.{
-        .name = try alloc.dupe(u8, "fixture"),
-        .command = try alloc.dupe(u8, "node"),
-    });
-    return runtime;
-}
-
-fn failingMcpLocalInspectionForTest(
-    alloc: Allocator,
-    workspace_root: []const u8,
-) error{OutOfMemory}!mcp_health.LocalConfigInspection {
-    mcp_local_inspection_calls_for_test += 1;
-    var result = try mcp_health.inspectLocalConfigUnavailable(
-        alloc,
-        workspace_root,
-    );
-    result.profile_diagnostic = .{ .failed = error.McpConfigInvalidJson };
-    result.inspection_error = "McpConfigInvalidJson";
-    return result;
-}
-
 var stable_cli_test_environ: ?*std.process.Environ.Map = null;
 
 fn stableCliTestEnviron() !*const std.process.Environ.Map {
@@ -6322,10 +5187,6 @@ fn stableCliTestEnviron() !*const std.process.Environ.Map {
     map.* = std.process.Environ.Map.init(alloc);
     stable_cli_test_environ = map;
     return map;
-}
-
-fn unexpectedAcpRunForTest(_: ?*anyopaque, _: Allocator, _: acp_runner.Config) anyerror!void {
-    return error.TestUnexpectedAcpRun;
 }
 
 fn testConfig() Config {
@@ -6353,9 +5214,6 @@ fn testConfig() Config {
         .max_history_turns = 8,
         .context_registry = test_surface_context_registry,
         .mode_registry = .{ .default_mode_id = "surface" },
-        .inspect_mcp_profile_config = clearMcpConfigInspectionForTest,
-        .load_mcp_runtime = noMcpRuntimeForTest,
-        .acp_runner = .{ .run_fn = unexpectedAcpRunForTest },
         .tool_set = .{
             .registry = .{ .tools = &.{} },
             .order = &.{},
@@ -6592,4 +5450,38 @@ const CreditsProviderProbe = struct {
 
 fn ownedCreditsErrorSnapshot(alloc: Allocator, message: []const u8) output_contracts.CreditsSnapshot {
     return .{ .err_message = alloc.dupe(u8, message) catch null };
+}
+
+test "workflow config does not carry placeholder gateway tools" {
+    const skill_roots = [_]skill_contract.RootSpec{
+        .{ .source = .workspace_shared, .path = "skills" },
+    };
+    var chat_url_probe = ChatUrlProbe{};
+    var surface_cfg = testConfig();
+    surface_cfg.skill_root_policy.workspace_roots = &skill_roots;
+    surface_cfg.gateway_provider.chat_url = chat_url_probe.provider();
+    const cfg = workflowConfig(surface_cfg);
+    try std.testing.expect(!@hasField(@TypeOf(cfg), "gateway_tools_json"));
+    try std.testing.expect(!@hasField(@TypeOf(cfg), "context_registry"));
+    try std.testing.expectEqualStrings("test-model", cfg.default_model);
+    try std.testing.expectEqualStrings("http://127.0.0.1:43123/chat", cfg.gateway_chat_url);
+    try std.testing.expect(chat_url_probe.called);
+    try std.testing.expectEqualStrings("surface", cfg.mode_registry.default_mode_id);
+    try std.testing.expectEqualStrings("skills", cfg.skill_root_policy.workspace_roots[0].path);
+}
+
+test "runIfRequested local json success appends exactly one newline" {
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+
+    var deps = capture.deps();
+    deps.load_startup_status = stubLoadStartupStatus;
+
+    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--json") }, testConfig(), deps);
+    try std.testing.expectEqual(RunResult.handled_success, result);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"auto\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":false}\n",
+        capture.stdout.written(),
+    );
+    try std.testing.expect(!std.mem.endsWith(u8, capture.stdout.written(), "\n\n"));
 }

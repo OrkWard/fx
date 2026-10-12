@@ -80,7 +80,6 @@ describe("tui: direct-write audit", () => {
     expect(output).toContain("frame_commit=1");
     expect(output).toContain("unclassified=0");
     expect(output).toContain("path=src/ui/transcript/io.zig");
-    expect(output).toContain("category=acp_protocol_transport");
     expect(output).toContain("category=subprocess_protocol_transport");
     expect(output).toMatch(
       /path=src\/core\/terminal\/native_session\.zig .*function=acceptMarker .*category=subprocess_protocol_transport/,

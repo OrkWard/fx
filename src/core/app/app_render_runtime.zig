@@ -763,34 +763,6 @@ pub fn Runtime(comptime App: type) type {
                     render_input.skillsMenuProjection(&app.skills)
                 else
                     .{},
-                .mcp_host_menu = if (comptime @hasField(App, "mcp")) .{
-                    .state = app.mcp.host_menu,
-                    .rows = app.mcp.host_menu_rows,
-                    .filter = app.input_runtime.edit_state.input.items,
-                    .tools = app.mcp.host_menu_tools,
-                    .notes = app.mcp.host_menu_notes,
-                    .sign_in_url = app.mcp.hostMenuSignInUrl(),
-                } else .{},
-                .mcp_menu = if (comptime @hasField(App, "mcp")) blk: {
-                    const view = app.mcp.menuView();
-                    break :blk .{
-                        .state = view.state,
-                        .servers = if (view.health) |health| health.servers else &.{},
-                        .tools = view.tools,
-                        .resources = if (view.resources) |catalog| catalog.resources.items else &.{},
-                        .resource_templates = if (view.resources) |catalog| catalog.templates.items else &.{},
-                        .prompts = if (view.prompts) |catalog| catalog.items else &.{},
-                        .configuration_issues = if (view.health) |health| health.configuration_issues else &.{},
-                        .preview = view.preview,
-                        .feedback = view.feedback,
-                        .add_name = view.add_form.name.items,
-                        .add_target = view.add_form.target.items,
-                        .add_arguments = view.add_form.arguments.items,
-                        .add_draft = app.input_runtime.edit_state.input.items,
-                        .arguments = view.argument_fields,
-                        .argument_draft = app.input_runtime.edit_state.input.items,
-                    };
-                } else .{},
                 .help_menu = render_input.helpMenuProjection(
                     &app.input_runtime.help_menu,
                     app.slashRegistry(),
@@ -840,7 +812,6 @@ pub fn Runtime(comptime App: type) type {
                 else
                     .{},
                 .upgrade_status = upgrade_label,
-                .mcp_status = if (comptime @hasField(App, "mcp")) app.mcp.hostStatusText() else "",
                 .danger_status = if (yolo_warning_active)
                     app_permission_runtime.yolo_warning_text
                 else
@@ -1027,10 +998,6 @@ pub fn Runtime(comptime App: type) type {
                 if (snapshot.reasons.contains(.first_frame)) {
                     App.startPromptCredentialPrewarm(app);
                 }
-            }
-            // MCP servers start once the first frame is on screen, never before.
-            if (comptime @hasDecl(App, "startMcpHostServers")) {
-                if (snapshot.reasons.contains(.first_frame)) App.startMcpHostServers(app);
             }
             if (comptime @hasDecl(App, "notePendingFrameCommitted")) {
                 if (result.pending_prompt_presented) {
@@ -4587,11 +4554,11 @@ test "core.app_render_runtime paints a rebased terminal status after cancellatio
     var history: std.ArrayList(u8) = .empty;
     defer history.deinit(alloc);
     var offset: u64 = 0;
-    const id: types.ToolLifecycleId = .{ .turn_id = 1, .call_id = "call_mcp" };
+    const id: types.ToolLifecycleId = .{ .turn_id = 1, .call_id = "call_fixture" };
     _ = try app.shell.applyToolLifecycle(alloc, .{ .authoritative_started = .{
         .id = id,
         .reconciles_provisional_call_id = null,
-        .tool_name = "mcp_fixture_echo",
+        .tool_name = "fixture_echo",
         .activity_kind = .command,
     } });
     _ = try flushRebasedPublicationFrame(&app, file, &physical, &history, &offset);
@@ -4600,11 +4567,11 @@ test "core.app_render_runtime paints a rebased terminal status after cancellatio
     const cancelled = try rewritePublicationText(alloc, &physical, history.items);
     defer alloc.free(cancelled);
     try std.testing.expect(std.mem.find(u8, cancelled, "Cancelled") != null);
-    try std.testing.expect(std.mem.find(u8, cancelled, "Cancelled mcp_fixture_echo") == null);
+    try std.testing.expect(std.mem.find(u8, cancelled, "Cancelled fixture_echo") == null);
 
     _ = try app.shell.applyToolLifecycle(alloc, .{ .terminal = .{
         .id = id,
-        .outcome = .{ .kind = .cancelled, .summary = "Cancelled mcp_fixture_echo" },
+        .outcome = .{ .kind = .cancelled, .summary = "Cancelled fixture_echo" },
     } });
     _ = try app.shell.applyToolLifecycle(alloc, .{ .turn_finished = .{
         .turn_id = id.turn_id,
@@ -4616,7 +4583,7 @@ test "core.app_render_runtime paints a rebased terminal status after cancellatio
     try std.testing.expectEqual(@as(u32, 0), try flushRebasedPublicationFrame(&app, file, &physical, &history, &offset));
     const finished = try rewritePublicationText(alloc, &physical, history.items);
     defer alloc.free(finished);
-    try std.testing.expect(std.mem.find(u8, finished, "Cancelled mcp_fixture_echo") != null);
+    try std.testing.expect(std.mem.find(u8, finished, "Cancelled fixture_echo") != null);
     try std.testing.expect(app.shell.transcript_commit_state.stable.flow_materialized);
     try std.testing.expectEqual(@as(u32, 0), try flushRebasedPublicationFrame(&app, file, &physical, &history, &offset));
     const quiet = try rewritePublicationText(alloc, &physical, history.items);

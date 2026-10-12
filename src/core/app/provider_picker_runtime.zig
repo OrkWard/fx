@@ -18,7 +18,6 @@ const provider_picker_catalog = @import("../auth/provider_picker_catalog.zig");
 const model_provider = @import("../config/model_provider.zig");
 const picker_state = @import("../input/picker_state.zig");
 const list_window = @import("../shared/list_window.zig");
-const runtime_profile = @import("../hosts/runtime_profile.zig");
 const app_auth_runtime = @import("app_auth_runtime.zig");
 const provider_runtime = @import("provider_runtime.zig");
 
@@ -37,14 +36,10 @@ pub const ColumnBuffer = struct {
     field: [provider_picker_catalog.max_key_field_bytes]u8 = undefined,
 };
 
-/// Hosts without a composer, an auth runtime, a provider selection, or native
-/// auth have no `/provider` picker; every entry point below is inert for them.
-/// The native-auth gate matters because the picker triggers on typed text: the
-/// command handlers refuse politely on WASM, but the composer would otherwise
-/// still open columns whose leaves (key entry, OAuth) cannot run there.
+/// Hosts without a composer, an auth runtime, or a provider selection have no
+/// `/provider` picker; every entry point below is inert for them.
 pub fn supported(comptime App: type) bool {
-    return runtime_profile.allows(App, .native_auth) and
-        @hasField(App, "input_runtime") and
+    return @hasField(App, "input_runtime") and
         @hasField(App, "auth") and
         provider_runtime.supported(App);
 }

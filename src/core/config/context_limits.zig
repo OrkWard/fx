@@ -7,10 +7,6 @@ pub const Name = enum {
     skill_catalog_bytes,
     skill_chunk_bytes,
     skill_file_bytes,
-    mcp_description_bytes,
-    mcp_search_result_bytes,
-    mcp_server_instructions_bytes,
-    mcp_selected_schema_bytes,
     project_instruction_file_bytes,
     project_instructions_total_bytes,
     image_adapter_output_bytes,
@@ -21,10 +17,6 @@ pub const Name = enum {
             .skill_catalog_bytes => 16 * 1024,
             .skill_chunk_bytes => 20 * 1024,
             .skill_file_bytes => 1024 * 1024,
-            .mcp_description_bytes => 1024,
-            .mcp_search_result_bytes => 16 * 1024,
-            .mcp_server_instructions_bytes => 2 * 1024,
-            .mcp_selected_schema_bytes => 64 * 1024,
             .project_instruction_file_bytes => 64 * 1024,
             .project_instructions_total_bytes => 128 * 1024,
             .image_adapter_output_bytes => 20 * 1024,
@@ -91,10 +83,6 @@ pub const Values = struct {
     skill_catalog_bytes: Resolved = defaultResolved(.skill_catalog_bytes),
     skill_chunk_bytes: Resolved = defaultResolved(.skill_chunk_bytes),
     skill_file_bytes: Resolved = defaultResolved(.skill_file_bytes),
-    mcp_description_bytes: Resolved = defaultResolved(.mcp_description_bytes),
-    mcp_search_result_bytes: Resolved = defaultResolved(.mcp_search_result_bytes),
-    mcp_server_instructions_bytes: Resolved = defaultResolved(.mcp_server_instructions_bytes),
-    mcp_selected_schema_bytes: Resolved = defaultResolved(.mcp_selected_schema_bytes),
     project_instruction_file_bytes: Resolved = defaultResolved(.project_instruction_file_bytes),
     project_instructions_total_bytes: Resolved = defaultResolved(.project_instructions_total_bytes),
     image_adapter_output_bytes: Resolved = defaultResolved(.image_adapter_output_bytes),
@@ -131,10 +119,6 @@ pub const Overrides = struct {
     skill_catalog_bytes: ?Resolved = null,
     skill_chunk_bytes: ?Resolved = null,
     skill_file_bytes: ?Resolved = null,
-    mcp_description_bytes: ?Resolved = null,
-    mcp_search_result_bytes: ?Resolved = null,
-    mcp_server_instructions_bytes: ?Resolved = null,
-    mcp_selected_schema_bytes: ?Resolved = null,
     project_instruction_file_bytes: ?Resolved = null,
     project_instructions_total_bytes: ?Resolved = null,
     image_adapter_output_bytes: ?Resolved = null,
@@ -237,8 +221,8 @@ test "context limit overrides accept bytes and off" {
     try std.testing.expectEqual(Name.skill_chunk_bytes, bytes.name);
     try std.testing.expectEqual(@as(usize, 4096), bytes.value.bytes);
 
-    const off = try parseOverride("mcp_description_bytes=off");
-    try std.testing.expectEqual(Name.mcp_description_bytes, off.name);
+    const off = try parseOverride("image_adapter_output_bytes=off");
+    try std.testing.expectEqual(Name.image_adapter_output_bytes, off.name);
     try std.testing.expectEqual(emergency_ceiling_bytes, off.value.effectiveBytes());
 }
 

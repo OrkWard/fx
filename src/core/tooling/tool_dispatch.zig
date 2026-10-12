@@ -25,7 +25,6 @@ const model_tool_schema = @import("model_tool_schema.zig");
 const host = @import("../hosts/host.zig");
 const tool_result_errors = @import("tool_result_errors.zig");
 const tool_result_limits = @import("tool_result_limits.zig");
-const tool_mcp_runtime = @import("tool_mcp_runtime.zig");
 const web_search_contract = @import("web_search_contract.zig");
 const context_limits = @import("../config/context_limits.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
@@ -113,13 +112,6 @@ pub const VisionProvider = struct {
     }
 };
 
-pub const SelectedDynamicToolSinkFn = *const fn (
-    ?*anyopaque,
-    []const u8,
-    []const u8,
-    ?tool_mcp_runtime.Binding,
-) error{OutOfMemory}!void;
-
 pub const ContextNoticeSinkFn = *const fn (?*anyopaque, []const u8) error{OutOfMemory}!void;
 
 /// Erased, owned typed input decoded by a concrete tool.
@@ -166,43 +158,6 @@ pub const ToolResult = union(enum) {
 };
 
 pub const ModelContentKind = enum { ordinary, complete_skill };
-
-/// Arguments: context, allocator, tool name, the model's call id, arguments
-/// JSON, result limit, and cancel flag.
-pub const HostToolProviderFn = *const fn (
-    *anyopaque,
-    Allocator,
-    []const u8,
-    []const u8,
-    []const u8,
-    usize,
-    ?*std.atomic.Value(bool),
-) DispatchError!ToolResult;
-
-pub const HostToolProvider = struct {
-    context: *anyopaque,
-    call_fn: HostToolProviderFn,
-
-    pub fn call(
-        self: HostToolProvider,
-        alloc: Allocator,
-        name: []const u8,
-        call_id: []const u8,
-        arguments_json: []const u8,
-        max_result_bytes: usize,
-        cancel_flag: ?*std.atomic.Value(bool),
-    ) DispatchError!ToolResult {
-        return self.call_fn(
-            self.context,
-            alloc,
-            name,
-            call_id,
-            arguments_json,
-            max_result_bytes,
-            cancel_flag,
-        );
-    }
-};
 
 /// Result of decoding a raw JSON argument buffer into a typed input.
 pub const DecodeResult = union(enum) {
@@ -288,7 +243,6 @@ pub const DispatchContext = struct {
     run_command_backend: ?RunCommandBackend = null,
     subagent_provider: ?subagent_tool_provider.Provider = null,
     vision_provider: ?VisionProvider = null,
-    host_tool_provider: ?HostToolProvider = null,
     ask_question_ctx: ?*anyopaque = null,
     ask_question_batch: ?AskQuestionBatchFn = null,
     tool_capabilities: ToolCapabilities = .{},
@@ -302,19 +256,6 @@ pub const DispatchContext = struct {
     on_web_search_progress: ?WebSearchProgressFn = null,
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?WebFetchProgressFn = null,
-    mcp_ctx: ?*anyopaque = null,
-    mcp_call_tool: ?tool_mcp_runtime.CallToolFn = null,
-    mcp_search_tools: ?tool_mcp_runtime.SearchToolsFn = null,
-    mcp_tool_schema: ?tool_mcp_runtime.ToolSchemaFn = null,
-    mcp_call_feature: ?tool_mcp_runtime.FeatureCallFn = null,
-    mcp_access: tool_mcp_runtime.Access = .unrestricted,
-    mcp_input_responder: ?tool_mcp_runtime.InputResponder = null,
-    mcp_call_options: tool_mcp_runtime.CallOptions = .{},
-    mcp_call_status_sink: ?*?tool_mcp_runtime.CallStatus = null,
-    mcp_execution_error_sink: ?*?anyerror = null,
-    mcp_permission_rules: core_types.PermissionRuleSet = .{},
-    selected_dynamic_tool_ctx: ?*anyopaque = null,
-    on_selected_dynamic_tool: ?SelectedDynamicToolSinkFn = null,
     context_notice_ctx: ?*anyopaque = null,
     on_context_notice: ?ContextNoticeSinkFn = null,
     inner_usage_sink: ?*?core_types.ToolUsage = null,
@@ -410,11 +351,8 @@ pub const ExecutorKind = enum {
     install_skill,
     subagent,
     capability_search,
-    mcp_select_tool,
-    mcp_features,
     ask_user_question,
     vision,
-    host,
 };
 
 pub const ApprovalPolicy = enum {
@@ -459,10 +397,6 @@ pub const Tool = struct {
     /// never reaches a call-time permission check, so advertisement is its only
     /// enforcement point and requires an already-settled allow.
     provider_executed: bool = false,
-    /// A host tool whose calls may run beside neighboring calls of other such
-    /// tools. A host tool that declares `writes` leaves it unset and runs
-    /// alone. Concurrency never changes a call's permission review.
-    host_concurrent: bool = false,
     executor_kind: ExecutorKind = .read_file,
     activity_kind: core_types.ToolActivityKind = .read,
     requires_approval: bool = false,
@@ -936,16 +870,6 @@ pub fn reportCommandResultJson(ctx: DispatchContext, json: []const u8) void {
 pub fn reportResultCommit(ctx: DispatchContext, token: result_commit.Token) void {
     const sink = ctx.result_commit_sink orelse return;
     sink.* = token;
-}
-
-pub fn reportSelectedDynamicTool(
-    ctx: DispatchContext,
-    name: []const u8,
-    schema_json: []const u8,
-    binding: ?tool_mcp_runtime.Binding,
-) error{OutOfMemory}!void {
-    const sink = ctx.on_selected_dynamic_tool orelse return;
-    try sink(ctx.selected_dynamic_tool_ctx, name, schema_json, binding);
 }
 
 pub fn reportContextNotice(ctx: DispatchContext, notice: []const u8) error{OutOfMemory}!void {

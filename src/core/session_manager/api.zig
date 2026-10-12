@@ -668,9 +668,9 @@ fn checkEvents(gpa: std.mem.Allocator, events: []const Event, import: bool) Appe
         },
         .set => |s| {
             switch (s.key) {
-                .title, .workspace, .client_prompt => try checkJsonString(gpa, s.value),
+                .title, .workspace => try checkJsonString(gpa, s.value),
                 .language => try checkLanguage(gpa, s.value),
-                .prefs, .permissions, .usage, .tool_identities, .moved_files, .compaction_records => try checkJson(gpa, s.value),
+                .prefs, .permissions, .usage, .moved_files, .compaction_records => try checkJson(gpa, s.value),
             }
             for (s.blobs) |hash| if (!schema.validBlobHash(hash)) return error.InvalidArgument;
         },
@@ -913,12 +913,12 @@ const api_tests = struct {
         page.deinit();
         try testing.expectError(error.NotFound, f.manager.read(gpa, "AAAAAAAAAAAA", .start, .forward, 10));
         try testing.expectError(error.NotFound, f.manager.getBlob(gpa, "AAAAAAAAAAAA", &@as([64]u8, @splat('0'))));
-        try testing.expectError(error.NotFound, f.manager.openResume(.{ .target = .last, .workspace = "/w", .host = .acp }));
+        try testing.expectError(error.NotFound, f.manager.openResume(.{ .target = .last, .workspace = "/w", .host = .ask }));
         try testing.expectError(error.NotFound, f.manager.verify("AAAAAAAAAAAA"));
         try testing.expectError(error.NotFound, f.manager.delete("AAAAAAAAAAAA"));
         try testing.expectError(error.FileNotFound, f.dir());
         // Once a session is saved, the same calls find it.
-        const s = try f.manager.openNew(.{ .workspace = "/w", .host = .acp });
+        const s = try f.manager.openNew(.{ .workspace = "/w", .host = .ask });
         _ = try s.append(&.{ .turn_started, piece, .turn_committed });
         s.release();
         var listed = try f.manager.list(gpa, .all, null, 10);
@@ -1031,14 +1031,13 @@ const api_tests = struct {
         _ = try other.append(&.{ .turn_started, .turn_committed });
         other.release();
 
-        // The app opens a; then ask and acp open b, a millisecond later at
+        // The app opens a; then ask opens b, a millisecond later at
         // least, so b is the newer one however fast this runs.
         (try m.openResume(.{ .target = .{ .id = a_id }, .workspace = "/w", .host = .app })).release();
         try nextMillisecond();
         (try m.openResume(.{ .target = .{ .id = b_id }, .workspace = "/w", .host = .ask })).release();
-        (try m.openResume(.{ .target = .{ .id = b_id }, .workspace = "/w", .host = .acp })).release();
 
-        // b was updated last (closed by acp); the app last opened a. Resuming
+        // b was updated last (closed by ask); the app last opened a. Resuming
         // is itself an open, so this check runs as `fx ask --resume last`.
         const last = try m.openResume(.{ .target = .last, .workspace = "/w", .host = .ask });
         try testing.expectEqualStrings(b_id, last.id());
@@ -1046,7 +1045,7 @@ const api_tests = struct {
         const c = try m.openResume(.{ .target = .{ .last_opened = .app }, .workspace = "/w", .host = .app });
         try testing.expectEqualStrings(a_id, c.id());
         c.release();
-        try testing.expectError(error.NotFound, m.openResume(.{ .target = .{ .last_opened = .sdk }, .workspace = "/w", .host = .sdk }));
+        try testing.expectError(error.NotFound, m.openResume(.{ .target = .{ .last_opened = .ask }, .workspace = "/elsewhere", .host = .ask }));
         try testing.expectError(error.NotFound, m.openResume(.{ .target = .last, .workspace = "/nowhere", .host = .app }));
     }
 
@@ -1055,7 +1054,7 @@ const api_tests = struct {
         try f.init();
         defer f.deinit();
         const m = f.manager;
-        const s = try m.openNew(.{ .workspace = "/w", .host = .acp });
+        const s = try m.openNew(.{ .workspace = "/w", .host = .ask });
         _ = try s.append(&.{ .turn_started, .turn_committed });
         const id = try gpa.dupe(u8, s.id());
         defer gpa.free(id);
@@ -1908,31 +1907,6 @@ const api_tests = struct {
             count += 1;
         }
         try testing.expectEqual(@as(usize, 2), count);
-    }
-
-    test "an ACP client's prompt and tool identities are settings that resume keeps (D46)" {
-        var f: Fixture = undefined;
-        try f.init();
-        defer f.deinit();
-        const m = f.manager;
-        const s = try m.openNew(.{ .workspace = "/w", .host = .acp });
-        // The prompt is a JSON string; anything else is refused.
-        try testing.expectError(error.InvalidArgument, s.append(&.{.{ .set = .{ .key = .client_prompt, .value = "{\"text\":1}" } }}));
-        _ = try s.append(&.{
-            .{ .set = .{ .key = .client_prompt, .value = "\"You run inside Mini.\"" } },
-            .{ .set = .{ .key = .tool_identities, .value = "{\"mcp_mini_read\":{\"server\":\"mini\",\"tool\":\"read\"}}" } },
-        });
-        _ = try s.append(&.{ .turn_started, piece, .turn_committed });
-        const id = try gpa.dupe(u8, s.id());
-        defer gpa.free(id);
-        s.release();
-
-        const r = try m.openResume(.{ .target = .{ .id = id }, .workspace = "/w", .host = .acp });
-        defer r.release();
-        var st = try r.state(gpa);
-        defer st.deinit(gpa);
-        try testing.expectEqualStrings("\"You run inside Mini.\"", st.client_prompt.?);
-        try testing.expectEqualStrings("{\"mcp_mini_read\":{\"server\":\"mini\",\"tool\":\"read\"}}", st.tool_identities.?);
     }
 };
 

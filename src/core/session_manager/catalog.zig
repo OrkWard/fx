@@ -675,14 +675,14 @@ test "records round trip" {
     summary.parent = "p";
     summary.opened_ms[@backingInt(schema.Host.ask)] = 9;
     try encodeRecord(arena.allocator(), &out, .{ .put = summary });
-    try encodeRecord(arena.allocator(), &out, .{ .opened = .{ .id = "abc", .host = .acp, .ts_ms = 10 } });
+    try encodeRecord(arena.allocator(), &out, .{ .opened = .{ .id = "abc", .host = .ask, .ts_ms = 10 } });
     try encodeRecord(arena.allocator(), &out, .{ .del = .{ .id = "abc", .ts_ms = 11 } });
     var lines = std.mem.splitScalar(u8, out.items, '\n');
     const put = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.put;
     try testing.expectEqualStrings("\"a \\\"title\\\"\"", put.title.?);
     try testing.expectEqual(@as(u64, 9), put.opened_ms[@backingInt(schema.Host.ask)]);
     const opened = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.opened;
-    try testing.expectEqual(schema.Host.acp, opened.host);
+    try testing.expectEqual(schema.Host.ask, opened.host);
     const del = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.del;
     try testing.expectEqual(@as(u64, 11), del.ts_ms);
 }

@@ -18,7 +18,6 @@ const Allocator = std.mem.Allocator;
 
 pub const Request = struct {
     stream_provider: agent_stream_provider.Provider,
-    cooperative_pulse: ?agent_stream_provider.CooperativePulse = null,
     credential: agent_stream_provider.CredentialLease,
     session_id: ?[]const u8 = null,
     model: []const u8,
@@ -106,7 +105,6 @@ pub fn complete(alloc: Allocator, request: Request) Error!Outcome {
             .admission = .{},
             .cancel_flag = request.cancel_flag,
             .trace_ctx = request.trace_ctx,
-            .cooperative_pulse = request.cooperative_pulse,
         },
         request.usage,
         request.usage_allocator,
@@ -185,7 +183,6 @@ fn onEvent(raw: *anyopaque, event: agent_stream_provider.Event) void {
 /// conversation's options except Ultrafast, which is reserved for agent turns.
 pub const CompactorCaller = struct {
     stream_provider: agent_stream_provider.Provider,
-    cooperative_transport_pulse: ?agent_stream_provider.CooperativePulse = null,
     provider: model_provider.ProviderId,
     /// The conversation's model.
     model: []const u8,
@@ -247,7 +244,6 @@ pub const CompactorCaller = struct {
         var usage: types.Usage = .{};
         const outcome = try complete(alloc, .{
             .stream_provider = self.stream_provider,
-            .cooperative_pulse = self.cooperative_transport_pulse,
             .credential = if (self.credential_source == .host_managed) .host_managed else .{ .direct = .{
                 .secret_bytes = self.api_key,
                 .source = self.credential_source,
@@ -373,7 +369,7 @@ test "a compactor request after the conversation sends it unchanged, then the re
     try testing.expect(other.failed.reason == .provider);
 }
 
-test "a compactor request carries host-managed authority without secret bytes and the host's pulse" {
+test "a compactor request carries host-managed authority without secret bytes" {
     const testing = std.testing;
     const Fake = struct {
         credential_source: ?types.CredentialSource = null,
@@ -382,7 +378,6 @@ test "a compactor request carries host-managed authority without secret bytes an
         fn stream(raw: ?*anyopaque, alloc: Allocator, request: agent_stream_provider.ModelRequest) !runtime_gateway_step.StreamResult {
             const self: *@This() = @ptrCast(@alignCast(raw.?));
             try request.admission.admit();
-            if (request.cooperative_pulse) |pulse| try pulse.pulse();
             self.credential_source = request.credential.credentialSource();
             self.secret = request.credential.secret();
             return .{ .completed = .{
@@ -395,19 +390,9 @@ test "a compactor request carries host-managed authority without secret bytes an
             return .{};
         }
     };
-    const Pulse = struct {
-        calls: usize = 0,
-
-        fn run(raw: *anyopaque) anyerror!void {
-            const self: *@This() = @ptrCast(@alignCast(raw));
-            self.calls += 1;
-        }
-    };
     var fake: Fake = .{};
-    var pulse: Pulse = .{};
     var summary_model: CompactorCaller = .{
         .stream_provider = .{ .context = &fake, .stream_fn = Fake.stream },
-        .cooperative_transport_pulse = .{ .ctx = &pulse, .run = Pulse.run },
         .provider = .gateway,
         .model = "m",
         .api_key = "",
@@ -421,7 +406,7 @@ test "a compactor request carries host-managed authority without secret bytes an
     var cancel = std.atomic.Value(bool).init(false);
     var call: compactor.Call = .{ .model = "m", .reasoning = types.ReasoningEffort.literal("none"), .system = "s", .user = "u", .max_bytes = 1024, .cancel_flag = &cancel, .trace_ctx = .{} };
     // The conversation's model and the fallback model alike.
-    for ([_][]const u8{ "m", "other" }, 1..) |model, calls| {
+    for ([_][]const u8{ "m", "other" }) |model| {
         call.model = model;
         fake.credential_source = null;
         fake.secret = "unset";
@@ -429,6 +414,5 @@ test "a compactor request carries host-managed authority without secret bytes an
         defer testing.allocator.free(reply.text);
         try testing.expectEqual(types.CredentialSource.host_managed, fake.credential_source.?);
         try testing.expect(fake.secret == null);
-        try testing.expectEqual(calls, pulse.calls);
     }
 }

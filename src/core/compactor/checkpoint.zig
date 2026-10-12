@@ -4,7 +4,7 @@
 //! `Payload`: every turn since the last fold with its user messages and final
 //! reply exact, a summary of what the assistant did in between and a line for
 //! each tool call; the session's rules, facts, decisions and status as
-//! entries that are only ever added; the skills and MCP tools it used; one
+//! entries that are only ever added; the skills it used; one
 //! summary standing in for the earlier compactions saved whole as L1 through
 //! L<ledger_count>; and how many turns and tool calls are saved word for word
 //! (M1 through M<turn_count>, T1 through T<tool_count>). Every session codec
@@ -112,17 +112,16 @@ pub const Entry = struct {
     text: []const u8,
 };
 
-/// A skill or MCP tool the work used, found in its tool calls.
+/// A skill the work used, found in its tool calls.
 pub const Used = struct {
     kind: Kind,
-    /// A skill's location as the agent loaded it, or an MCP tool's name like
-    /// `mcp_linear_list_issues`.
+    /// A skill's location as the agent loaded it.
     name: []const u8,
     calls: usize = 1,
     first_tool: usize = 0,
     last_tool: usize = 0,
 
-    pub const Kind = enum { skill, mcp };
+    pub const Kind = enum { skill };
 };
 
 pub const Payload = struct {
@@ -130,7 +129,7 @@ pub const Payload = struct {
     /// earlier compactions' ledgers are saved away, only their rules, status
     /// and open entries still in force stay here.
     entries: []const Entry = &.{},
-    /// Skills and MCP tools used, in the order first used.
+    /// Skills used, in the order first used.
     used: []const Used = &.{},
     /// One summary of everything before `turns`: of the ledgers saved as L1
     /// through L<ledger_count>, or in payloads written before the entries, of
@@ -410,12 +409,12 @@ fn appendRange(alloc: Allocator, text: *std.ArrayList(u8), prefix: u8, first: us
     if (last > first) try text.print(alloc, "–{c}{d}", .{ prefix, last });
 }
 
-/// The skills and MCP tools the work used, each with its calls.
+/// The skills the work used, each with its calls.
 fn appendUsed(alloc: Allocator, text: *std.ArrayList(u8), used: []const Used) Allocator.Error!void {
     if (used.len == 0) return;
-    try text.appendSlice(alloc, "Skills and MCP tools used:\n");
+    try text.appendSlice(alloc, "Skills used:\n");
     for (used) |entry| {
-        try text.print(alloc, "- {s} {s}: ", .{ if (entry.kind == .skill) "skill" else "MCP tool", entry.name });
+        try text.print(alloc, "- {s} {s}: ", .{ @tagName(entry.kind), entry.name });
         if (entry.calls == 1) {
             try text.print(alloc, "1 call, T{d}\n", .{entry.first_tool});
         } else {

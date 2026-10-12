@@ -65,7 +65,7 @@ Key rules:
 
 * `src/main.zig` is the composition root. Do not add leaf feature logic here.
 
-* `src/core/` owns contracts, runtimes, config, sessions, permissions, MCP, skills.
+* `src/core/` owns contracts, runtimes, config, sessions, permissions, skills.
 
 * `src/core/compactor/` owns context compaction. Outside code imports only its front door, `compactor.zig`, and the compactor imports only shared basics and model configuration; its caller hands in the model caller, the record store, and the session's projection of saved turns into chat messages. `scripts/check-compactor-boundary.sh` enforces this in CI.
 
@@ -74,8 +74,6 @@ Key rules:
 * `src/ui/` owns terminal rendering, event loop, input, transcript. It must not own product state.
 
 * `src/gateway/` owns provider transport. It must not absorb product-state logic.
-
-* `src/acp/` owns the ACP (Agent Client Protocol) JSON-RPC 2.0 server.
 
 ### Adding a Feature
 
@@ -184,7 +182,7 @@ Do not bypass the permission system for new tools.
 
 * For JSON serialization, use `std.json.Stringify.value` with an allocating writer (`std.Io.Writer.Allocating`).
 
-* For JSON string escaping (writing raw JSON), use the project's `writeJsonStr` helper in `src/acp/jsonrpc.zig` rather than assuming `std.json.encodeJsonString` exists.
+* For JSON string escaping (writing raw JSON), use the project's `writeJsonStr` helper in `src/builtins/hooks/herdr.zig` rather than assuming `std.json.encodeJsonString` exists.
 
 * Zig 0.17 uses `std.Io.File.stdin()` / `.stdout()` / `.stderr()`, not `std.io.getStdIn()`.
 
@@ -263,12 +261,11 @@ cd tests/evals && bun run eval:matrix               # cross-model matrix run
 
 ### `tests/e2e/` — End-to-End Tests
 
-Deterministic runtime tests (CLI commands, ACP protocol, TUI via tmux). No API key needed for most.
+Deterministic runtime tests (CLI commands, TUI via tmux). No API key needed for most.
 
 ```bash
 cd tests/e2e && bun install && bun test              # run all e2e tests
 cd tests/e2e && bun test cli.test.ts                 # just CLI tests
-cd tests/e2e && bun test acp.test.ts                 # just ACP tests
 cd tests/e2e && bun test tui-*.test.ts               # just TUI tests (requires tmux)
 ```
 
@@ -302,17 +299,17 @@ Do not run the complete deterministic test suite locally as the default developm
 
 After the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. Linux is the gate for every change because most fx behavior is identical on every platform:
 
-* `.github/workflows/ci.yml` runs on Linux x86_64. It checks formatting, the PGSO corpus, the public surface, and the compactor boundary, then runs the ReleaseSafe unit tests. It builds fx once, smoke-tests it, and shares that binary with four duration-balanced E2E shards and the MCP conformance baseline. Checked-in weights assign every E2E file to exactly one shard, and files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one retry after its tmux server is reset. A file that passes only on retry gets a warning annotation; investigate it as a possible race. The SDK jobs build WASM and the Node-API addons once and run the complete package qualification. `Build & Test` passes only when the unit tests and every SDK job pass, because Publish libfx relies on that result instead of qualifying the package again.
+* `.github/workflows/ci.yml` runs on Linux x86_64. It checks formatting, the PGSO corpus, the public surface, and the compactor boundary, then runs the ReleaseSafe unit tests. It builds fx once, smoke-tests it, and shares that binary with four duration-balanced E2E shards. Checked-in weights assign every E2E file to exactly one shard, and files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one retry after its tmux server is reset. A file that passes only on retry gets a warning annotation; investigate it as a possible race. `Build & Test` passes only when the unit tests pass.
 * `.github/workflows/binary-size.yml` builds each release target on its native runner, reports the size change, and smoke-tests every target's binary. See **Binary Size Observability**.
 * `.github/workflows/bench.yml` enforces the startup latency budget. See **Benchmarks**.
 
 Linux jobs install Zig through `.github/actions/setup-zig`, which restores the Zig cache that runs on `main` save with `.github/actions/save-zig-cache`. Pull requests never save a Zig cache through these actions, so they cannot push `main`'s entries out of the repository's cache quota. The PGSO workflow keeps its own cache through `.github/actions/setup-pgso`.
 
-macOS runs only when a change can behave differently there. `.github/workflows/macos.yml` uses `scripts/detect-macos-need.sh` to check the diff. The macOS arm64 unit tests and the E2E files in `tests/e2e/macos-platform-tests.json` run when the change touches a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, the native SDK addon, a listed E2E file, a shared E2E helper that reads the platform, or the macOS checks themselves. A Linux-only branch counts because macOS takes its other path; a Windows-only branch does not. The listed E2E files run in two weighted shards that share one macOS build. Native SDK addon changes also build and load the addon on macOS. If the detector cannot read the change, the `macOS arm64` check fails instead of passing. To request macOS for any other change, add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>`. The label needs triage access and the dispatch needs write access, so an outside contributor asks in the PR and a maintainer starts the run. When the change does not need macOS, the `macOS arm64` check passes without starting a macOS runner. Every E2E file that branches on `process.platform` or `platform()` being `darwin` or `linux` must appear in `tests/e2e/macos-platform-tests.json`, and `tests/e2e/ci-shards.test.ts` enforces that.
+macOS runs only when a change can behave differently there. `.github/workflows/macos.yml` uses `scripts/detect-macos-need.sh` to check the diff. The macOS arm64 unit tests and the E2E files in `tests/e2e/macos-platform-tests.json` run when the change touches a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, a listed E2E file, a shared E2E helper that reads the platform, or the macOS checks themselves. A Linux-only branch counts because macOS takes its other path; a Windows-only branch does not. The listed E2E files run in two weighted shards that share one macOS build. If the detector cannot read the change, the `macOS arm64` check fails instead of passing. To request macOS for any other change, add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>`. The label needs triage access and the dispatch needs write access, so an outside contributor asks in the PR and a maintainer starts the run. When the change does not need macOS, the `macOS arm64` check passes without starting a macOS runner. Every E2E file that branches on `process.platform` or `platform()` being `darwin` or `linux` must appear in `tests/e2e/macos-platform-tests.json`, and `tests/e2e/ci-shards.test.ts` enforces that.
 
 The macOS arm64 PGSO workflow runs on a pull request only when the PGSO pipeline changes: `scripts/pgso/` other than `corpus.json`, the `setup-pgso` action, or `.github/workflows/pgso-macos-arm64.yml`. To qualify any other change, run `gh workflow run pgso-macos-arm64.yml --ref <branch>`. The stable release always runs it.
 
-Live model evals and the live ACP suite need credentials and are not deterministic, so they run only on request. Run the live ACP suite with `gh workflow run ci.yml --ref <branch> -f acp_live=true`.
+Live model evals need credentials and are not deterministic, so they run only on request.
 
 A CI result is valid only when it belongs to the exact current commit and `Build & Test`, `E2E (deterministic)`, `Shellcheck`, `Startup Latency`, and `macOS arm64` all succeed. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
 
@@ -370,7 +367,7 @@ Startup latency benchmarks live in `benchmarks/` and run in CI via `.github/work
 
 The CI workflow builds a ReleaseSafe binary, measures six CLI paths with hyperfine, and enforces per-command latency budgets. PRs that exceed a budget fail the check. On `main`, results are uploaded to Vercel Blob for historical tracking.
 
-The long-turn memory and libfx runtime benchmarks run only on request. Start them with `gh workflow run bench.yml --ref <branch> -f long_turn_memory=true` or `-f libfx_runtime=true`.
+The long-turn memory benchmark runs only on request. Start it with `gh workflow run bench.yml --ref <branch> -f long_turn_memory=true`.
 
 The startup benchmark uses `FX_BENCH=1`, an environment variable that runs through arg parsing and CLI dispatch, then exits before TTY initialization. This lives in `src/core/app/app_entry_runtime.zig`.
 
@@ -412,8 +409,7 @@ ceiling and performance gates.
 When adding or changing user-facing behavior, update the documentation this repository owns in the same change:
 
 1. `--help` output via command specs in `src/core/slash_commands/command_specs.zig`
-2. `sdk/README.md` if libfx's supported public behavior or setup changes, as `sdk/AGENTS.md` describes
-3. `CONTRIBUTING.md` if build steps, configuration, or collaboration rules change
+2. `CONTRIBUTING.md` if build steps, configuration, or collaboration rules change
 
 The user manual at fx.sh/docs lives in `vercel-labs/fx-web`, an internal Vercel repository. A page's source is `apps/marketing/app/(site)/(docs)/docs/<path>/page.mdx`, where `<path>` is the part of its URL after `fx.sh/docs/`. If a change makes a page wrong or incomplete and you have access, update it in a companion fx-web pull request and link that pull request from this one. Otherwise, name the page in the PR description so a maintainer can update it. Do not move feature descriptions, option lists, or usage examples into `README.md` in place of the manual.
 

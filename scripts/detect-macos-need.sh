@@ -5,15 +5,14 @@
 #
 # macOS runs only when a change touches behavior that can differ on macOS: a
 # Zig file with a macOS, BSD, or Linux code path before or after the change,
-# build.zig, the macOS signing script, the native SDK addon, an E2E file listed
+# build.zig, the macOS signing script, an E2E file listed
 # in tests/e2e/macos-platform-tests.json, a shared E2E helper that reads the
 # platform before or after the change, or the macOS checks themselves. A Linux
 # branch counts because macOS takes its other path. A Windows-only branch does
 # not, because macOS and Linux share its other path. Set MACOS_REQUESTED to a
-# reason to force the checks, and SDK_NATIVE_REQUESTED=true to force the native
-# SDK addon check.
+# reason to force the checks.
 #
-# Writes needed=true|false and sdk_native=true|false to $GITHUB_OUTPUT and the
+# Writes needed=true|false to $GITHUB_OUTPUT and the
 # reasons to $GITHUB_STEP_SUMMARY when those files are set. Exits non-zero when
 # either revision cannot be read, so the macOS check fails instead of passing
 # without having looked at the change.
@@ -29,17 +28,11 @@ head="$2"
 platform_list=tests/e2e/macos-platform-tests.json
 
 needed=false
-sdk_native=false
 reasons=()
 
 require() {
   needed=true
   reasons+=("$1")
-}
-
-require_sdk_native() {
-  sdk_native=true
-  require "$1"
 }
 
 # Matches either side of the change, so removing a platform branch counts too.
@@ -76,23 +69,16 @@ is_platform_test() {
 if [ -n "${MACOS_REQUESTED:-}" ]; then
   require "$MACOS_REQUESTED"
 fi
-if [ "${SDK_NATIVE_REQUESTED:-false}" = true ]; then
-  require_sdk_native "native SDK addon check requested"
-fi
 
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
-    .github/workflows/macos.yml)
-      require_sdk_native "$path: the macOS checks changed" ;;
-    scripts/detect-macos-need.sh | scripts/smoke-binary.sh | tests/e2e/ci-run-files.sh | tests/e2e/ci-shards.ts | "$platform_list")
+    .github/workflows/macos.yml | scripts/detect-macos-need.sh | scripts/smoke-binary.sh | tests/e2e/ci-run-files.sh | tests/e2e/ci-shards.ts | "$platform_list")
       require "$path: the macOS checks changed" ;;
     build.zig | build.zig.zon)
       require "$path: build configuration changed" ;;
     scripts/sign-and-notarize-macos.sh)
       require "$path: macOS signing changed" ;;
-    src/napi_*.zig | sdk/node.js | sdk/tests/test-node-napi.mjs)
-      require_sdk_native "$path: native SDK addon changed" ;;
     *.zig)
       if has_platform_code "$path" "$zig_platform_code"; then
         require "$path: has a macOS or Linux code path"
@@ -126,8 +112,5 @@ else
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  {
-    printf 'needed=%s\n' "$needed"
-    printf 'sdk_native=%s\n' "$sdk_native"
-  } >>"$GITHUB_OUTPUT"
+  printf 'needed=%s\n' "$needed" >>"$GITHUB_OUTPUT"
 fi

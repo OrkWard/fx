@@ -18,9 +18,6 @@ pub const ManagedChildKind = enum {
     subagent_control,
     terminal_state,
     terminal_proofs,
-    /// Session-scoped context supplied by the client that created it, such as
-    /// an ACP client system prompt.
-    client_context,
 };
 
 pub const Mode = enum {
@@ -251,7 +248,6 @@ const CapabilityImpl = struct {
     terminal_parent: ?io_mod.VerifiedDir = null,
     terminal_state: ?io_mod.VerifiedDir = null,
     terminal_proofs: ?io_mod.VerifiedDir = null,
-    client_context: ?io_mod.VerifiedDir = null,
     indeterminate_names: [@typeInfo(ManagedChildKind).@"enum".field_names.len]?[]u8 =
         @splat(null),
 
@@ -267,7 +263,6 @@ const CapabilityImpl = struct {
         closeOptionalDir(&self.terminal_state);
         closeOptionalDir(&self.terminal_proofs);
         closeOptionalDir(&self.terminal_parent);
-        closeOptionalDir(&self.client_context);
         closeOptionalDir(&self.session_dir);
         closeOptionalDir(&self.terminal_dir);
         if (self.blobs) |blobs| blobs.vtable.release(blobs.ctx);
@@ -366,12 +361,6 @@ const CapabilityImpl = struct {
                 "subagent",
                 create_if_missing,
             ),
-            .client_context => self.ensureComponent(
-                session_dir,
-                &self.client_context,
-                "client",
-                create_if_missing,
-            ),
             .terminal_state, .terminal_proofs => blk: {
                 const parent = try self.ensureComponent(
                     session_dir,
@@ -443,7 +432,6 @@ const CapabilityImpl = struct {
             .subagent_control => &self.subagent_control.?,
             .terminal_state => &self.terminal_state.?,
             .terminal_proofs => &self.terminal_proofs.?,
-            .client_context => &self.client_context.?,
         };
     }
 
@@ -569,10 +557,6 @@ const CapabilityImpl = struct {
             .terminal_proofs => std.Io.Dir.path.join(
                 alloc,
                 &.{ self.display_session_path, "terminal", "proofs" },
-            ),
-            .client_context => std.Io.Dir.path.join(
-                alloc,
-                &.{ self.display_session_path, "client" },
             ),
         };
     }
@@ -986,7 +970,6 @@ pub const SessionChildCapability = struct {
             .subagent_control => impl.subagent_control = .{ .dir = route },
             .terminal_state => impl.terminal_state = .{ .dir = route },
             .terminal_proofs => impl.terminal_proofs = .{ .dir = route },
-            .client_context => impl.client_context = .{ .dir = route },
         }
         return .{ .impl = impl };
     }
@@ -1725,9 +1708,7 @@ fn countEntries(dir: std.Io.Dir) !usize {
 }
 
 test "private read-only file remains valid after atomic replacement unlinks it" {
-    if (comptime @import("builtin").target.os.tag == .windows or
-        @import("builtin").target.os.tag == .wasi)
-    {
+    if (comptime @import("builtin").target.os.tag == .windows) {
         return error.SkipZigTest;
     }
     var tmp = std.testing.tmpDir(.{});

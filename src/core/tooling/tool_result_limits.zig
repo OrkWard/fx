@@ -82,7 +82,7 @@ test "model projection stability rejects non-utf8 identities" {
     const scratch = scratch_state.allocator();
     const invalid_utf8 = [_]u8{0xff};
 
-    try std.testing.expect(try modelProjectionPreservesText(scratch, "mcp_datadog_list_incidents"));
+    try std.testing.expect(try modelProjectionPreservesText(scratch, "datadog_list_incidents"));
     try std.testing.expect(!try modelProjectionPreservesText(scratch, &invalid_utf8));
 }
 
@@ -145,7 +145,7 @@ pub fn truncateText(arena: std.mem.Allocator, opts: TruncateOptions) ![]const u8
 test "prepareModelOutput preserves secret-shaped assignments verbatim" {
     const alloc = std.testing.allocator;
     const raw = "token=abcdefghijklmnopqrstuvwxyz";
-    const output = try prepareModelOutput(alloc, "mcp__server__tool", raw, default_max_tool_result_bytes);
+    const output = try prepareModelOutput(alloc, "server_tool", raw, default_max_tool_result_bytes);
     defer alloc.free(@constCast(output));
 
     try std.testing.expectEqualStrings(raw, output);
@@ -165,7 +165,7 @@ test "prepareInlineResult preserves assignments without reclassifying lengths" {
     const raw = "AI_GATEWAY_KEY=abcdefghijklmnop";
     const prepared = try prepareInlineResult(
         alloc,
-        "mcp__server__tool",
+        "server_tool",
         raw,
         default_max_tool_result_bytes,
     );

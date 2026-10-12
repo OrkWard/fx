@@ -46,7 +46,7 @@ export interface ExpectedFirstTool {
 }
 
 export interface CoveredEntrypoint {
-  entrypoint: "interactive" | "fx ask" | "ACP" | "subagent";
+  entrypoint: "interactive" | "fx ask" | "subagent";
   contextContract: typeof SHARED_MODEL_CONTEXT_CONTRACT;
   notes: string;
 }
@@ -100,11 +100,6 @@ const LOCAL_INSPECTION_TOOLS = [
 const WEB_FETCH_TOOL = "web_fetch" as const;
 const WEB_SEARCH_TOOL = "web_search" as const;
 
-const MCP_DISCOVERY_TOOLS = [
-  "capability_search",
-  "mcp_select_tool",
-] as const;
-
 const DESTRUCTIVE_OR_MUTATING_TOOLS = [
   "write_file",
   "edit_file",
@@ -122,14 +117,6 @@ function askEntrypoint(notes: string): CoveredEntrypoint {
 function interactiveEntrypoint(notes: string): CoveredEntrypoint {
   return {
     entrypoint: "interactive",
-    contextContract: SHARED_MODEL_CONTEXT_CONTRACT,
-    notes,
-  };
-}
-
-function acpEntrypoint(notes: string): CoveredEntrypoint {
-  return {
-    entrypoint: "ACP",
     contextContract: SHARED_MODEL_CONTEXT_CONTRACT,
     notes,
   };
@@ -303,7 +290,7 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
   },
   {
     id: "unfamiliar-feature-inspect-before-question",
-    userPrompt: "What does the MCP feature do in this repo?",
+    userPrompt: "What does the hooks feature do in this repo?",
     failureCategory: "ask-user misuse",
     expectedFirstTool: {
       category: "local concept discovery",
@@ -325,7 +312,7 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     currentBaselineResult: {
       status: "passing",
       notes:
-        "Live ./zig-out/bin/fx ask --auto --json --no-save used read_file first, then a second read_file. Forbidden tools: none; behavior inspected MCP runtime/docs before answering and did not ask the user.",
+        "Live ./zig-out/bin/fx ask --auto --json --no-save used read_file first, then a second read_file. Forbidden tools: none; behavior inspected the runtime/docs before answering and did not ask the user.",
     },
     targetResult: "At least one local inspection happens before any user question.",
     coveredEntrypoints: [
@@ -736,7 +723,6 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     targetResult: "Returns a structured blocker with an explicit reason and no live ask_user_question path.",
     coveredEntrypoints: [
       askEntrypoint("Uses permission_mode and available_tools from fx.shared_model_context.v1."),
-      acpEntrypoint("ACP should map approval-required work to a refusal or policy decision."),
     ],
   },
   {
@@ -762,12 +748,11 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     },
     currentBaselineResult: {
       status: "known-gap",
-      notes: "ACP and interactive context refresh are still recorded as follow-up drift.",
+      notes: "Interactive context refresh is still recorded as follow-up drift.",
     },
     targetResult: "Current workspace_root is reflected before answering or selecting tools.",
     coveredEntrypoints: [
       interactiveEntrypoint("Uses workspace_identity and session_metadata from fx.shared_model_context.v1."),
-      acpEntrypoint("ACP initialize/resume behavior is explicitly marked as follow-up drift."),
     ],
   },
   {
@@ -944,42 +929,6 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     ],
   },
   {
-    id: "mcp-deferred-tool-discovery",
-    userPrompt: "Use a specialized MCP tool for creating a GitHub issue.",
-    failureCategory: "provider-search misuse",
-    expectedFirstTool: {
-      category: "deferred MCP metadata search",
-      tools: [MCP_DISCOVERY_TOOLS[0]],
-      notes:
-        "Dynamic MCP schemas should stay out of the base prompt; the model searches metadata before exact-selecting a tool.",
-    },
-    forbiddenTools: [WEB_SEARCH_TOOL, "ask_user_question"],
-    expectedUserVisibleBehavior:
-      "Searches configured MCP tool metadata, exact-selects the matching tool, then calls the selected dynamic tool only after its schema is advertised.",
-    deterministicCoverage: {
-      type: "tool-call recorder test",
-      status: "implemented",
-      notes:
-        "Recorder assertions cover first-tool routing; Zig unit tests assert deferred base advertisement, metadata search, exact schema selection, and selected-schema overlay without requiring AI_GATEWAY_API_KEY.",
-    },
-    modelBackedEval: {
-      required: true,
-      reason:
-        "Choosing scoped capability_search before mcp_select_tool and the final dynamic call is model-visible routing behavior.",
-    },
-    currentBaselineResult: {
-      status: "known-gap",
-      notes:
-        "A 13-server run with 28 ready Datadog tools made 18 unscoped searches without returning a Datadog tool.",
-    },
-    targetResult:
-      "First action is capability_search with kind=mcp and the exact server alias; the model pages if needed, exact-selects a result, and calls it without web_search or clarification.",
-    coveredEntrypoints: [
-      askEntrypoint("Depends on available_tools advertising only the MCP discovery tools until an exact select occurs."),
-      interactiveEntrypoint("Interactive mode should use the same deferred discovery path with live MCP runtimes."),
-    ],
-  },
-  {
     id: "gateway-retry-recovery",
     userPrompt: "Provider returned 429, recover without repeating local tool actions.",
     failureCategory: "recovery",
@@ -1012,7 +961,6 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     coveredEntrypoints: [
       askEntrypoint("Uses the shared gateway transport path."),
       interactiveEntrypoint("Uses the same gateway client in interactive turns."),
-      acpEntrypoint("Uses the same agent runtime gateway transport."),
     ],
   },
   {
@@ -1048,7 +996,6 @@ export const AGENT_QUALITY_BASELINE_MATRIX: readonly AgentQualityMatrixRow[] = [
     coveredEntrypoints: [
       askEntrypoint("Shares processQueuedPrompt length handling."),
       interactiveEntrypoint("Shares the same agent runtime stop behavior."),
-      acpEntrypoint("Shares the same runtime path over JSON-RPC."),
     ],
   },
   {

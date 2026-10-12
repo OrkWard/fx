@@ -8,7 +8,6 @@ const Allocator = std.mem.Allocator;
 
 pub const max_external_scope_tail_bytes =
     file_mutation_contract.max_external_scope_tail_bytes;
-pub const max_tool_arguments_preview_bytes = diff_mod.max_encoded_label_bytes;
 const max_explanation_bytes: usize = 256;
 const max_subagent_origin_bytes: usize = 128;
 pub const FileApprovalIntent = file_mutation_contract.FileApprovalIntent;
@@ -32,10 +31,6 @@ pub const PermissionRequest = struct {
     origin: RequestOrigin = .active_session,
     /// Optional bounded, terminal-safe text displayed as the approval reason.
     explanation: ?[]const u8 = null,
-    /// Optional bounded display projection of dynamic tool arguments.
-    /// Renderers must still treat these bytes as untrusted terminal input.
-    /// Execution must continue to use the original tool call payload.
-    tool_arguments_preview: ?[]const u8 = null,
     command: ?[]const u8 = null,
     file: ?FileApprovalRequest = null,
     amendment_allowed: bool = true,
@@ -47,8 +42,6 @@ pub const PermissionRequest = struct {
         if (!requestOriginEql(a.origin, b.origin)) return false;
         if ((a.explanation == null) != (b.explanation == null)) return false;
         if (a.explanation) |explanation| if (!std.mem.eql(u8, explanation, b.explanation.?)) return false;
-        if ((a.tool_arguments_preview == null) != (b.tool_arguments_preview == null)) return false;
-        if (a.tool_arguments_preview) |preview| if (!std.mem.eql(u8, preview, b.tool_arguments_preview.?)) return false;
         if ((a.command == null) != (b.command == null)) return false;
         if (a.command) |command| if (!std.mem.eql(u8, command, b.command.?)) return false;
         if (a.amendment_allowed != b.amendment_allowed) return false;
@@ -77,25 +70,6 @@ test "owned permission request carries an independent explanation" {
     const view = owned.view();
     try std.testing.expectEqualStrings(request.explanation.?, view.explanation.?);
     try std.testing.expect(request.explanation.?.ptr != view.explanation.?.ptr);
-    try std.testing.expect(PermissionRequest.eql(request, view));
-}
-
-test "owned permission request carries an independent tool arguments preview" {
-    const request: PermissionRequest = .{
-        .label = "mcp_fixture_echo",
-        .tool_arguments_preview = "{\"text\":\"sentinel\"}",
-    };
-    var owned = try OwnedPermissionRequest.dupe(std.testing.allocator, request);
-    defer owned.deinit(std.testing.allocator);
-
-    const view = owned.view();
-    try std.testing.expectEqualStrings(
-        request.tool_arguments_preview.?,
-        view.tool_arguments_preview.?,
-    );
-    try std.testing.expect(
-        request.tool_arguments_preview.?.ptr != view.tool_arguments_preview.?.ptr,
-    );
     try std.testing.expect(PermissionRequest.eql(request, view));
 }
 
@@ -134,23 +108,6 @@ test "permission request bounds the optional explanation" {
     );
 }
 
-test "permission request bounds the optional tool arguments preview" {
-    const preview = try std.testing.allocator.alloc(
-        u8,
-        max_tool_arguments_preview_bytes + 1,
-    );
-    defer std.testing.allocator.free(preview);
-    @memset(preview, 'x');
-
-    try std.testing.expectError(
-        error.ToolArgumentsPreviewTooLong,
-        OwnedPermissionRequest.dupe(std.testing.allocator, .{
-            .label = "mcp_fixture_echo",
-            .tool_arguments_preview = preview,
-        }),
-    );
-}
-
 test "permission request bounds the subagent origin" {
     const child_name = try std.testing.allocator.alloc(u8, 129);
     defer std.testing.allocator.free(child_name);
@@ -175,7 +132,6 @@ pub const RequestCloneError = PreviewCloneError || error{
     LabelTooLong,
     ScopeProjectionTooLarge,
     SubagentOriginTooLong,
-    ToolArgumentsPreviewTooLong,
     RequestIdExhausted,
 };
 
@@ -184,7 +140,6 @@ pub const OwnedPermissionRequest = struct {
     label: []u8,
     origin: RequestOrigin = .active_session,
     explanation: ?[]u8 = null,
-    tool_arguments_preview: ?[]u8 = null,
     command: ?[]u8 = null,
     file: ?FileApprovalRequest = null,
     amendment_allowed: bool = true,
@@ -202,11 +157,6 @@ pub const OwnedPermissionRequest = struct {
         errdefer deinitRequestOrigin(alloc, origin);
         const explanation = if (request.explanation) |value| try alloc.dupe(u8, value) else null;
         errdefer if (explanation) |value| alloc.free(value);
-        const tool_arguments_preview = if (request.tool_arguments_preview) |value|
-            try alloc.dupe(u8, value)
-        else
-            null;
-        errdefer if (tool_arguments_preview) |value| alloc.free(value);
         const command = if (request.command) |value| try alloc.dupe(u8, value) else null;
         errdefer if (command) |value| alloc.free(value);
         const file = if (request.file) |file_request|
@@ -219,7 +169,6 @@ pub const OwnedPermissionRequest = struct {
             .label = label,
             .origin = origin,
             .explanation = explanation,
-            .tool_arguments_preview = tool_arguments_preview,
             .command = command,
             .file = file,
             .amendment_allowed = request.amendment_allowed,
@@ -233,7 +182,6 @@ pub const OwnedPermissionRequest = struct {
             .label = self.label,
             .origin = self.origin,
             .explanation = self.explanation,
-            .tool_arguments_preview = self.tool_arguments_preview,
             .command = self.command,
             .file = self.file,
             .amendment_allowed = self.amendment_allowed,
@@ -246,7 +194,6 @@ pub const OwnedPermissionRequest = struct {
             deinitFileApprovalRequest(alloc, file_request);
         }
         if (self.command) |command| alloc.free(command);
-        if (self.tool_arguments_preview) |preview| alloc.free(preview);
         if (self.explanation) |explanation| alloc.free(explanation);
         deinitRequestOrigin(alloc, self.origin);
         alloc.free(self.label);
@@ -323,15 +270,12 @@ pub const max_file_request_footprint_bytes = checkedConstAdd(
                 checkedConstAdd(
                     checkedConstAdd(
                         checkedConstAdd(
-                            checkedConstAdd(
-                                @sizeOf(OwnedPermissionRequest),
-                                diff_mod.max_encoded_label_bytes,
-                            ),
-                            max_subagent_origin_bytes,
+                            @sizeOf(OwnedPermissionRequest),
+                            diff_mod.max_encoded_label_bytes,
                         ),
-                        max_explanation_bytes,
+                        max_subagent_origin_bytes,
                     ),
-                    max_tool_arguments_preview_bytes,
+                    max_explanation_bytes,
                 ),
                 diff_mod.max_encoded_path_bytes,
             ),
@@ -359,10 +303,6 @@ pub fn fileRequestFootprint(
     footprint = try checkedAddFootprint(footprint, request.label.len);
     footprint = try checkedAddFootprint(footprint, try requestOriginLen(request.origin));
     footprint = try checkedAddFootprint(footprint, try explanationLen(request));
-    footprint = try checkedAddFootprint(
-        footprint,
-        try toolArgumentsPreviewLen(request),
-    );
     footprint = try checkedAddFootprint(
         footprint,
         file_request.preview.path.len,
@@ -405,14 +345,6 @@ fn explanationLen(request: PermissionRequest) RequestCloneError!usize {
     const explanation = request.explanation orelse return 0;
     if (explanation.len > max_explanation_bytes) return error.ExplanationTooLong;
     return explanation.len;
-}
-
-fn toolArgumentsPreviewLen(request: PermissionRequest) RequestCloneError!usize {
-    const preview = request.tool_arguments_preview orelse return 0;
-    if (preview.len > max_tool_arguments_preview_bytes) {
-        return error.ToolArgumentsPreviewTooLong;
-    }
-    return preview.len;
 }
 
 fn requestOriginLen(origin: RequestOrigin) RequestCloneError!usize {
@@ -520,10 +452,6 @@ fn preflightRequest(request: PermissionRequest) RequestCloneError!void {
         try requestOriginLen(request.origin),
     );
     footprint = try checkedAddFootprint(footprint, try explanationLen(request));
-    footprint = try checkedAddFootprint(
-        footprint,
-        try toolArgumentsPreviewLen(request),
-    );
     if (footprint > diff_mod.max_request_projection_bytes) {
         return error.RequestProjectionTooLarge;
     }
@@ -570,7 +498,6 @@ fn checkOwnedRequestAllocFailures(alloc: Allocator) !void {
         .id = 41,
         .label = "file_mutation",
         .explanation = "Auto agent couldn’t approve because the action needs review",
-        .tool_arguments_preview = "{\"text\":\"allocation failure sentinel\"}",
         .file = .{
             .kind = .edit,
             .intent = .mutation,
@@ -675,12 +602,6 @@ test "file request accepts exact component and aggregate capacity" {
     const explanation = try alloc.alloc(u8, max_explanation_bytes);
     defer alloc.free(explanation);
     @memset(explanation, 'e');
-    const tool_arguments_preview = try alloc.alloc(
-        u8,
-        max_tool_arguments_preview_bytes,
-    );
-    defer alloc.free(tool_arguments_preview);
-    @memset(tool_arguments_preview, 'a');
     const origin = try alloc.alloc(u8, max_subagent_origin_bytes);
     defer alloc.free(origin);
     @memset(origin, 'o');
@@ -706,7 +627,6 @@ test "file request accepts exact component and aggregate capacity" {
         .label = label,
         .origin = .{ .subagent = origin },
         .explanation = explanation,
-        .tool_arguments_preview = tool_arguments_preview,
         .file = .{
             .kind = .edit,
             .intent = .mutation,

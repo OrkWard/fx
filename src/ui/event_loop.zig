@@ -28,51 +28,6 @@ pub const ExitCause = enum {
     input_closed,
 };
 
-pub fn pump_ready_input(terminal: anytype, should_exit: *bool, callbacks: EventLoopCallbacks) !?ExitCause {
-    var buf: [128]u8 = undefined;
-    var handled_input = false;
-
-    while (callbacks.next_collected_byte(callbacks.ctx)) |byte| {
-        handled_input = true;
-        try callbacks.handle_byte(callbacks.ctx, byte);
-        if (should_exit.*) return .requested_exit;
-    }
-
-    var poll_result = try terminal.pollInput(0);
-    var input_reads: usize = 0;
-
-    while (poll_result.readable and input_reads < max_input_reads_per_fact_collection) : (input_reads += 1) {
-        const read_len = try terminal.read(&buf);
-        if (read_len == 0) {
-            if (input_reads > 0) attemptFinalFrameCommit(callbacks, "eof");
-            return .input_closed;
-        }
-
-        handled_input = true;
-        record_tape.recordStdin(buf[0..read_len]);
-        for (buf[0..read_len]) |byte| {
-            try callbacks.handle_byte(callbacks.ctx, byte);
-            if (should_exit.*) return .requested_exit;
-        }
-        poll_result = try terminal.pollInput(0);
-    }
-
-    if (poll_result.readable) {
-        try callbacks.commit_frame(callbacks.ctx);
-        return null;
-    }
-    if (poll_result.closed()) {
-        if (input_reads > 0) attemptFinalFrameCommit(callbacks, "hangup");
-        return .input_closed;
-    }
-
-    if (handled_input) {
-        try callbacks.settle_delivery_epoch(callbacks.ctx);
-        try callbacks.commit_frame(callbacks.ctx);
-    }
-    return null;
-}
-
 pub fn run(terminal: anytype, should_exit: *bool, poll_timeout_ms: i32, callbacks: EventLoopCallbacks) !ExitCause {
     var buf: [128]u8 = undefined;
 
@@ -272,57 +227,6 @@ test "event loop batches already readable input before committing a frame" {
 
     try std.testing.expectEqual(ExitCause.requested_exit, exit_cause);
     try std.testing.expectEqualStrings("tabdesc", trace.bytes[0..trace.len]);
-}
-
-test "cooperative input pump renders ready input without collecting facts" {
-    var should_exit = false;
-    var polls: usize = 0;
-    var reads: usize = 0;
-    var trace = EventLoopTestTrace{ .should_exit = &should_exit };
-
-    const exit_cause = try pump_ready_input(EventLoopTestTerminal{
-        .polls = &polls,
-        .burst_reads = &reads,
-    }, &should_exit, .{
-        .ctx = &trace,
-        .collect_facts = collectEventLoopTestFacts,
-        .next_collected_byte = noCollectedEventLoopByte,
-        .handle_byte = handleEventLoopTestByte,
-        .settle_delivery_epoch = settleEventLoopTestDeliveryEpoch,
-        .commit_frame = commitEventLoopTestFrameWithoutExit,
-    });
-
-    try std.testing.expectEqual(@as(?ExitCause, null), exit_cause);
-    try std.testing.expect(!should_exit);
-    try std.testing.expectEqualStrings("abdesc", trace.bytes[0..trace.len]);
-}
-
-test "cooperative input pump is idle when no input is ready" {
-    const Terminal = struct {
-        fn pollInput(_: @This(), timeout_ms: i32) !shell_runtime.PollResult {
-            try std.testing.expectEqual(@as(i32, 0), timeout_ms);
-            return .{};
-        }
-
-        fn read(_: @This(), _: []u8) !usize {
-            return error.UnexpectedRead;
-        }
-    };
-
-    var should_exit = false;
-    var trace = EventLoopTestTrace{ .should_exit = &should_exit };
-    const exit_cause = try pump_ready_input(Terminal{}, &should_exit, .{
-        .ctx = &trace,
-        .collect_facts = collectEventLoopTestFacts,
-        .next_collected_byte = noCollectedEventLoopByte,
-        .handle_byte = rejectUnexpectedEventLoopByte,
-        .settle_delivery_epoch = rejectUnexpectedEventLoopCommit,
-        .commit_frame = rejectUnexpectedEventLoopCommit,
-    });
-
-    try std.testing.expectEqual(@as(?ExitCause, null), exit_cause);
-    try std.testing.expect(!should_exit);
-    try std.testing.expectEqual(@as(usize, 0), trace.len);
 }
 
 test "event loop settles a facts-only delivery epoch before committing" {

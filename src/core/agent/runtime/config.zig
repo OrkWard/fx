@@ -35,7 +35,6 @@ pub const Config = struct {
     gateway_chat_url: []const u8,
     advertised_tool_names: []const []const u8 = &.{},
     advertised_functions: []const model_tool_schema.FunctionSchema = &.{},
-    initial_dynamic_tools: []const stream_provider.DynamicFunctionTool = &.{},
     provider_capabilities: provider_set.Bundle.Capabilities = .{
         .gateway_prompt_caching = true,
         .fx_search = true,

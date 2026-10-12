@@ -357,139 +357,11 @@ function toolResultText(body: string, callId: string): string {
   return contentText(result.output);
 }
 
-class AcpClient {
-  private buffer = "";
-  private lines: string[] = [];
-  private waiters: Array<(line: string) => void> = [];
-  private closed = false;
-  private activeSessionId: string | null = null;
-
-  private constructor(private proc: ChildProcess) {
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      this.buffer += chunk.toString();
-      const parts = this.buffer.split("\n");
-      this.buffer = parts.pop() ?? "";
-      for (const line of parts) {
-        if (!line.trim()) continue;
-        const waiter = this.waiters.shift();
-        if (waiter) waiter(line);
-        else this.lines.push(line);
-      }
-    });
-    proc.on("close", () => {
-      this.closed = true;
-    });
-  }
-
-  static create(cwd: string, env: Record<string, string | undefined>) {
-    const definedEnv = Object.fromEntries(
-      Object.entries({ ...process.env, NO_COLOR: "1", ...env }).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
-    );
-    return new AcpClient(nodeSpawn(FX_BIN, ["acp"], {
-      cwd,
-      env: definedEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    }));
-  }
-
-  send(message: object) {
-    let outgoing = message as any;
-    if (
-      this.activeSessionId !== null &&
-      [
-        "session/prompt",
-        "session/cancel",
-        "session/set_mode",
-        "session/set_config_option",
-      ].includes(outgoing.method) &&
-      outgoing.params?.sessionId === undefined
-    ) {
-      outgoing = {
-        ...outgoing,
-        params: { ...(outgoing.params ?? {}), sessionId: this.activeSessionId },
-      };
-    }
-    this.proc.stdin!.write(`${JSON.stringify(outgoing)}\n`);
-  }
-
-  async readLine(timeoutMs = TIMEOUT): Promise<any> {
-    const line = await new Promise<string>((resolve, reject) => {
-      const buffered = this.lines.shift();
-      if (buffered) {
-        resolve(buffered);
-        return;
-      }
-      const timer = setTimeout(() => reject(new Error("ACP read timeout")), timeoutMs);
-      this.waiters.push((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      });
-    });
-    return JSON.parse(line);
-  }
-
-  async request(method: string, params: object, id: number) {
-    this.send({ jsonrpc: "2.0", id, method, params });
-    let response: any;
-    do {
-      response = await this.readLine();
-    } while (response.id !== id);
-    if (
-      response.error === undefined &&
-      method === "session/new" &&
-      typeof response.result?.sessionId === "string"
-    ) {
-      this.activeSessionId = response.result.sessionId;
-    }
-    return response;
-  }
-
-  async close() {
-    if (this.closed) return;
-    this.proc.stdin!.end();
-    this.proc.kill("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    if (!this.closed) this.proc.kill("SIGKILL");
-  }
-}
-
-async function startAcpCodeSession(client: AcpClient) {
-  await client.request("initialize", { protocolVersion: 1 }, 1);
-  await client.request("session/new", { mcpServers: [] }, 2);
-  await client.readLine();
-  await client.request("session/set_mode", { modeId: "auto" }, 3);
-}
-
-async function runAcpPrompt(client: AcpClient, text: string) {
-  const id = 10;
-  client.send({
-    jsonrpc: "2.0",
-    id,
-    method: "session/prompt",
-    params: { prompt: [{ type: "text", text }] },
-  });
-  const messages: any[] = [];
-  while (true) {
-    const message = await client.readLine();
-    if (message.id === id && message.result) return messages;
-    messages.push(message);
-  }
-}
-
 async function waitFor(predicate: () => boolean, timeoutMs = TIMEOUT) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error("condition timed out");
     await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-async function readAcpResponse(client: AcpClient, id: number) {
-  while (true) {
-    const message = await client.readLine();
-    if (message.id === id) return message;
   }
 }
 
@@ -604,7 +476,7 @@ describe("web_search Gateway fixture", () => {
         for (const request of [initial, continuing]) {
           expect(findUnavailableCapabilityReferences(request)).toEqual([]);
           expect(customProviderGuidanceState(request)).toEqual({
-            providerToolIndices: [13],
+            providerToolIndices: [11],
             guidanceMessageIndices: [1],
           });
           expect(
@@ -846,7 +718,7 @@ describe("web_search Gateway fixture", () => {
         );
         expect(findUnavailableCapabilityReferences(request)).toEqual([]);
         expect(customProviderGuidanceState(request)).toEqual({
-          providerToolIndices: [13],
+          providerToolIndices: [11],
           guidanceMessageIndices: [1],
         });
       } finally {
@@ -1129,128 +1001,6 @@ describe("web_search Gateway fixture", () => {
           "environment overrides applied",
         );
       } finally {
-        gateway.stop();
-        rmSync(root.root, { recursive: true, force: true });
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "ACP completes direct provider search without native progress events",
-    async () => {
-      const root = createIsolatedRoot();
-      const gateway = startFakeGateway();
-      const client = AcpClient.create(root.workspace, fakeGatewayEnv(root, gateway));
-      try {
-        await startAcpCodeSession(client);
-        const messages = await runAcpPrompt(client, "Search the web for the latest Zig release.");
-        const updates = JSON.stringify(messages);
-        const toolUpdates = messages
-          .filter((message: any) => message.params?.update?.toolCallId === "search_direct_1")
-          .map((message: any) => message.params.update);
-
-        expect(gateway.requests).toHaveLength(2);
-        expect(gateway.requests[0].body).toContain("gateway.exa_search");
-        expect(gateway.requests[0].body).not.toContain('"name":"web_search"');
-        const initial = parseGatewayRequest(gateway.requests[0]!.body);
-        const continuing = parseGatewayRequest(gateway.requests[1]!.body);
-        for (const request of [initial, continuing]) {
-          expect(findUnavailableCapabilityReferences(request)).toEqual([]);
-          expect(customProviderGuidanceState(request).guidanceMessageIndices).toEqual([1]);
-        }
-        expect(toolShapesWithoutDescriptions(continuing)).toEqual(
-          toolShapesWithoutDescriptions(initial),
-        );
-        expect(updates).not.toContain("Searching latest Zig release");
-        expect(updates).not.toContain("Found 1 result for latest Zig release");
-        expect(toolUpdates).toHaveLength(2);
-        expect(toolUpdates[0]).toEqual({
-          sessionUpdate: "tool_call",
-          toolCallId: "search_direct_1",
-          name: "web_search",
-          title: "Searching web",
-          kind: "search",
-          status: "pending",
-          rawInput: {},
-          _meta: { fx: { toolCall: { internal: false } } },
-        });
-        expect(toolUpdates[1]?.sessionUpdate).toBe("tool_call_update");
-        expect(toolUpdates[1]?.status).toBe("completed");
-        expect(updates).not.toContain("exa_search");
-        expect(updates).not.toContain("perplexity_search");
-        expect(updates).not.toContain("parallel_search");
-        expect(updates).toContain(SOURCE_URL);
-      } finally {
-        await client.close();
-        gateway.stop();
-        rmSync(root.root, { recursive: true, force: true });
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "ACP cancel interrupts an active direct provider stream and leaves the server usable",
-    async () => {
-      const root = createIsolatedRoot();
-      const hanging = hangingSseResponse();
-      const gateway = startFakeGateway([
-        hanging.response,
-      ]);
-      const client = AcpClient.create(root.workspace, fakeGatewayEnv(root, gateway));
-      try {
-        await startAcpCodeSession(client);
-        client.send({
-          jsonrpc: "2.0",
-          id: 10,
-          method: "session/prompt",
-          params: { prompt: [{ type: "text", text: "Search the web for the latest Zig release." }] },
-        });
-        await waitFor(() => gateway.requests.length === 1);
-
-        client.send({ jsonrpc: "2.0", method: "session/cancel", params: {} });
-        const cancelled = await readAcpResponse(client, 10);
-        expect(cancelled.result.stopReason).toBe("cancelled");
-
-        client.send({ jsonrpc: "2.0", id: 11, method: "session/list", params: {} });
-        const list = await readAcpResponse(client, 11);
-        expect(Array.isArray(list.result.sessions)).toBe(true);
-      } finally {
-        hanging.close();
-        await client.close();
-        gateway.stop();
-        rmSync(root.root, { recursive: true, force: true });
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "ACP policy denial omits direct provider search",
-    async () => {
-      const root = createIsolatedRoot("deny");
-      const gateway = startFakeGateway([
-        outerText("ACP search denial handled"),
-      ]);
-      const client = AcpClient.create(root.workspace, fakeGatewayEnv(root, gateway));
-      try {
-        await startAcpCodeSession(client);
-        const messages = await runAcpPrompt(client, "Issue denied web search.");
-
-        expect(gateway.requests).toHaveLength(1);
-        expect(gateway.requests[0].body).not.toContain("gateway.exa_search");
-        expect(gateway.requests[0].body).not.toContain("gateway.perplexity_search");
-        expect(gateway.requests[0].body).not.toContain('"name":"web_search"');
-        const request = parseGatewayRequest(gateway.requests[0]!.body);
-        expect(findUnavailableCapabilityReferences(request)).toEqual([]);
-        expect(customProviderGuidanceState(request)).toEqual({
-          providerToolIndices: [],
-          guidanceMessageIndices: [],
-        });
-        expect(JSON.stringify(messages)).not.toContain("Found 1 result");
-      } finally {
-        await client.close();
         gateway.stop();
         rmSync(root.root, { recursive: true, force: true });
       }

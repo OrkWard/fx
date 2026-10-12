@@ -1285,7 +1285,7 @@ fn executeProcessWithInput(
         .stderr = .pipe,
         .cwd = .{ .path = cwd },
         .environ_map = &environment,
-        .pgid = if (isolate_process_group and builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) 0 else null,
+        .pgid = if (isolate_process_group and builtin.target.os.tag != .windows) 0 else null,
     });
     if (child.stdin) |input| {
         input.close(io_mod.getIo());
@@ -1298,8 +1298,7 @@ fn executeProcessWithInput(
     var child_needs_cleanup = true;
     errdefer if (child_needs_cleanup) cleanupChild(&child);
 
-    const process_group_id = if (isolate_process_group and
-        builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi)
+    const process_group_id = if (isolate_process_group and builtin.target.os.tag != .windows)
         child.id
     else
         null;
@@ -1624,7 +1623,7 @@ fn executeProcessWithScriptUnisolated(
         .stdout = .pipe,
         .stderr = .pipe,
         .cwd = .{ .path = cwd },
-        .pgid = if (builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) 0 else null,
+        .pgid = if (builtin.target.os.tag != .windows) 0 else null,
         .environ_map = environ_map,
     });
 
@@ -1886,7 +1885,7 @@ fn executeRawInvocation(
     cwd: []const u8,
     invocation: *const shell_resolver.Invocation,
 ) !command_contract.RunCommandResult {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (builtin.target.os.tag == .windows) {
         return error.InvalidCommandEnvironment;
     }
     const result = try executeProcessWithScript(
@@ -1901,7 +1900,7 @@ fn executeRawInvocation(
 }
 
 test "explicit captured profiles execute exact shells without synthetic stderr" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
     std.Io.Dir.accessAbsolute(io_mod.getIo(), "/bin/bash", .{}) catch
         return error.SkipZigTest;
     const shell_path = "/bin/bash";
@@ -1951,7 +1950,7 @@ test "explicit captured profiles execute exact shells without synthetic stderr" 
 }
 
 test "zsh user profile reports natural SIGTERM after alias-safe startup" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
     std.Io.Dir.accessAbsolute(io_mod.getIo(), "/bin/zsh", .{}) catch
         return error.SkipZigTest;
 
@@ -2777,12 +2776,12 @@ const ProcessObserver = struct {
     }
 
     fn start(self: *ProcessObserver) !void {
-        if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+        if (comptime builtin.target.os.tag == .windows) return;
         try self.waiter.start();
     }
 
     fn observe(self: *ProcessObserver) ?command_contract.CommandStatus {
-        if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return null;
+        if (comptime builtin.target.os.tag == .windows) return null;
         if (!self.waiter.isReady()) return null;
         const term = self.waiter.awaitReady() catch |err| {
             return indeterminateStatus(err);
@@ -2794,7 +2793,7 @@ const ProcessObserver = struct {
         self: *ProcessObserver,
         source: TerminationSource,
     ) !command_contract.CommandStatus {
-        if (comptime builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) {
+        if (comptime builtin.target.os.tag != .windows) {
             self.waiter.awaitDiscard();
             return self.observe().?;
         }
@@ -2854,7 +2853,7 @@ const ProcessObserver = struct {
         protocol: TerminationProtocol,
         intent: TerminationIntent,
     ) !void {
-        if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+        if (builtin.target.os.tag == .windows) {
             self.waiter.child.kill(self.waiter.io);
             return;
         }
@@ -2867,7 +2866,7 @@ const ProcessObserver = struct {
     }
 
     fn abort(self: *ProcessObserver, process_group_id: ?std.posix.pid_t) void {
-        if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+        if (builtin.target.os.tag == .windows) {
             cleanupChild(self.waiter.child);
             return;
         }
@@ -3240,7 +3239,7 @@ fn waitForCollectedProcess(
     leader_status: ?command_contract.CommandStatus,
 ) !command_contract.CommandStatus {
     if (leader_status) |status| {
-        if (comptime builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) {
+        if (comptime builtin.target.os.tag != .windows) {
             observer.waiter.awaitDiscard();
         }
         return status;
@@ -3462,7 +3461,7 @@ fn terminateRemainingProcessGroup(pid: std.posix.pid_t) void {
 }
 
 fn remainingProcessGroupAlive(process_group_id: ?std.posix.pid_t) bool {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return false;
+    if (comptime builtin.target.os.tag == .windows) return false;
     const pid = process_group_id orelse return false;
     std.posix.kill(-pid, @fromBackingInt(@intCast(0))) catch |err| return switch (err) {
         error.ProcessNotFound => false,
@@ -3476,7 +3475,7 @@ fn cleanupChild(child: *std.process.Child) void {
         closeChildPipes(child);
         return;
     }
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) {
+    if (builtin.target.os.tag == .windows) {
         child.kill(io_mod.getIo());
         return;
     }
@@ -3733,7 +3732,7 @@ fn expectProcessGoneWithinForTest(pid: std.posix.pid_t, timeout_ms: i64) !void {
 }
 
 test "captured foreground command runs beneath a detached session supervisor" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const command =
         "exec python3 -c 'import os,sys; " ++
@@ -4438,7 +4437,7 @@ test "line buffered streaming preserves stderr stream and tail" {
 }
 
 test "multi-reader stream failure marks output incomplete" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const failed_pipe = try std.Io.Threaded.pipe2(.{});
     const clean_pipe = try std.Io.Threaded.pipe2(.{});
@@ -4481,7 +4480,7 @@ test "multi-reader stream failure marks output incomplete" {
 }
 
 test "presentation failure preserves the complete command result" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     var trigger = FailOutput{};
     const result = try executeCommand(.{
@@ -4497,7 +4496,7 @@ test "presentation failure preserves the complete command result" {
 }
 
 test "raw callback projection preserves bytes without changing command result" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     var safe_capture = StreamCapture{ .alloc = std.testing.allocator };
     defer safe_capture.deinit();
@@ -4559,7 +4558,7 @@ test "accepted callbacks preserve repeated newline-free stream order" {
 }
 
 test "cancellation requested by a failing output callback dominates its error" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     var cancel = std.atomic.Value(bool).init(false);
     var trigger = FailOutput{ .cancel_flag = &cancel };
@@ -4574,7 +4573,7 @@ test "cancellation requested by a failing output callback dominates its error" {
 }
 
 test "cancellation preserves the termination grace beneath the session supervisor" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     var cancel = std.atomic.Value(bool).init(false);
     var trigger = CancelAfterOutput{
@@ -4596,7 +4595,7 @@ test "cancellation preserves the termination grace beneath the session superviso
 }
 
 test "cancellation preserves the termination grace in an invoked script" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -4644,7 +4643,7 @@ test "cancellation preserves the termination grace in an invoked script" {
 }
 
 test "cap-crossing cancellation returns a synchronized bounded result" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -4687,7 +4686,7 @@ test "cap-crossing cancellation returns a synchronized bounded result" {
 }
 
 test "cancelled managed command confirms an indeterminate artifact target" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -4784,7 +4783,7 @@ test "cancelled managed command confirms an indeterminate artifact target" {
 }
 
 test "below-cap cancellation retains complete artifact and non-truncated metadata" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -4883,7 +4882,7 @@ test "zero-output cancellation remains a bare error" {
 }
 
 test "artifact write failure after cancellation remains a bare error" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5104,7 +5103,7 @@ test "pending termination source makes supervisor fallback timeout dominant" {
 }
 
 test "timeout prevents captured user shell from evaluating trailing statements" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
     std.Io.Dir.accessAbsolute(io_mod.getIo(), "/bin/zsh", .{}) catch
         return error.SkipZigTest;
 
@@ -5154,7 +5153,7 @@ test "timeout remains dominant when its output callback fails" {
 }
 
 test "timeout terminates foreground process group descendants" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5200,7 +5199,7 @@ test "timeout terminates foreground process group descendants" {
 }
 
 test "timeout terminates redirected descendant after setsid" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5240,7 +5239,7 @@ test "timeout terminates redirected descendant after setsid" {
 }
 
 test "timeout terminates double-forked descendant after setsid" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5341,7 +5340,7 @@ fn expectProcessGone(pid: std.posix.pid_t) !void {
 }
 
 test "natural command completion terminates background child inheriting pipes" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5376,7 +5375,7 @@ test "natural command completion terminates background child inheriting pipes" {
 }
 
 test "natural command completion terminates background child with redirected streams" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5411,7 +5410,7 @@ test "natural command completion terminates background child with redirected str
 }
 
 test "natural command completion keeps a daemon that detached after setsid" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5457,7 +5456,7 @@ test "natural command completion keeps a daemon that detached after setsid" {
 }
 
 test "natural command completion keeps a double-forked daemon and its children" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5510,7 +5509,7 @@ test "natural command completion keeps a double-forked daemon and its children" 
 }
 
 test "natural command completion returns while a detached daemon keeps command output" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5561,7 +5560,7 @@ test "natural command completion returns while a detached daemon keeps command o
 }
 
 test "natural command completion keeps a detached daemon that hides its descriptors" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5663,7 +5662,7 @@ const SlowOutputConsumer = struct {
 };
 
 test "natural completion delivers all leftover output to a slow consumer" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5687,7 +5686,7 @@ test "natural completion delivers all leftover output to a slow consumer" {
 }
 
 test "natural command completion stops a same-session process that left the process group" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5731,7 +5730,7 @@ test "natural command completion stops a same-session process that left the proc
 }
 
 test "natural completion keeps its exit when the deadline passes during the output drain" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5792,7 +5791,7 @@ test "natural completion keeps its exit when the deadline passes during the outp
 }
 
 test "natural completion stops waiting on a detached daemon that keeps writing" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5859,7 +5858,7 @@ const CancelOnOutput = struct {
 };
 
 test "natural completion ends live delivery of drained output at a cancel" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5915,7 +5914,7 @@ test "natural completion ends live delivery of drained output at a cancel" {
 }
 
 test "natural completion keeps complete output when a cancel follows the command's last line" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -5943,7 +5942,7 @@ test "natural completion keeps complete output when a cancel follows the command
 }
 
 test "natural completion keeps complete output when a cancel follows only daemon output" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -6042,7 +6041,7 @@ test "output emitter delivers each line once and flushes the last partial line a
 }
 
 test "natural completion marks output incomplete when the deadline cuts leftover output" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -6086,7 +6085,7 @@ fn stopProcessesForTest(pids: []const std.posix.pid_t) void {
 }
 
 test "cancellation preserves grace and removes an escaped descendant" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -6182,7 +6181,7 @@ test "cancel and timeout tie chooses cancellation" {
 }
 
 test "runtime cancellation observed at the timeout deadline stays graceful" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     for (0..10) |_| {
         const alloc = std.testing.allocator;
@@ -6247,7 +6246,7 @@ test "runtime cancellation observed at the timeout deadline stays graceful" {
 }
 
 test "accepted short timeout matrix returns timeout errors" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     for ([_]usize{ 1, 2, 5, 10, 25, 50 }) |timeout_ms| {
         try std.testing.expectError(error.TimeoutExpired, executeCommand(.{
@@ -6258,7 +6257,7 @@ test "accepted short timeout matrix returns timeout errors" {
 }
 
 test "supervisor handoff does not extend the parent timeout deadline" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -6283,7 +6282,7 @@ test "supervisor handoff does not extend the parent timeout deadline" {
 }
 
 test "supervisor fallback force remains timeout dominant" {
-    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows) return;
 
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

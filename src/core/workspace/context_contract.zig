@@ -58,7 +58,6 @@ pub const OmissionReason = enum {
     non_regular,
     symlink,
     selection_cap,
-    host_unreadable,
 
     pub fn label(self: OmissionReason) []const u8 {
         return switch (self) {
@@ -70,37 +69,7 @@ pub const OmissionReason = enum {
             .non_regular => "non-regular rule file",
             .symlink => "symlinked rule file",
             .selection_cap => "selection cap",
-            .host_unreadable => "host cannot read instruction files",
         };
-    }
-};
-
-/// One project instruction file read through a host. `bytes` is owned by the
-/// allocator passed to `InstructionFileReader.read` and holds the first
-/// `@min(total_bytes, max_bytes)` bytes.
-pub const InstructionFile = struct {
-    bytes: []u8,
-    total_bytes: u64,
-};
-
-pub const InstructionFileError = Allocator.Error || error{
-    /// The host has no instruction file access.
-    HostUnreadable,
-    /// The host failed, timed out, or returned malformed or non-UTF-8 content.
-    Unreadable,
-    /// The path is outside what the host allows fx to read.
-    UnsafePath,
-};
-
-/// Reads project instruction files (AGENTS.md) through an embedding host.
-pub const InstructionFileReader = struct {
-    read_fn: *const fn (Allocator, path: []const u8, max_bytes: usize) InstructionFileError!?InstructionFile,
-    /// Largest prefix one read copies; callers never request more.
-    max_read_bytes: usize,
-
-    /// Returns null when the file does not exist. The read may block on the host.
-    pub fn read(self: InstructionFileReader, alloc: Allocator, path: []const u8, max_bytes: usize) InstructionFileError!?InstructionFile {
-        return self.read_fn(alloc, path, max_bytes);
     }
 };
 
@@ -108,15 +77,6 @@ pub const InstructionFileReader = struct {
 pub const InstructionFiles = union(enum) {
     /// The local filesystem, with HOME taken from the environment.
     filesystem,
-    /// A host workspace. `home` is an absolute host path borrowed from the
-    /// composing host for the lifetime of the registry that carries it.
-    host: struct {
-        home: []const u8,
-        reader: InstructionFileReader,
-    },
-    /// A host workspace exists but cannot read instruction files. The provider
-    /// reports the omission instead of silently skipping AGENTS.md.
-    host_unreadable,
     /// No workspace exists, so there are no instruction files to read.
     none,
 };
@@ -292,15 +252,8 @@ pub const StaticContextInput = struct {
     project_context: []const u8,
 };
 
-pub const HostWorkspaceContext = struct {
-    root: []const u8,
-    cwd: []const u8,
-    home: []const u8,
-};
-
 pub const TransientContextInput = struct {
     workspace_root: []const u8,
-    host_workspace: ?HostWorkspaceContext = null,
     access_scope: ?workspace_access.AccessScope = null,
     interactive: bool,
     permission_mode: types.PermissionMode,
@@ -473,7 +426,7 @@ pub const Fragment = enum {
             .workspace_identity => "workspace root and current directory",
             .repo_identity => "git branch, worktree state, and sanitized GitHub origin when known",
             .scoped_instructions => "bounded global, workspace, and nested scoped rules plus the bounded visible skill catalog",
-            .available_tools => "gateway-advertised tool schemas after permission, deferred MCP discovery, and entrypoint filtering",
+            .available_tools => "gateway-advertised tool schemas after permission and entrypoint filtering",
             .permission_mode => "captured ask, auto, or yolo baseline for the active turn without rule or grant contents",
             .environment_metadata => "OS, shell, date, home directory, and live/non-live background runtime hints",
             .session_metadata => "model, step budget, max tool-result bytes, conversation history, grants, loaded skills, and persisted session id when present",
@@ -484,14 +437,12 @@ pub const Fragment = enum {
 pub const EntryPoint = enum {
     interactive,
     ask,
-    acp,
     subagent,
 
     fn label(self: EntryPoint) []const u8 {
         return switch (self) {
             .interactive => "interactive",
             .ask => "fx ask",
-            .acp => "ACP",
             .subagent => "subagent",
         };
     }
@@ -537,7 +488,7 @@ const current_inventory = [_]EntrypointInventory{
         .assembly_path = "main.App.enqueuePrompt -> app_agent_runtime.processQueuedPrompt -> agent_runtime dependencies",
         .static_context = "builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot before enqueue, then adds scoped deltas from effective structured tool targets",
         .transient_context = "tool_runtime transient context each model step: env_context, captured permission mode, background runtime, non-live background history",
-        .tools = "App.snapshotModelToolProjection pairs full tool advertisement with included custom-provider guidance after permission and deferred MCP discovery",
+        .tools = "App.snapshotModelToolProjection pairs full tool advertisement with included custom-provider guidance after permission",
         .permission = "PermissionEngine mode, persistent rules, and session grants are enforced by interactive permission prompts",
         .session = "live SessionRuntime history plus persisted session/log/artifact stores when enabled",
         .drift_status = .intentional,
@@ -548,30 +499,19 @@ const current_inventory = [_]EntrypointInventory{
         .assembly_path = "cli_ask.runPromptInternal -> agent_runtime dependencies",
         .static_context = "builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot before the prompt, then adds scoped deltas from effective structured tool targets",
         .transient_context = "tool_runtime transient context each model step with captured permission mode, noninteractive output callbacks, and no live user question path",
-        .tools = "mode-filtered paired tool advertisement and included custom-provider guidance with permission rules and deferred MCP discovery",
+        .tools = "mode-filtered paired tool advertisement and included custom-provider guidance with permission rules",
         .permission = "ask, --auto, or --yolo mode; approval-required actions fail with a noninteractive blocker instead of prompting unless yolo bypasses fx policy",
         .session = "fresh headless SessionRuntime, optional persisted session id, empty prior history, no local approval grants",
         .drift_status = .intentional,
         .drift = "noninteractive permission blockers and absent live clarification UI differ from interactive by design",
     },
     .{
-        .entrypoint = .acp,
-        .assembly_path = "acp.prompt.handlePrompt -> agent_runtime dependencies",
-        .static_context = "builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot from accepted local resources before each ACP prompt, then adds scoped tool-target deltas",
-        .transient_context = "tool_runtime transient context each model step using the prompt-captured permission mode, ACP session state, and noninteractive tool/update callbacks",
-        .tools = "mode-filtered paired tool advertisement and included custom-provider guidance with ACP session permission rules, deferred MCP discovery",
-        .permission = "ACP session mode ask/auto; approval-required actions map to refusal or policy decisions instead of terminal prompts",
-        .session = "active ACP session id, selected model, mode, persisted history on load, and session runtime history",
-        .drift_status = .intentional,
-        .drift = "ACP JSON-RPC session updates and refusal mapping differ from terminal output by protocol contract",
-    },
-    .{
         .entrypoint = .subagent,
         .assembly_path = "subagent.agent_adapter.run -> execution.runNormalAgentTurn -> agent_runtime dependencies",
         .static_context = "reuses the launching surface's project-context snapshot bytes and its system and skill prompt sections; child delivery state starts empty so scoped tool-target deltas are re-evaluated for the child",
         .transient_context = "tool_runtime transient context each model step over the child SessionRuntime with noninteractive output callbacks and no live user question path",
-        .tools = "identical to the launching surface's own gateway tool advertisement: permission-filtered builtins, deferred MCP discovery tools, and the subagent tool for nested children",
-        .permission = "per-child ask/auto/yolo mode (new children default to yolo) resolves live host authority per action for tools, roots, integrations, rules, and grants, revalidating the retained action identity whenever the authority generation advances before the effect",
+        .tools = "identical to the launching surface's own gateway tool advertisement: permission-filtered builtins and the subagent tool for nested children",
+        .permission = "per-child ask/auto/yolo mode (new children default to yolo) resolves live host authority per action for tools, roots, rules, and grants, revalidating the retained action identity whenever the authority generation advances before the effect",
         .session = "internal child session resumed for write by its saved parent, canonical child history restored from and committed back to that session, and persistent agent instructions plus model and effort from the parent's immutable profile snapshot",
         .drift_status = .intentional,
         .drift = "separate child session and history, noninteractive child callbacks, approvals projected to the parent and human surfaces, and bounded parent/child delivery instead of transcript merging",
@@ -616,28 +556,21 @@ pub fn writeEntrypointLayoutSnapshot(writer: *std.Io.Writer) !void {
         \\model_visible_layout:
         \\- entrypoint: interactive
         \\  static_context_refresh: one applicable snapshot before enqueue; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and history
         \\  intentional_difference: live terminal approvals and clarification UI
         \\- entrypoint: fx ask
         \\  static_context_refresh: one applicable snapshot before the prompt; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and empty or saved history
         \\  intentional_difference: approval-required actions become noninteractive blockers
-        \\- entrypoint: ACP
-        \\  static_context_refresh: one applicable snapshot per ACP prompt including accepted local resource targets; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
-        \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
-        \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
-        \\  user_prompt_position: after stable system context and ACP session history
-        \\  intentional_difference: ACP protocol maps prompts, refusals, and updates to JSON-RPC session messages
         \\- entrypoint: subagent
         \\  static_context_refresh: the launching surface's snapshot with empty child delivery state; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and canonical child session history
@@ -706,7 +639,7 @@ test "minimum shared model context contract snapshot" {
         \\- workspace_identity: workspace root and current directory
         \\- repo_identity: git branch, worktree state, and sanitized GitHub origin when known
         \\- scoped_instructions: bounded global, workspace, and nested scoped rules plus the bounded visible skill catalog
-        \\- available_tools: gateway-advertised tool schemas after permission, deferred MCP discovery, and entrypoint filtering
+        \\- available_tools: gateway-advertised tool schemas after permission and entrypoint filtering
         \\- permission_mode: captured ask, auto, or yolo baseline for the active turn without rule or grant contents
         \\- environment_metadata: OS, shell, date, home directory, and live/non-live background runtime hints
         \\- session_metadata: model, step budget, max tool-result bytes, conversation history, grants, loaded skills, and persisted session id when present
@@ -727,7 +660,7 @@ test "entrypoint context inventory snapshot documents current deltas" {
         \\  assembly_path: main.App.enqueuePrompt -> app_agent_runtime.processQueuedPrompt -> agent_runtime dependencies
         \\  static_context: builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot before enqueue, then adds scoped deltas from effective structured tool targets
         \\  transient_context: tool_runtime transient context each model step: env_context, captured permission mode, background runtime, non-live background history
-        \\  tools: App.snapshotModelToolProjection pairs full tool advertisement with included custom-provider guidance after permission and deferred MCP discovery
+        \\  tools: App.snapshotModelToolProjection pairs full tool advertisement with included custom-provider guidance after permission
         \\  permission: PermissionEngine mode, persistent rules, and session grants are enforced by interactive permission prompts
         \\  session: live SessionRuntime history plus persisted session/log/artifact stores when enabled
         \\  drift_status: intentional
@@ -736,26 +669,17 @@ test "entrypoint context inventory snapshot documents current deltas" {
         \\  assembly_path: cli_ask.runPromptInternal -> agent_runtime dependencies
         \\  static_context: builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot before the prompt, then adds scoped deltas from effective structured tool targets
         \\  transient_context: tool_runtime transient context each model step with captured permission mode, noninteractive output callbacks, and no live user question path
-        \\  tools: mode-filtered paired tool advertisement and included custom-provider guidance with permission rules and deferred MCP discovery
+        \\  tools: mode-filtered paired tool advertisement and included custom-provider guidance with permission rules
         \\  permission: ask, --auto, or --yolo mode; approval-required actions fail with a noninteractive blocker instead of prompting unless yolo bypasses fx policy
         \\  session: fresh headless SessionRuntime, optional persisted session id, empty prior history, no local approval grants
         \\  drift_status: intentional
         \\  drift: noninteractive permission blockers and absent live clarification UI differ from interactive by design
-        \\- entrypoint: ACP
-        \\  assembly_path: acp.prompt.handlePrompt -> agent_runtime dependencies
-        \\  static_context: builtins/context captures one global/root/ancestor/applicable AGENTS.md snapshot from accepted local resources before each ACP prompt, then adds scoped tool-target deltas
-        \\  transient_context: tool_runtime transient context each model step using the prompt-captured permission mode, ACP session state, and noninteractive tool/update callbacks
-        \\  tools: mode-filtered paired tool advertisement and included custom-provider guidance with ACP session permission rules, deferred MCP discovery
-        \\  permission: ACP session mode ask/auto; approval-required actions map to refusal or policy decisions instead of terminal prompts
-        \\  session: active ACP session id, selected model, mode, persisted history on load, and session runtime history
-        \\  drift_status: intentional
-        \\  drift: ACP JSON-RPC session updates and refusal mapping differ from terminal output by protocol contract
         \\- entrypoint: subagent
         \\  assembly_path: subagent.agent_adapter.run -> execution.runNormalAgentTurn -> agent_runtime dependencies
         \\  static_context: reuses the launching surface's project-context snapshot bytes and its system and skill prompt sections; child delivery state starts empty so scoped tool-target deltas are re-evaluated for the child
         \\  transient_context: tool_runtime transient context each model step over the child SessionRuntime with noninteractive output callbacks and no live user question path
-        \\  tools: identical to the launching surface's own gateway tool advertisement: permission-filtered builtins, deferred MCP discovery tools, and the subagent tool for nested children
-        \\  permission: per-child ask/auto/yolo mode (new children default to yolo) resolves live host authority per action for tools, roots, integrations, rules, and grants, revalidating the retained action identity whenever the authority generation advances before the effect
+        \\  tools: identical to the launching surface's own gateway tool advertisement: permission-filtered builtins and the subagent tool for nested children
+        \\  permission: per-child ask/auto/yolo mode (new children default to yolo) resolves live host authority per action for tools, roots, rules, and grants, revalidating the retained action identity whenever the authority generation advances before the effect
         \\  session: internal child session resumed for write by its saved parent, canonical child history restored from and committed back to that session, and persistent agent instructions plus model and effort from the parent's immutable profile snapshot
         \\  drift_status: intentional
         \\  drift: separate child session and history, noninteractive child callbacks, approvals projected to the parent and human surfaces, and bounded parent/child delivery instead of transcript merging
@@ -774,28 +698,21 @@ test "entrypoint model-visible layout snapshot covers major entrypoints" {
         \\model_visible_layout:
         \\- entrypoint: interactive
         \\  static_context_refresh: one applicable snapshot before enqueue; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and history
         \\  intentional_difference: live terminal approvals and clarification UI
         \\- entrypoint: fx ask
         \\  static_context_refresh: one applicable snapshot before the prompt; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and empty or saved history
         \\  intentional_difference: approval-required actions become noninteractive blockers
-        \\- entrypoint: ACP
-        \\  static_context_refresh: one applicable snapshot per ACP prompt including accepted local resource targets; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
-        \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
-        \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
-        \\  user_prompt_position: after stable system context and ACP session history
-        \\  intentional_difference: ACP protocol maps prompts, refusals, and updates to JSON-RPC session messages
         \\- entrypoint: subagent
         \\  static_context_refresh: the launching surface's snapshot with empty child delivery state; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, mcp_server_catalog, optional_prepared_parent_turn_delivery_context
+        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
         \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
         \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
         \\  user_prompt_position: after stable system context and canonical child session history
@@ -882,7 +799,7 @@ test "registry routes its instruction file source to gathers and later selection
             .append_static_fn = Fixture.appendStatic,
             .append_transient_fn = Fixture.appendTransient,
         },
-        .instruction_files = .host_unreadable,
+        .instruction_files = .none,
     };
     const alloc = std.testing.allocator;
     var snapshot = try registry.gatherDefaultSnapshot(alloc, .{ .workspace_root = "/workspace", .instruction_files = .filesystem });
@@ -895,8 +812,8 @@ test "registry routes its instruction file source to gathers and later selection
     });
     defer later.deinit(alloc);
 
-    try std.testing.expectEqual(@as(?std.meta.Tag(InstructionFiles), .host_unreadable), Fixture.gathered);
-    try std.testing.expectEqual(@as(?std.meta.Tag(InstructionFiles), .host_unreadable), Fixture.selected);
+    try std.testing.expectEqual(@as(?std.meta.Tag(InstructionFiles), .none), Fixture.gathered);
+    try std.testing.expectEqual(@as(?std.meta.Tag(InstructionFiles), .none), Fixture.selected);
 }
 
 test "gathered context snapshot duplicates provenance and content ownership" {
