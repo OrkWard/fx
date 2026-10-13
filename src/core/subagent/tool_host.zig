@@ -68,26 +68,6 @@ pub const ProgressSink = struct {
     }
 };
 
-/// Resolves a creation-time model override against the host's model catalog.
-/// Returned slices are allocated from the passed allocator and must remain
-/// valid for the duration of the `executeManaged` call.
-pub const ModelOverrideResolver = struct {
-    context: ?*anyopaque = null,
-    resolve_fn: *const fn (
-        ?*anyopaque,
-        Allocator,
-        []const u8,
-    ) Allocator.Error!model_contract.ModelCatalogMatch,
-
-    pub fn resolve(
-        self: ModelOverrideResolver,
-        alloc: Allocator,
-        raw_model: []const u8,
-    ) Allocator.Error!model_contract.ModelCatalogMatch {
-        return self.resolve_fn(self.context, alloc, raw_model);
-    }
-};
-
 pub const ExecuteOptions = struct {
     caller_id: []const u8,
     invocation_id: []const u8,
@@ -103,7 +83,6 @@ pub const ExecuteOptions = struct {
     steering_worker: ?*worker_runtime.WorkerRuntime = null,
     progress: ?ProgressSink = null,
     model_capability_resolver: ?model_capabilities.Resolver = null,
-    model_override_resolver: ?ModelOverrideResolver = null,
 };
 
 pub const ManagedExecutionResult = struct {
@@ -288,10 +267,7 @@ pub const Runtime = struct {
                         .error_code = "caller_unavailable",
                     });
                 }
-                const resolved_model: ?[]const u8 = switch (try resolveOverrideModel(alloc, request.override(), options)) {
-                    .rejected => |failure| break :blk try self.encodeManaged(alloc, failure),
-                    .accepted => |model| model,
-                };
+                const resolved_model: ?[]const u8 = null;
                 var admission_arena = std.heap.ArenaAllocator.init(self.alloc);
                 defer admission_arena.deinit();
                 var queued_receipt: ?ManagedExecutionResult = null;
@@ -378,76 +354,6 @@ pub const Runtime = struct {
                 }
             },
         };
-    }
-
-    const OverrideModelResolution = union(enum) {
-        /// Resolved canonical catalog ID, or null to keep the raw override.
-        accepted: ?[]const u8,
-        rejected: model_contract.Result,
-    };
-
-    /// Resolves a creation-time model override against the model catalog before
-    /// any child session exists, so an unknown or ambiguous name fails fast
-    /// with actionable guidance instead of dying in the child after a wasted
-    /// gateway request. Without a resolver (or a ready catalog) the raw
-    /// override passes through and the gateway remains the final arbiter.
-    fn resolveOverrideModel(
-        alloc: Allocator,
-        override: model_contract.Override,
-        options: ExecuteOptions,
-    ) !OverrideModelResolution {
-        const raw_model = override.model orelse return .{ .accepted = null };
-        // Only the gateway catalog is an authoritative model list. Configured
-        // providers (OpenAI-compatible endpoints) accept arbitrary model IDs,
-        // so overrides for those children pass through to the provider.
-        if (options.defaults.provider != .gateway) {
-            debug_trace.logf("subagent", "model override resolution skipped raw={s} reason=non_gateway_provider", .{raw_model});
-            return .{ .accepted = null };
-        }
-        const resolver = options.model_override_resolver orelse {
-            debug_trace.logf("subagent", "model override resolution skipped raw={s} reason=no_resolver", .{raw_model});
-            return .{ .accepted = null };
-        };
-        switch (try resolver.resolve(alloc, raw_model)) {
-            .no_catalog => {
-                debug_trace.logf("subagent", "model override resolution skipped raw={s} reason=no_catalog", .{raw_model});
-                return .{ .accepted = null };
-            },
-            .matched => |id| {
-                if (!std.mem.eql(u8, id, raw_model)) {
-                    debug_trace.logf(
-                        "subagent",
-                        "model override resolved raw={s} resolved={s}",
-                        .{ raw_model, id },
-                    );
-                }
-                return .{ .accepted = id };
-            },
-            .ambiguous => |candidates| {
-                debug_trace.logf(
-                    "subagent",
-                    "model override rejected raw={s} code=ambiguous_model candidates={d}",
-                    .{ raw_model, candidates.len },
-                );
-                return .{ .rejected = .{
-                    .ok = false,
-                    .error_code = "ambiguous_model",
-                    .result = try modelOverrideFailureMessage(alloc, .ambiguous, raw_model, candidates),
-                } };
-            },
-            .unknown => |candidates| {
-                debug_trace.logf(
-                    "subagent",
-                    "model override rejected raw={s} code=unknown_model candidates={d}",
-                    .{ raw_model, candidates.len },
-                );
-                return .{ .rejected = .{
-                    .ok = false,
-                    .error_code = "unknown_model",
-                    .result = try modelOverrideFailureMessage(alloc, .unknown, raw_model, candidates),
-                } };
-            },
-        }
     }
 
     fn managedOwnerValue(self: *Runtime) managed_owner.Owner {
@@ -1229,43 +1135,6 @@ fn assistantTextForWork(
         };
     }
     return null;
-}
-
-/// Builds the parent-facing guidance for a rejected model override.
-fn modelOverrideFailureMessage(
-    alloc: Allocator,
-    comptime kind: enum { ambiguous, unknown },
-    raw_model: []const u8,
-    candidates: []const []const u8,
-) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    const writer = &out.writer;
-    switch (kind) {
-        .ambiguous => {
-            try writer.print("model override '{s}' matches multiple catalog models: ", .{raw_model});
-            for (candidates, 0..) |candidate, index| {
-                if (index > 0) try writer.writeAll(", ");
-                try writer.writeAll(candidate);
-            }
-            try writer.writeAll(". Retry with an exact catalog model ID.");
-        },
-        .unknown => {
-            try writer.print("unknown model override '{s}'", .{raw_model});
-            if (candidates.len > 0) {
-                try writer.writeAll(". Closest catalog matches: ");
-                for (candidates, 0..) |candidate, index| {
-                    if (index > 0) try writer.writeAll(", ");
-                    try writer.writeAll(candidate);
-                }
-                try writer.writeByte('.');
-            } else {
-                try writer.writeAll("; no catalog model names match it.");
-            }
-            try writer.writeAll(" Use an exact catalog model ID, or omit model to inherit the parent's model.");
-        },
-    }
-    return out.toOwnedSlice();
 }
 
 /// Resolves the defaults used to seed a new child session. When the override

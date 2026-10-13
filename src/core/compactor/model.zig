@@ -69,13 +69,6 @@ pub const Reply = union(enum) {
     failed: struct { reason: FailureReason, detail: []u8 },
 };
 
-/// The model to try when the conversation's own model cannot write the
-/// summary. Another provider family, because a provider that refused once
-/// will likely refuse the same conversation again.
-fn fallbackModel(primary: []const u8) []const u8 {
-    return if (std.mem.startsWith(u8, primary, "anthropic/")) "openai/gpt-6-sol" else "anthropic/claude-sonnet-5";
-}
-
 /// The least reasoning a model accepts: `none` when it can turn reasoning
 /// off, otherwise its lowest level (levels are listed lowest first). Null
 /// when the model offers no levels to choose from.
@@ -114,20 +107,9 @@ pub const Summarizer = struct {
             if (err == error.Cancelled or err == error.OutOfMemory) return err;
             primary_error = err;
         }
-        // Only the gateway can route to another model family with this
-        // credential. Elsewhere an empty reply becomes the summary step's
-        // EmptySummary error.
-        if (self.caller.provider != .gateway) {
-            if (primary_error) |err| return err;
-            return alloc.dupe(u8, "");
-        }
-        const fallback = fallbackModel(prompt.model);
-        trace.info(self.trace_ctx, .log, "fallback model={s} after={s}", .{
-            fallback,
-            if (primary_error) |err| @errorName(err) else "empty_summary",
-        });
-        self.fallback_used = fallback;
-        return self.ask(alloc, prompt, fallback);
+        // An empty reply becomes the summary step's EmptySummary error.
+        if (primary_error) |err| return err;
+        return alloc.dupe(u8, "");
     }
 
     /// One summary request to `model_name`, at its lowest reasoning.

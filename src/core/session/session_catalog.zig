@@ -50,18 +50,6 @@ pub fn workspacePath(summary: session_store.SessionSummary) []const u8 {
     return summary.workspace_root orelse summary.origin_workspace_root orelse "(unknown workspace)";
 }
 
-pub fn relativeActivityAge(buf: []u8, updated_at_ms: i64, now_ms: i64) []const u8 {
-    const delta_ms: i64 = @max(0, now_ms - updated_at_ms);
-    if (delta_ms < std.time.ms_per_min) return "just now";
-    if (delta_ms < std.time.ms_per_hour) {
-        return std.mem.print(buf, "{d}m ago", .{@divFloor(delta_ms, std.time.ms_per_min)}) catch "recently";
-    }
-    if (delta_ms < std.time.ms_per_day) {
-        return std.mem.print(buf, "{d}h ago", .{@divFloor(delta_ms, std.time.ms_per_hour)}) catch "recently";
-    }
-    return std.mem.print(buf, "{d}d ago", .{@divFloor(delta_ms, std.time.ms_per_day)}) catch "recently";
-}
-
 // Same buckets as relativeActivityAge without the " ago" suffix, for tight
 // single-line layouts: "now", "5m", "2h", "1d".
 pub fn relativeActivityAgeCompact(buf: []u8, updated_at_ms: i64, now_ms: i64) []const u8 {

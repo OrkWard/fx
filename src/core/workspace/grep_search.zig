@@ -1,7 +1,6 @@
 const std = @import("std");
 const debug_trace = @import("../shared/debug_trace.zig");
 const glob_pattern = @import("glob_pattern.zig");
-const ignored_dirs = @import("ignored_dirs.zig");
 const io_mod = @import("../shared/io.zig");
 const pathing = @import("pathing.zig");
 const text_utils = @import("../shared/text_utils.zig");
@@ -49,18 +48,6 @@ pub const CountResult = struct {
     candidate_incomplete: bool = false,
     skipped_overlong: usize = 0,
 };
-
-/// Collects literal line matches below a directory root. Returned slices are owned by arena.
-pub fn collectDirectoryMatches(
-    arena: Allocator,
-    workspace_root: []const u8,
-    absolute_root: []const u8,
-    pattern: []const u8,
-    case_insensitive: bool,
-    include: ?glob_pattern.Pattern,
-) !Result {
-    return collectDirectoryMatchesWithIgnored(arena, workspace_root, absolute_root, pattern, case_insensitive, ignored_dirs.ignored_directory_names, include);
-}
 
 pub fn collectDirectoryMatchesWithIgnored(
     arena: Allocator,
@@ -396,10 +383,6 @@ fn countCandidateList(
         count_result.matching_files += 1;
         count_result.matching_lines += file_count.matching_lines;
     }
-}
-
-pub fn gitGrepArgvForTest() [9][]const u8 {
-    return .{ "git", "--no-optional-locks", "grep", "-n", "-I", "-F", "-z", "-e", "needle" };
 }
 
 const GitGrepMatchesResult = struct {

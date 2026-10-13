@@ -1,65 +1,9 @@
 const std = @import("std");
-const display_width = @import("display_width.zig");
 const text_utils = @import("text_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const max_published_error_bytes: usize = 1024;
 const max_recovery_diagnostic_bytes: usize = 600;
-
-pub fn formatSchemaDiagnostic(alloc: Allocator, detail: []const u8) !?[]u8 {
-    if (detail.len == 0) return null;
-
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, detail, .{}) catch return null;
-    defer parsed.deinit();
-
-    const root = objectValue(parsed.value) orelse return null;
-    const error_value = root.get("error") orelse return null;
-    const error_object = objectValue(error_value) orelse return null;
-    const message = stringField(error_object, "message");
-
-    const param_path = if (error_object.get("param")) |param_value|
-        try formatParamPath(alloc, param_value)
-    else
-        null;
-    defer if (param_path) |path| alloc.free(path);
-
-    const expected = stringField(error_object, "expected") orelse schemaKindAfter(message, "expected ");
-    const received = stringField(error_object, "received") orelse schemaKindAfter(message, "received ");
-
-    if (param_path == null and expected == null and received == null) return null;
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    var wrote = false;
-    if (param_path) |path| {
-        if (path.len > 0) {
-            try out.writer.writeAll("path=");
-            try appendSafeToken(&out.writer, path);
-            wrote = true;
-        }
-    }
-    if (expected) |kind| {
-        if (kind.len > 0) {
-            if (wrote) try out.writer.writeByte(' ');
-            try out.writer.writeAll("expected=");
-            try appendSafeToken(&out.writer, kind);
-            wrote = true;
-        }
-    }
-    if (received) |kind| {
-        if (kind.len > 0) {
-            if (wrote) try out.writer.writeByte(' ');
-            try out.writer.writeAll("received=");
-            try appendSafeToken(&out.writer, kind);
-            wrote = true;
-        }
-    }
-    if (!wrote) {
-        out.deinit();
-        return null;
-    }
-    return try out.toOwnedSlice();
-}
 
 pub fn formatHttpErrorMessage(alloc: Allocator, status: std.http.Status, detail: []const u8) ![]u8 {
     const status_code = @backingInt(status);
@@ -144,43 +88,6 @@ fn formatParsedHttpMessage(
     return out.toOwnedSlice();
 }
 
-pub fn formatMarkedLine(alloc: Allocator, marker_prefix: []const u8, message: []const u8, cols: u16) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-
-    const safe_cols = @max(@as(usize, cols), 1);
-    const prefix_width = display_width.visibleWidth(marker_prefix);
-    const continuation_width = @max(prefix_width, 1);
-    const continuation_indent = try alloc.alloc(u8, continuation_width);
-    defer alloc.free(continuation_indent);
-    @memset(continuation_indent, ' ');
-
-    var remaining = message;
-    var first = true;
-    while (remaining.len > 0) {
-        const prefix = if (first) marker_prefix else continuation_indent;
-        const available = if (safe_cols > display_width.visibleWidth(prefix))
-            safe_cols - display_width.visibleWidth(prefix)
-        else
-            1;
-        var chunk = wrapCut(remaining, available);
-        if (chunk.len == 0) {
-            const rune = display_width.decodeNextRune(remaining, 0);
-            chunk = remaining[0..@max(rune.len, 1)];
-        }
-
-        if (!first) try out.append(alloc, '\n');
-        try out.appendSlice(alloc, prefix);
-        try out.appendSlice(alloc, chunk);
-
-        remaining = trimBreakWhitespace(remaining[chunk.len..]);
-        first = false;
-    }
-
-    if (message.len == 0) try out.appendSlice(alloc, marker_prefix);
-    return try out.toOwnedSlice(alloc);
-}
-
 fn formatFallbackBounded(
     alloc: Allocator,
     status: std.http.Status,
@@ -216,103 +123,6 @@ fn stringField(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     };
 }
 
-fn formatParamPath(alloc: Allocator, value: std.json.Value) !?[]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    if (!try writeParamPath(&out.writer, value)) {
-        out.deinit();
-        return null;
-    }
-    return try out.toOwnedSlice();
-}
-
-fn writeParamPath(writer: *std.Io.Writer, value: std.json.Value) !bool {
-    switch (value) {
-        .string => |text| {
-            if (text.len == 0) return false;
-            try appendSafeToken(writer, text);
-            return true;
-        },
-        .array => |array| {
-            if (array.items.len == 0) return false;
-            for (array.items, 0..) |item, i| {
-                if (i > 0) try writer.writeByte('.');
-                switch (item) {
-                    .string => |text| try appendSafeToken(writer, text),
-                    .integer => |number| try writer.print("{d}", .{number}),
-                    .number_string => |raw| try appendSafeToken(writer, raw),
-                    .object => |object| {
-                        if (object.get("path")) |path| {
-                            if (!try writeParamPath(writer, path)) try writer.writeAll("object");
-                        } else if (object.get("param")) |param| {
-                            if (!try writeParamPath(writer, param)) try writer.writeAll("object");
-                        } else {
-                            try writer.writeAll("object");
-                        }
-                    },
-                    else => try writer.writeAll(jsonKindName(item)),
-                }
-            }
-            return true;
-        },
-        .object => |object| {
-            if (object.get("path")) |path| return writeParamPath(writer, path);
-            if (object.get("param")) |param| return writeParamPath(writer, param);
-            return false;
-        },
-        else => return false,
-    }
-}
-
-fn schemaKindAfter(message: ?[]const u8, marker: []const u8) ?[]const u8 {
-    const text = message orelse return null;
-    const marker_index = std.mem.find(u8, text, marker) orelse return null;
-    var start = marker_index + marker.len;
-    while (start < text.len and (text[start] == ' ' or text[start] == '\'' or text[start] == '"' or text[start] == '`')) : (start += 1) {}
-    var end = start;
-    while (end < text.len) : (end += 1) {
-        switch (text[end]) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_', '-' => {},
-            else => break,
-        }
-    }
-    if (end == start) return null;
-    return text[start..end];
-}
-
-fn appendSafeToken(writer: *std.Io.Writer, raw: []const u8) !void {
-    var wrote = false;
-    var last_was_underscore = false;
-    for (raw) |c| {
-        switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '.', '[', ']' => {
-                try writer.writeByte(c);
-                wrote = true;
-                last_was_underscore = c == '_';
-            },
-            else => {
-                if (!last_was_underscore) {
-                    try writer.writeByte('_');
-                    wrote = true;
-                    last_was_underscore = true;
-                }
-            },
-        }
-    }
-    if (!wrote) try writer.writeAll("unknown");
-}
-
-fn jsonKindName(value: std.json.Value) []const u8 {
-    return switch (value) {
-        .null => "null",
-        .bool => "bool",
-        .integer, .float, .number_string => "number",
-        .string => "string",
-        .array => "array",
-        .object => "object",
-    };
-}
-
 fn providerFromGatewayMessage(message: ?[]const u8) ?[]const u8 {
     const text = message orelse return null;
     const marker = "Providers considered: ";
@@ -327,23 +137,6 @@ fn providerFromGatewayMessage(message: ?[]const u8) ?[]const u8 {
     }
     if (end == 0) return null;
     return provider_text[0..end];
-}
-
-fn wrapCut(text: []const u8, max_width: usize) []const u8 {
-    const prefix = display_width.prefixByWidth(text, max_width);
-    if (prefix.len == text.len) return prefix;
-
-    var last_space: ?usize = null;
-    var index: usize = 0;
-    while (index < prefix.len) {
-        const rune = display_width.decodeNextRune(prefix, index);
-        if (prefix[index] == ' ' or prefix[index] == '\t') last_space = index;
-        index += @max(rune.len, 1);
-    }
-    if (last_space) |space_index| {
-        if (space_index > 0) return text[0..space_index];
-    }
-    return prefix;
 }
 
 fn trimBreakWhitespace(text: []const u8) []const u8 {

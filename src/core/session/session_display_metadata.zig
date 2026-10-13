@@ -181,30 +181,6 @@ fn validUtf8PrefixLen(text: []const u8, max_bytes: usize) usize {
     return end;
 }
 
-pub fn encodeSidecar(alloc: Allocator, metadata: DisplayMetadata) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    try out.writer.writeAll("{\"schema_version\":1,\"title\":");
-    try std.json.Stringify.value(metadata.title, .{}, &out.writer);
-    try out.writer.writeAll(",\"preview\":");
-    if (metadata.preview) |preview| {
-        try std.json.Stringify.value(preview, .{}, &out.writer);
-    } else {
-        try out.writer.writeAll("null");
-    }
-    try out.writer.writeAll(",\"origin_workspace_root\":");
-    if (metadata.origin_workspace_root) |root| {
-        try std.json.Stringify.value(root, .{}, &out.writer);
-    } else {
-        try out.writer.writeAll("null");
-    }
-    try out.writer.writeByte('}');
-
-    if (out.written().len > max_sidecar_bytes) return error.DisplayMetadataTooLarge;
-    return try out.toOwnedSlice();
-}
-
 pub fn decodeSidecar(alloc: Allocator, bytes: []const u8) !DisplayMetadata {
     if (bytes.len == 0 or bytes.len > max_sidecar_bytes) return error.InvalidDisplayMetadata;
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{}) catch |err| switch (err) {

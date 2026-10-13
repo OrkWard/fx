@@ -58,10 +58,3 @@ pub const ReadTracker = struct {
         self.* = undefined;
     }
 };
-
-/// Computes the content hash used by read-before-overwrite checks.
-pub fn contentHash(bytes: []const u8) ContentHash {
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(bytes);
-    return hasher.finalResult();
-}

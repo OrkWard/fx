@@ -6,7 +6,6 @@ const debug_trace = @import("../shared/debug_trace.zig");
 const local_executor = @import("local_executor.zig");
 const command_runner = @import("../execution/command_runner.zig");
 
-pub const RouteKind = local_executor.RouteKind;
 pub const PreparedCommandRoute = local_executor.PreparedCommand;
 pub const RoutedCommandResult = local_executor.CommandResult;
 
@@ -104,17 +103,6 @@ pub fn executePreparedRoute(
     route: PreparedCommandRoute,
 ) !RoutedCommandResult {
     return local_executor.executePreparedCommand(cfg, alloc, route);
-}
-
-pub fn executePlannedCommand(
-    cfg: command_runner.Config,
-    alloc: std.mem.Allocator,
-    command_ctx: command_admission.CommandContext,
-    authority: command_admission.CommandExecutionAuthority,
-) !RoutedCommandResult {
-    try validateConfigContext(cfg, command_ctx);
-    const route = try prepareAuthorizedRoute(alloc, command_ctx, authority);
-    return executePreparedRoute(cfg, alloc, route);
 }
 
 pub fn validateConfigContext(

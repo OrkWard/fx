@@ -213,18 +213,6 @@ fn makeFileBlocking(file: *std.Io.File) !void {
     file.flags.nonblocking = false;
 }
 
-pub fn setEnvironMap(m: *const std.process.Environ.Map) void {
-    global_environ = m;
-    global_environ_block = null;
-    global_raw_environ = null;
-}
-
-pub fn setEnvironBlock(block: std.process.Environ.Block) void {
-    global_environ = null;
-    global_environ_block = block;
-    global_raw_environ = null;
-}
-
 pub fn setRawEnviron(raw: RawEnviron) void {
     global_environ = null;
     global_environ_block = null;
@@ -321,14 +309,6 @@ pub fn readFileToEnd(alloc: std.mem.Allocator, file: *std.Io.File, max_bytes: us
     defer content.deinit(alloc);
     try r.interface.appendRemaining(alloc, &content, .limited(max_bytes));
     return content.toOwnedSlice(alloc);
-}
-
-pub fn readFileToEndZ(alloc: std.mem.Allocator, file: *std.Io.File, max_bytes: usize) ![:0]u8 {
-    const data = try readFileToEnd(alloc, file, max_bytes);
-    errdefer alloc.free(data);
-    const result = try alloc.realloc(data, data.len + 1);
-    result[data.len] = 0;
-    return result[0..data.len :0];
 }
 
 pub fn milliTimestamp() i64 {
@@ -661,21 +641,6 @@ pub fn acquireTimedAdvisoryLockWithOps(
     ops: LockOps,
 ) !TimedAdvisoryLock {
     return acquireTimedAdvisoryLockControlled(dir, name, deadline_ms, null, ops);
-}
-
-pub fn acquireTimedAdvisoryLockCancellable(
-    dir: *VerifiedDir,
-    name: []const u8,
-    deadline_ms: u64,
-    cancel_flag: *const std.atomic.Value(bool),
-) !TimedAdvisoryLock {
-    return acquireTimedAdvisoryLockControlled(
-        dir,
-        name,
-        deadline_ms,
-        cancel_flag,
-        .{},
-    );
 }
 
 pub fn acquireTimedAdvisoryLockCancellableWithOps(

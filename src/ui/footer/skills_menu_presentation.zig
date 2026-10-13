@@ -147,16 +147,6 @@ pub const PreparedSkillsMenu = struct {
     }
 };
 
-pub fn prepareSkillsMenu(
-    alloc: Allocator,
-    projection: SkillsMenuProjection,
-    row_budget: u16,
-) !PreparedSkillsMenu {
-    const match_count = visibleSkillCount(projection);
-    const layout = SkillsMenuLayout.build(match_count, projection.selected_index, row_budget);
-    return prepareSkillsMenuWithLayout(alloc, projection, layout, false);
-}
-
 pub fn prepareInlineSkillsMenu(
     alloc: Allocator,
     projection: SkillsMenuProjection,
@@ -193,17 +183,6 @@ fn prepareSkillsMenuWithLayout(
             layout.visible_items,
         ),
     };
-}
-
-pub fn visibleNavigationRowsForBudget(
-    projection: SkillsMenuProjection,
-    row_budget: u16,
-) u16 {
-    return SkillsMenuLayout.build(
-        visibleSkillCount(projection),
-        projection.selected_index,
-        row_budget,
-    ).visible_items;
 }
 
 pub fn inlineVisibleNavigationRowsForBudget(

@@ -841,61 +841,6 @@ fn presentationGroupId(
     return record.presentation_group_id;
 }
 
-fn sortedDetailForEntry(
-    details: []const ToolDetailRecord,
-    entry_id: u32,
-) ?*const ToolDetailRecord {
-    var low: usize = 0;
-    var high = details.len;
-    while (low < high) {
-        const middle = low + (high - low) / 2;
-        if (details[middle].entry_id < entry_id) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    return if (low < details.len and details[low].entry_id == entry_id)
-        &details[low]
-    else
-        null;
-}
-
-pub fn incrementalRebuildStart(
-    entries: []const TranscriptEntry,
-    details: []const ToolDetailRecord,
-    dirty_entry_index: usize,
-) ?usize {
-    if (dirty_entry_index >= entries.len) return null;
-    var first = dirty_entry_index;
-    const dirty_entry_id = entries[first].id();
-
-    const dirty_group = presentationGroupId(sortedDetailForEntry(details, dirty_entry_id));
-    if (dirty_group) |group_id| {
-        for (entries, 0..) |entry, index| {
-            const detail = sortedDetailForEntry(details, entry.id()) orelse continue;
-            const candidate = detail.presentation_group_id orelse continue;
-            if (candidate.turn_id != group_id.turn_id or
-                candidate.anchor_step_id != group_id.anchor_step_id) continue;
-            first = @min(first, index);
-        }
-    }
-
-    const first_entry = entries[first];
-    if (toolStatusEntryId(first_entry) == null and
-        !isAttachedEntry(first_entry) and
-        !isTransparentCompactEntry(first_entry)) return first;
-
-    while (first > 0) {
-        const previous = entries[first - 1];
-        if (toolStatusEntryId(previous) == null and
-            !isAttachedEntry(previous) and
-            !isTransparentCompactEntry(previous)) break;
-        first -= 1;
-    }
-    return first;
-}
-
 fn statusIndexLessThan(
     entries: []const TranscriptEntry,
     lhs: usize,
@@ -918,20 +863,6 @@ fn hideAttachedRows(
         }
         if (!isTransparentCompactEntry(entries[index])) break;
     }
-}
-
-pub fn buildStyled(
-    alloc: std.mem.Allocator,
-    entries: []const TranscriptEntry,
-    details: []const ToolDetailRecord,
-    cols: u16,
-    style: SummaryStyle,
-    styles: transcript_blocks.Styles,
-) !Projection {
-    return buildWithStyleAndStats(alloc, entries, details, cols, null, false, style, styles, .compact, null, null) catch |err| switch (err) {
-        error.InputPending => unreachable,
-        else => |other| return other,
-    };
 }
 
 pub fn buildExpandedStyledInterruptible(
@@ -1025,32 +956,6 @@ fn materializeExpandedOverride(
         }
     }
     return out.toOwnedSlice();
-}
-
-pub fn buildStyledFocused(
-    alloc: std.mem.Allocator,
-    entries: []const TranscriptEntry,
-    details: []const ToolDetailRecord,
-    cols: u16,
-    focused_entry_id: ?u32,
-    collapse_tool_calls: bool,
-    style: SummaryStyle,
-    styles: transcript_blocks.Styles,
-) !Projection {
-    return buildStyledFocusedInterruptible(
-        alloc,
-        entries,
-        details,
-        cols,
-        focused_entry_id,
-        collapse_tool_calls,
-        style,
-        styles,
-        null,
-    ) catch |err| switch (err) {
-        error.InputPending => unreachable,
-        else => |other| return other,
-    };
 }
 
 pub fn buildStyledFocusedInterruptible(

@@ -271,16 +271,7 @@ pub fn Commands(comptime App: type) type {
 
         pub fn showStatus(app: *App) !void {
             const provider = provider_runtime.provider(app);
-            var preferred: ?types.CredentialSource = null;
-            if (provider == .gateway and app.auth.credentialSource() == null) {
-                var settings = config_runtime.loadMergedSettings(app.alloc, app.workspace_root) catch |err| {
-                    try writeSettingsLoadError(app, err);
-                    return;
-                };
-                defer settings.deinit(app.alloc);
-                preferred = settings.credential_source;
-            }
-            const auth = app.auth.statusSnapshot(provider, preferred);
+            const auth = app.auth.statusSnapshot(provider);
             const text = try (output_contracts.StatusSnapshot{
                 .model = provider_runtime.model(app),
                 .provider = provider,
@@ -1049,7 +1040,7 @@ pub fn Commands(comptime App: type) type {
             const startup_scrollback_label = if (settings.startup_scrollback orelse true) "on" else "off";
             const msg = try app.alloc.print("model: {s}\nmodel_config_source: {s}\npermission_mode: {s}\nworkspace: {s}\nstep_limit: {d}\nstartup_scrollback: {s}", .{
                 provider_runtime.model(app),
-                @tagName(detailed.sources.models.get(model_provider.NameKey.fromProvider(.gateway))),
+                @tagName(detailed.sources.models.get(model_provider.NameKey.fromProvider(provider_runtime.provider(app)))),
                 permissions.permissionModeDisplayLabel(app.permission_engine.mode),
                 app.workspace_root,
                 app.agent_step_limit,

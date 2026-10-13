@@ -153,14 +153,6 @@ const CommitClaim = struct {
 
 var target_resolution_check_count: usize = 0;
 
-pub fn resetTargetResolutionCheckCountForTest() void {
-    if (builtin.is_test) target_resolution_check_count = 0;
-}
-
-pub fn targetResolutionCheckCountForTest() usize {
-    return if (builtin.is_test) target_resolution_check_count else 0;
-}
-
 pub fn prepare(
     call_alloc: std.mem.Allocator,
     call: types.ToolCall,

@@ -94,10 +94,6 @@ pub fn renderContextNoticeBody(alloc: std.mem.Allocator, text: []const u8) ![]u8
 }
 
 pub const CredentialSource = enum {
-    vercel_oidc_token,
-    ai_gateway_api_key,
-    fx_login,
-    stored_key,
     chatgpt_subscription,
     grok_subscription,
     host_managed,
@@ -108,7 +104,6 @@ pub const DirectCredentialLease = struct {
     secret_bytes: []const u8 = "",
     source: ?CredentialSource = null,
     account_id: ?[]const u8 = null,
-    tenant_context: ?[]const u8 = null,
 };
 
 /// Borrowed authorization for one provider request. Host-managed requests
@@ -137,19 +132,7 @@ pub const CredentialLease = union(enum) {
             .host_managed => null,
         };
     }
-
-    pub fn tenant(self: CredentialLease) ?[]const u8 {
-        return switch (self) {
-            .direct => |direct| direct.tenant_context,
-            .host_managed => null,
-        };
-    }
 };
-
-pub fn parseCredentialSource(text: []const u8) ?CredentialSource {
-    const source = parseRuntimeCredentialSource(text) orelse return null;
-    return if (source == .host_managed or source == .configured) null else source;
-}
 
 pub fn parseRuntimeCredentialSource(text: []const u8) ?CredentialSource {
     return std.meta.stringToEnum(CredentialSource, text);
@@ -1427,123 +1410,10 @@ pub const ModelCompletion = struct {
     usage: Usage = .{},
 };
 
-pub fn parseGatewayTimestamp(text: []const u8) error{InvalidGatewayTimestamp}!i64 {
-    if (text.len < 20 or
-        text[4] != '-' or
-        text[7] != '-' or
-        text[10] != 'T' or
-        text[13] != ':' or
-        text[16] != ':')
-    {
-        return error.InvalidGatewayTimestamp;
-    }
-    const year = try parseTimestampDigits(text[0..4]);
-    const month = try parseTimestampDigits(text[5..7]);
-    const day = try parseTimestampDigits(text[8..10]);
-    const hour = try parseTimestampDigits(text[11..13]);
-    const minute = try parseTimestampDigits(text[14..16]);
-    const second = try parseTimestampDigits(text[17..19]);
-    if (year < 1970 or
-        month < 1 or
-        month > 12 or
-        day < 1 or
-        day > daysInMonth(year, month) or
-        hour > 23 or
-        minute > 59 or
-        second > 59)
-    {
-        return error.InvalidGatewayTimestamp;
-    }
-
-    var cursor: usize = 19;
-    var fractional_ms: i64 = 0;
-    if (cursor < text.len and text[cursor] == '.') {
-        cursor += 1;
-        const fraction_start = cursor;
-        while (cursor < text.len and std.ascii.isDigit(text[cursor])) cursor += 1;
-        const fraction = text[fraction_start..cursor];
-        if (fraction.len == 0 or fraction.len > 9) {
-            return error.InvalidGatewayTimestamp;
-        }
-        const digits = @min(fraction.len, 3);
-        fractional_ms = @intCast(try parseTimestampDigits(fraction[0..digits]));
-        if (digits == 1) fractional_ms *= 100;
-        if (digits == 2) fractional_ms *= 10;
-    }
-    if (cursor + 1 != text.len or text[cursor] != 'Z') {
-        return error.InvalidGatewayTimestamp;
-    }
-
-    const days = daysFromCivil(year, month, day);
-    if (days < 0) return error.InvalidGatewayTimestamp;
-    const seconds = std.math.add(
-        i64,
-        std.math.mul(i64, days, std.time.s_per_day) catch
-            return error.InvalidGatewayTimestamp,
-        @as(i64, @intCast(hour * std.time.s_per_hour +
-            minute * std.time.s_per_min +
-            second)),
-    ) catch return error.InvalidGatewayTimestamp;
-    return std.math.add(
-        i64,
-        std.math.mul(i64, seconds, std.time.ms_per_s) catch
-            return error.InvalidGatewayTimestamp,
-        fractional_ms,
-    ) catch return error.InvalidGatewayTimestamp;
-}
-
-fn parseTimestampDigits(text: []const u8) error{InvalidGatewayTimestamp}!u32 {
-    if (text.len == 0) return error.InvalidGatewayTimestamp;
-    var result: u32 = 0;
-    for (text) |byte| {
-        if (!std.ascii.isDigit(byte)) return error.InvalidGatewayTimestamp;
-        result = std.math.mul(u32, result, 10) catch
-            return error.InvalidGatewayTimestamp;
-        result = std.math.add(u32, result, byte - '0') catch
-            return error.InvalidGatewayTimestamp;
-    }
-    return result;
-}
-
-fn daysInMonth(year: u32, month: u32) u32 {
-    return switch (month) {
-        1, 3, 5, 7, 8, 10, 12 => 31,
-        4, 6, 9, 11 => 30,
-        2 => if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) 29 else 28,
-        else => 0,
-    };
-}
-
-fn daysFromCivil(year_value: u32, month_value: u32, day_value: u32) i64 {
-    var year: i64 = year_value;
-    const month: i64 = month_value;
-    const day: i64 = day_value;
-    year -= @intFromBool(month <= 2);
-    const era = @divFloor(year, 400);
-    const year_of_era = year - era * 400;
-    const shifted_month = month + (if (month > 2) @as(i64, -3) else 9);
-    const day_of_year = @divFloor(153 * shifted_month + 2, 5) + day - 1;
-    const day_of_era = year_of_era * 365 + @divFloor(year_of_era, 4) -
-        @divFloor(year_of_era, 100) + day_of_year;
-    return era * 146097 + day_of_era - 719468;
-}
-
 pub fn validGatewayGenerationId(id: []const u8) bool {
     if (id.len != 30 or !std.mem.startsWith(u8, id, "gen_")) return false;
     for (id[4..]) |char| switch (char) {
         '0'...'9', 'A'...'H', 'J'...'K', 'M'...'N', 'P'...'T', 'V'...'Z' => {},
-        else => return false,
-    };
-    return true;
-}
-
-/// Team identifiers reach the gateway as a query value, so reject anything that
-/// would need percent-encoding rather than build a malformed URL. Accepts both
-/// the `team_` id form and the slug form.
-pub fn validGatewayTeam(team: []const u8) bool {
-    if (team.len == 0 or team.len > 128) return false;
-    for (team) |char| switch (char) {
-        'a'...'z', 'A'...'Z', '0'...'9', '-', '_' => {},
         else => return false,
     };
     return true;

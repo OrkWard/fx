@@ -2382,62 +2382,6 @@ pub fn reloadOwnerAuthorityClaim(
     });
 }
 
-/// Mints the session-shaped claim used only for an interactive human
-/// takeover. The proof remains an owner-catalog proof; the host recognizes
-/// and verifies that proof separately from the terminal's agent grant.
-pub fn reloadHumanTakeoverAuthorityClaim(
-    alloc: Allocator,
-    owner: *session_child_store.SessionChildCapability,
-    input: OwnerAuthorityReload,
-) !operation.OwnedAuthorityClaim {
-    try contracts.validate_session_id(input.terminal_session_id);
-    try contracts.validate_session_id(input.durable_session_id);
-    if (input.actor != .human) return error.ActorRoleMismatch;
-
-    var record = try load_record(alloc, owner, input.terminal_session_id);
-    defer record.deinit(alloc);
-    if (!std.mem.eql(u8, record.owner_session_id, input.durable_session_id)) {
-        return error.PrincipalMismatch;
-    }
-    const authority = try load_authority(alloc, owner, input.terminal_session_id);
-    defer authority.deinit();
-    const principal = authority.value.grant.principal;
-    if (!std.mem.eql(u8, principal.profile_user, input.profile_user) or
-        !std.mem.eql(u8, principal.durable_session_id, input.durable_session_id) or
-        !std.mem.eql(u8, principal.workspace_root, input.workspace_root) or
-        principal.transport_role != input.transport_role or
-        !std.mem.eql(u8, principal.cwd, record.cwd) or
-        principal.backend != record.backend or
-        principal.lifetime != .session or
-        authority.value.revoked or record.authority_revoked)
-    {
-        return error.PrincipalMismatch;
-    }
-    if (authority.value.grant.actor == .human) {
-        return reloadAuthorityClaim(alloc, owner, .{
-            .terminal_session_id = input.terminal_session_id,
-            .principal = principal,
-            .actor = .human,
-            .generation = record.authority_generation,
-        });
-    }
-
-    var catalog = try loadOrCreateOwnerCatalogClaim(alloc, owner, .{
-        .profile_user = input.profile_user,
-        .durable_session_id = input.durable_session_id,
-        .workspace_root = input.workspace_root,
-        .transport_role = input.transport_role,
-        .actor = .human,
-    });
-    defer catalog.deinit();
-    return operation.ownAuthorityClaim(alloc, .{
-        .principal = principal,
-        .actor = .human,
-        .generation = record.authority_generation,
-        .proof = .{ .bytes = catalog.view().proof.bytes },
-    }, .humanTakeover());
-}
-
 /// Reloads a proof only through the managed-child capability of the durable fx
 /// session that owns it. A terminal id alone cannot select proof storage.
 pub fn reloadAuthorityClaim(

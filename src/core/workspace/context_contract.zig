@@ -285,26 +285,6 @@ pub const Provider = struct {
     }
 };
 
-fn gather_empty_context(_: Allocator, _: InitialContextInput) ProviderError!ProviderContext {
-    return .{};
-}
-
-fn append_no_context(_: StaticContextInput, _: Allocator, _: *std.ArrayList(types.ChatMessage)) ProviderError!void {}
-
-fn append_no_transient_context(_: TransientContextInput, _: Allocator, _: *std.ArrayList(types.ChatMessage)) ProviderError!void {}
-
-pub const empty_provider = Provider{
-    .id = "core.empty_context",
-    .gather_project_context_fn = gather_empty_context,
-    .select_applicable_project_context_fn = selectNoApplicableProjectContext,
-    .append_static_fn = append_no_context,
-    .append_transient_fn = append_no_transient_context,
-};
-
-pub fn selectNoApplicableProjectContext(_: Allocator, _: LaterContextInput) ProviderError!ProviderContext {
-    return .{};
-}
-
 pub const Registry = struct {
     default_provider: Provider,
     /// Every gather and selection routed through this registry reads project
@@ -397,42 +377,6 @@ fn appendDupedStrings(alloc: Allocator, destination: *std.ArrayList([]u8), strin
     }
 }
 
-pub const contract_name = "fx.shared_model_context.v1";
-
-pub const Fragment = enum {
-    workspace_identity,
-    repo_identity,
-    scoped_instructions,
-    available_tools,
-    permission_mode,
-    environment_metadata,
-    session_metadata,
-
-    fn label(self: Fragment) []const u8 {
-        return switch (self) {
-            .workspace_identity => "workspace_identity",
-            .repo_identity => "repo_identity",
-            .scoped_instructions => "scoped_instructions",
-            .available_tools => "available_tools",
-            .permission_mode => "permission_mode",
-            .environment_metadata => "environment_metadata",
-            .session_metadata => "session_metadata",
-        };
-    }
-
-    fn contractText(self: Fragment) []const u8 {
-        return switch (self) {
-            .workspace_identity => "workspace root and current directory",
-            .repo_identity => "git branch, worktree state, and sanitized GitHub origin when known",
-            .scoped_instructions => "bounded global, workspace, and nested scoped rules plus the bounded visible skill catalog",
-            .available_tools => "gateway-advertised tool schemas after permission and entrypoint filtering",
-            .permission_mode => "captured ask, auto, or yolo baseline for the active turn without rule or grant contents",
-            .environment_metadata => "OS, shell, date, home directory, and live/non-live background runtime hints",
-            .session_metadata => "model, step budget, max tool-result bytes, conversation history, grants, loaded skills, and persisted session id when present",
-        };
-    }
-};
-
 pub const EntryPoint = enum {
     interactive,
     ask,
@@ -471,16 +415,6 @@ pub const EntrypointInventory = struct {
     drift: []const u8,
 };
 
-const required_fragments = [_]Fragment{
-    .workspace_identity,
-    .repo_identity,
-    .scoped_instructions,
-    .available_tools,
-    .permission_mode,
-    .environment_metadata,
-    .session_metadata,
-};
-
 const current_inventory = [_]EntrypointInventory{
     .{
         .entrypoint = .interactive,
@@ -517,63 +451,6 @@ const current_inventory = [_]EntrypointInventory{
     },
 };
 
-pub fn requiredFragments() []const Fragment {
-    return required_fragments[0..];
-}
-
 pub fn inventory() []const EntrypointInventory {
     return current_inventory[0..];
-}
-
-pub fn writeMinimumContractSnapshot(writer: *std.Io.Writer) !void {
-    try writer.print("contract: {s}\n", .{contract_name});
-    try writer.writeAll("required_fragments:\n");
-    for (requiredFragments()) |fragment| {
-        try writer.print("- {s}: {s}\n", .{ fragment.label(), fragment.contractText() });
-    }
-}
-
-pub fn writeEntrypointInventorySnapshot(writer: *std.Io.Writer) !void {
-    try writer.print("contract: {s}\n", .{contract_name});
-    try writer.writeAll("entrypoints:\n");
-    for (inventory()) |item| {
-        try writer.print("- entrypoint: {s}\n", .{item.entrypoint.label()});
-        try writer.print("  assembly_path: {s}\n", .{item.assembly_path});
-        try writer.print("  static_context: {s}\n", .{item.static_context});
-        try writer.print("  transient_context: {s}\n", .{item.transient_context});
-        try writer.print("  tools: {s}\n", .{item.tools});
-        try writer.print("  permission: {s}\n", .{item.permission});
-        try writer.print("  session: {s}\n", .{item.session});
-        try writer.print("  drift_status: {s}\n", .{item.drift_status.label()});
-        try writer.print("  drift: {s}\n", .{item.drift});
-    }
-}
-
-pub fn writeEntrypointLayoutSnapshot(writer: *std.Io.Writer) !void {
-    try writer.print("contract: {s}\n", .{contract_name});
-    try writer.writeAll(
-        \\model_visible_layout:
-        \\- entrypoint: interactive
-        \\  static_context_refresh: one applicable snapshot before enqueue; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
-        \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
-        \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
-        \\  user_prompt_position: after stable system context and history
-        \\  intentional_difference: live terminal approvals and clarification UI
-        \\- entrypoint: fx ask
-        \\  static_context_refresh: one applicable snapshot before the prompt; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
-        \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
-        \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
-        \\  user_prompt_position: after stable system context and empty or saved history
-        \\  intentional_difference: approval-required actions become noninteractive blockers
-        \\- entrypoint: subagent
-        \\  static_context_refresh: the launching surface's snapshot with empty child delivery state; scoped deltas attach before affected tool execution
-        \\  stable_prefix_initial_order: system_prompt, effective_custom_tool_guidance, visible_skills, optional_model_prompt_overlay, optional_interruption_or_resume_intent_context, shared_project_context, optional_prepared_parent_turn_delivery_context
-        \\  stable_prefix_later_additions: applicable_project_context_deltas committed mid-turn when a tool batch has applicable targets
-        \\  per_step_overlay_order: explicit_skill_chunks, transient_runtime_context
-        \\  user_prompt_position: after stable system context and canonical child session history
-        \\  intentional_difference: separate child session history, parent-projected approvals, and bounded parent/child delivery
-        \\
-    );
 }

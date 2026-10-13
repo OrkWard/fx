@@ -664,16 +664,6 @@ pub fn processOwner() *Owner {
     return &process_owner;
 }
 
-/// Test-only: drops the process owner's state and installs `capture_fn`.
-pub fn resetProcessOwnerForTest(capture_fn: CaptureFn) void {
-    if (comptime !builtin.is_test) @compileError("resetProcessOwnerForTest is test-only");
-    process_owner.deinit();
-    process_owner = .{ .capture_fn = capture_fn };
-}
-
-/// Test-only: the real capture function, for restoring the process owner.
-pub const real_capture_fn: CaptureFn = captureWithShell;
-
 pub const ParseError = error{ MissingSection, InvalidEntry } || Allocator.Error;
 
 /// Parses a capture payload into `generation`. Output before the first

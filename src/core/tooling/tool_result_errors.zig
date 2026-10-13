@@ -41,23 +41,6 @@ pub const TerminalActionFieldCorrectionView = struct {
 
 const terminal_action_field_error_code = "invalid_action_fields";
 
-pub fn terminalActionFieldCorrectionJson(
-    alloc: Allocator,
-    correction: TerminalActionFieldCorrection,
-) Allocator.Error![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    std.json.Stringify.value(.{ .@"error" = .{
-        .code = terminal_action_field_error_code,
-        .action = correction.action,
-        .invalid_fields = correction.invalid_fields,
-        .missing_fields = correction.missing_fields,
-        .allowed_fields = correction.allowed_fields,
-        .conflicts = correction.conflicts,
-    } }, .{}, &out.writer) catch return error.OutOfMemory;
-    return try out.toOwnedSlice();
-}
-
 /// Code of the shell failure for a terminal that ended with the fx process
 /// that started it. Such terminals are never reattached.
 pub const terminal_ended_error_code = "TerminalEnded";
@@ -263,14 +246,6 @@ fn permissionDeniedSuggestion(
 
 fn is_network_tool(tool_name: []const u8) bool {
     return std.mem.eql(u8, tool_name, "web_search");
-}
-
-pub fn isToolPermissionDeniedOutput(output: []const u8) bool {
-    return isToolErrorOutputType(output, "tool_permission_denied");
-}
-
-pub fn isToolReviewHeldOutput(output: []const u8) bool {
-    return isToolErrorOutputType(output, "tool_review_held");
 }
 
 pub fn toolPermissionDenialReason(output: []const u8) ?types.ToolPermissionDenialReason {

@@ -7,6 +7,7 @@
 - Removed MCP support: `/mcp`, `fx mcp`, `~/.fx/mcp.json`, and the MCP discovery tools.
 - Removed the ACP server (`fx acp`).
 - Removed libfx, the JavaScript library (`sdk/`, `examples/`, and the Node-API and WebAssembly builds).
+- Removed the Vercel AI Gateway provider and everything that only served it: `fx login` for Vercel, `fx setup`, `fx teams`, `fx credits` and `/credits`, stored API keys, `AI_GATEWAY_API_KEY` and `VERCEL_OIDC_TOKEN`, the `credential_source` setting, Ultrafast, and the `web_search` tool.
 
 ## 0.0.13
 

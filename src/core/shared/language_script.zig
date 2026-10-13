@@ -44,14 +44,6 @@ pub fn profile(text: []const u8) Profile {
     return profile_with_filter(text, false, true);
 }
 
-pub fn profile_prose(text: []const u8) Profile {
-    return profile_with_filter(text, true, true);
-}
-
-pub fn profile_non_latin_prose(text: []const u8) Profile {
-    return profile_with_filter(text, true, false);
-}
-
 pub fn profile_prose_pair(text: []const u8) struct { all: Profile, non_latin: Profile } {
     var counts = count_text(text, true);
     const all = summarize(counts);

@@ -35,7 +35,6 @@ const tool_presentation = @import("../tooling/tool_presentation.zig");
 const tool_runtime = @import("../tooling/tool_runtime.zig");
 const skill_invocation = @import("../skills/skill_invocation.zig");
 const web_fetch_runtime = @import("../tooling/web_fetch_runtime.zig");
-const web_search_runtime = @import("../tooling/web_search_runtime.zig");
 const types = @import("../shared/types.zig");
 const worker_runtime = @import("../agent/worker_runtime.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
@@ -92,8 +91,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) tool_runtime.Context {
             return toolContextWithAuthority(
                 app,
@@ -103,8 +100,6 @@ pub fn Runtime(comptime App: type) type {
                 max_read_file_lines,
                 max_read_file_line_len,
                 max_command_output_bytes,
-                gateway_retry_count,
-                gateway_chat_url,
                 null,
             );
         }
@@ -117,8 +112,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
             admission: subagent_domain.AdmissionSnapshot,
         ) tool_runtime.Context {
             return toolContextWithAuthority(
@@ -129,8 +122,6 @@ pub fn Runtime(comptime App: type) type {
                 max_read_file_lines,
                 max_read_file_line_len,
                 max_command_output_bytes,
-                gateway_retry_count,
-                gateway_chat_url,
                 .{
                     .mode = admission.permission_mode,
                     .grants = admission.grants,
@@ -147,8 +138,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
             authority: ?ToolAuthorityView,
         ) tool_runtime.Context {
             const workspace = turnWorkspace(app);
@@ -195,27 +184,17 @@ pub fn Runtime(comptime App: type) type {
                     app.agentStreamProvider()
                 else
                     agent_stream_provider.unavailable_provider,
-                .gateway_team = app.auth.gatewayTeam(),
                 .credential_source = app.auth.credentialSource(),
                 .account_id = app.auth.accountId(),
                 .provider = selected_provider,
                 .provider_capabilities = provider_capabilities,
                 .oauth_transport = app.auth.oauthTransport(),
-                .secret_store = if (comptime @hasDecl(@TypeOf(app.auth), "secretStore"))
-                    app.auth.secretStore()
-                else
-                    host.unavailable_secret_store,
                 .model = provider_runtime.model(app),
                 .reviewer_model = if (comptime @hasField(App, "review_model")) app.review_model else "",
-                .gateway_retry_count = gateway_retry_count,
-                .gateway_chat_url = gateway_chat_url,
-                .gateway_models_path = if (comptime @hasField(App, "web_search_models_path")) app.web_search_models_path else "/v1/models",
                 .agent_step_limit = app.agent_step_limit,
                 .fast_mode = agent_settings.fast_mode,
                 .ultrafast_mode = agent_settings.ultrafast_mode,
                 .effort = agent_settings.effort,
-                .provider_order = if (selected_provider == .gateway) agent_settings.provider_order else &.{},
-                .provider_strict = selected_provider == .gateway and agent_settings.provider_strict,
                 .first_call_tool_choice = agent_settings.first_call_tool_choice,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry() else .{},
                 .subagent_host = if (comptime @hasField(App, "session_persistence"))
@@ -268,26 +247,7 @@ pub fn Runtime(comptime App: type) type {
                 ctx.web_fetch_progress_ctx = @ptrCast(app);
                 ctx.on_web_fetch_progress = app_callbacks.Bindings(App).onWebFetchProgress;
             }
-            if (comptime @hasField(App, "web_search_runtime")) {
-                if (provider_capabilities.fx_search) {
-                    app.web_search_runtime.configure(.{
-                        .api_key = app.auth.apiKey() orelse "",
-                        .credential_source = app.auth.credentialSource(),
-                        .gateway_team = app.auth.gatewayTeam(),
-                        .worker_model = provider_runtime.model(app),
-                        .gateway_retry_count = gateway_retry_count,
-                        .gateway_chat_url = gateway_chat_url,
-                        .usage = &app.session.usage,
-                        .usage_allocator = app.alloc,
-                    });
-                    ctx.web_search_backend = app.web_search_runtime.dispatchBackend();
-                }
-                ctx.web_search_runtime_ready = false;
-                ctx.web_search_progress_ctx = @ptrCast(app);
-                ctx.on_web_search_progress = app_callbacks.Bindings(App).onWebSearchProgress;
-            }
             ctx.model_capability_resolver = app_callbacks.Bindings(App).modelCapabilityResolver(app);
-            ctx.model_override_resolver = app_callbacks.Bindings(App).modelOverrideResolver(app);
             return ctx;
         }
 
@@ -301,10 +261,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !?[]const u8 {
-            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
+            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
             return tool_presentation.resolveTerminalDisplayTarget(
                 arena,
                 ctx.tool_registry,
@@ -324,8 +282,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !void {
             return tool_runtime.release_agent_terminal_lease(
                 toolContext(
@@ -336,8 +292,6 @@ pub fn Runtime(comptime App: type) type {
                     max_read_file_lines,
                     max_read_file_line_len,
                     max_command_output_bytes,
-                    gateway_retry_count,
-                    gateway_chat_url,
                 ),
                 session_id,
             );
@@ -354,10 +308,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) ![]const u8 {
-            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
+            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
             return formatToolAction(ctx, arena, call, display_target, .active, null);
         }
 
@@ -372,10 +324,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) ![]const u8 {
-            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
+            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
             return formatToolAction(ctx, arena, call, display_target, .completed, null);
         }
 
@@ -391,10 +341,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) ![]const u8 {
-            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
+            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
             return formatToolAction(ctx, arena, call, display_target, .denied, label);
         }
 
@@ -413,11 +361,9 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !command_admission.PermissionOutcome {
-            var ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
-            applyCredentialLease(app, &ctx, review_turn.credential, gateway_retry_count, gateway_chat_url);
+            var ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
+            applyCredentialLease(&ctx, review_turn.credential);
             ctx.permission_review_turn = review_turn;
             const admission = ctx.admissionInputWithLiveAuthority(live_authority);
             return if (revalidation) |request| switch (request) {
@@ -454,8 +400,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !command_admission.PermissionOutcome {
             var ctx = toolContext(
                 app,
@@ -465,10 +409,8 @@ pub fn Runtime(comptime App: type) type {
                 max_read_file_lines,
                 max_read_file_line_len,
                 max_command_output_bytes,
-                gateway_retry_count,
-                gateway_chat_url,
             );
-            applyCredentialLease(app, &ctx, review_turn.credential, gateway_retry_count, gateway_chat_url);
+            applyCredentialLease(&ctx, review_turn.credential);
             ctx.permission_review_turn = review_turn;
             const admission = ctx.admissionInputWithLiveAuthority(live_authority);
             return tool_admission.requestPreparedFileMutationPermissionOutcome(
@@ -491,10 +433,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !agent_runtime.ToolCallValidationResult {
-            return tool_runtime.validateToolCall(toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url), arena, call);
+            return tool_runtime.validateToolCall(toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes), arena, call);
         }
 
         pub fn checkToolAvailability(
@@ -507,10 +447,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !?[]const u8 {
-            return tool_runtime.checkToolAvailability(toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url), arena, call);
+            return tool_runtime.checkToolAvailability(toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes), arena, call);
         }
 
         pub fn permissionTargetForCall(
@@ -523,10 +461,8 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) ![]const u8 {
-            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
+            const ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
             return tool_admission.permissionTargetForCall(ctx.admissionInput(), arena, call);
         }
 
@@ -539,11 +475,9 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !agent_runtime.ToolExecutionResult {
-            var ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, gateway_retry_count, gateway_chat_url);
-            applyCredentialLease(app, &ctx, request.credential, gateway_retry_count, gateway_chat_url);
+            var ctx = toolContext(app, ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
+            applyCredentialLease(&ctx, request.credential);
             ctx.root_user_intent_context = request.root_user_intent_context;
             ctx.root_user_messages = request.root_user_messages;
             ctx.root_user_evidence_complete = request.root_user_evidence_complete;
@@ -553,33 +487,14 @@ pub fn Runtime(comptime App: type) type {
         }
 
         fn applyCredentialLease(
-            app: *App,
             ctx: *tool_runtime.Context,
             credential: types.CredentialLease,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) void {
             const credential_secret = credential.secret() orelse return;
             const credential_source = credential.credentialSource();
             ctx.api_key = credential_secret;
             ctx.credential_source = credential_source;
             ctx.account_id = credential.accountId();
-            ctx.gateway_team = credential.tenant();
-            if (comptime @hasField(App, "web_search_runtime") and @hasField(App, "session")) {
-                if (ctx.provider_capabilities.fx_search) {
-                    app.web_search_runtime.configure(.{
-                        .api_key = credential_secret,
-                        .credential_source = credential_source,
-                        .gateway_team = credential.tenant(),
-                        .worker_model = provider_runtime.model(app),
-                        .gateway_retry_count = gateway_retry_count,
-                        .gateway_chat_url = gateway_chat_url,
-                        .usage = &app.session.usage,
-                        .usage_allocator = app.alloc,
-                    });
-                    ctx.web_search_backend = app.web_search_runtime.dispatchBackend();
-                }
-            }
         }
 
         pub fn appendStaticContextMessage(
@@ -593,8 +508,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !void {
             _ = ignored_list_entries;
             _ = max_list_entries;
@@ -602,8 +515,6 @@ pub fn Runtime(comptime App: type) type {
             _ = max_read_file_lines;
             _ = max_read_file_line_len;
             _ = max_command_output_bytes;
-            _ = gateway_retry_count;
-            _ = gateway_chat_url;
             try app.contextRegistry().appendDefaultStatic(.{
                 .project_context = project_context orelse modelVisibleProjectContext(app),
             }, arena, messages);
@@ -619,8 +530,6 @@ pub fn Runtime(comptime App: type) type {
             max_read_file_lines: usize,
             max_read_file_line_len: usize,
             max_command_output_bytes: usize,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
         ) !void {
             _ = ignored_list_entries;
             _ = max_list_entries;
@@ -628,8 +537,6 @@ pub fn Runtime(comptime App: type) type {
             _ = max_read_file_lines;
             _ = max_read_file_line_len;
             _ = max_command_output_bytes;
-            _ = gateway_retry_count;
-            _ = gateway_chat_url;
             const permission_snapshot = app_permission_runtime.Runtime(App).livePermissionSnapshot(app);
             const workspace = turnWorkspace(app);
             try app.contextRegistry().appendDefaultTransient(.{
@@ -695,8 +602,6 @@ pub fn Runtime(comptime App: type) type {
         pub fn processQueuedPrompt(
             app: *App,
             queued_job: worker_runtime.QueuedPrompt,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
             failure_provenance: ?*?compaction_activity.ErrorProvenance,
         ) !void {
             if (failure_provenance) |out| out.* = null;
@@ -782,8 +687,6 @@ pub fn Runtime(comptime App: type) type {
                 job,
                 .{ .skills = skill_catalog.items, .diagnostics = skill_catalog.diagnostics },
                 explicit_bindings,
-                gateway_retry_count,
-                gateway_chat_url,
                 &tool_projection,
                 session_child_capability,
             );
@@ -794,7 +697,6 @@ pub fn Runtime(comptime App: type) type {
         pub fn processContextCompaction(
             app: *App,
             job: worker_runtime.ContextCompactionTask,
-            gateway_retry_count: usize,
             failure_provenance: ?*?compaction_activity.ErrorProvenance,
         ) anyerror!void {
             if (failure_provenance) |out| out.* = null;
@@ -804,7 +706,7 @@ pub fn Runtime(comptime App: type) type {
             defer if (app.worker.isCancelRequested()) {
                 app.worker.settleCompactionActivity(operation_id, .{ .outcome = .cancelled });
             };
-            compactWithActivity(app, job, gateway_retry_count, operation_id) catch |err| {
+            compactWithActivity(app, job, operation_id) catch |err| {
                 app.worker.settleCompactionActivity(operation_id, compaction_activity.failure(err, .preparation, app.worker.isCancelRequested()));
                 if (failure_provenance) |out| out.* = .{ .operation_id = operation_id, .turn_id = job.turn_id, .err = err };
                 return err;
@@ -814,7 +716,6 @@ pub fn Runtime(comptime App: type) type {
         fn compactWithActivity(
             app: *App,
             job: worker_runtime.ContextCompactionTask,
-            gateway_retry_count: usize,
             operation_id: compaction_activity.OperationId,
         ) anyerror!void {
             var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
@@ -831,10 +732,6 @@ pub fn Runtime(comptime App: type) type {
             const settings = app.worker.effectiveAgentTurnSettings();
             var provider_options = model_capabilities.resolveProviderOptionsForCapabilities(capabilities, settings.effort, settings.fast_mode);
             provider_options.prompt_caching = provider_capabilities.gateway_prompt_caching;
-            if (job.provider == .gateway) {
-                provider_options.provider_order = settings.provider_order;
-                provider_options.provider_strict = settings.provider_strict;
-            }
             var summary_model: agent_runtime.CompactorCaller = .{
                 .stream_provider = deps.agent_stream_provider,
                 .provider = job.provider,
@@ -842,9 +739,8 @@ pub fn Runtime(comptime App: type) type {
                 .api_key = job.api_key,
                 .credential_source = job.credential_source,
                 .account_id = job.account_id,
-                .gateway_team = job.gateway_team,
                 .session_id = app_session_runtime.Runtime(App).activeSessionId(app),
-                .retry_count = gateway_retry_count,
+                .retry_count = 3,
                 .provider_options = provider_options,
                 .max_output_tokens = model_capabilities.requestOutputTokens(capabilities),
                 .capabilities_context = deps.ctx,
@@ -965,8 +861,6 @@ pub fn Runtime(comptime App: type) type {
             job: worker_runtime.QueuedPrompt,
             catalog: skill_invocation.Catalog,
             bindings: []const skill_invocation.ExplicitBinding,
-            gateway_retry_count: usize,
-            gateway_chat_url: []const u8,
             tool_projection: *const tool_projection_mod.EffectiveToolProjection,
             session_child_capability: ?*session_child_store.SessionChildCapability,
         ) agent_runtime.Config {
@@ -977,12 +871,10 @@ pub fn Runtime(comptime App: type) type {
                 .model_prompt_overlay = prompt_policy.modelPromptOverlay(job.model),
                 .skill_catalog = catalog,
                 .skill_bindings = bindings,
-                .gateway_retry_count = gateway_retry_count,
                 .recovery_pause_flag = if (comptime @hasField(@TypeOf(app.worker), "worker_recovery_pause_requested"))
                     &app.worker.worker_recovery_pause_requested
                 else
                     null,
-                .gateway_chat_url = gateway_chat_url,
                 .advertised_tool_names = tool_projection.advertised_names,
                 .advertised_functions = tool_projection.advertised_functions,
                 .provider_capabilities = if (comptime @hasDecl(App, "providerSet"))
@@ -1000,8 +892,6 @@ pub fn Runtime(comptime App: type) type {
                 .fast_mode = job.agent_settings.fast_mode,
                 .ultrafast_mode = job.agent_settings.ultrafast_mode,
                 .effort = job.agent_settings.effort,
-                .provider_order = if (job.provider == .gateway) job.agent_settings.provider_order else &.{},
-                .provider_strict = job.provider == .gateway and job.agent_settings.provider_strict,
                 .first_call_tool_choice = job.agent_settings.first_call_tool_choice,
                 .workspace_root = workspace.root,
                 .access_scope = workspace.access_scope,

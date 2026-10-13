@@ -458,14 +458,6 @@ pub fn prepareTranscriptSource(
     };
 }
 
-/// Retention needs entry identity even when diagnostic observation is disabled.
-pub fn prepareRetentionSource(self: anytype, alloc: Allocator) !TranscriptPreparationSource {
-    var source = try prepareTranscriptSourceInternal(self, alloc, null, null, null, null);
-    errdefer source.deinit(alloc);
-    try source.ensureLineIndex(alloc);
-    return source;
-}
-
 /// Entry projections own their following separators and boundary blanks;
 /// other provenance ends publication ownership. Folded command output's optional
 /// entry ID identifies its summary, not a retained conversation projection.

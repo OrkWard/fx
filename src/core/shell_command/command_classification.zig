@@ -1,18 +1,11 @@
 const std = @import("std");
 const lex = @import("command_lex.zig");
 
-const whitespace = " \t\r\n";
-
 pub const Token = struct {
     text: []const u8,
     start: usize,
     end: usize,
 };
-
-/// Returns true when a command grant should preserve the full command text.
-pub fn command_requires_literal_pattern(token: []const u8) bool {
-    return command_hides_base_token(token);
-}
 
 fn command_hides_base_token(token: []const u8) bool {
     return is_shell_command(token) or
@@ -141,56 +134,6 @@ pub fn analysis_command_tail(command: []const u8) []const u8 {
     }
 
     return if (peeled) command[cursor..] else original;
-}
-
-/// Returns the deterministic final command segment for default sh list semantics.
-pub fn terminal_exit_segment(command: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, command, whitespace);
-    if (trimmed.len == 0) return null;
-
-    var in_single = false;
-    var in_double = false;
-    var escaped = false;
-    var segment_start: usize = 0;
-    var i: usize = 0;
-
-    while (i < command.len) : (i += 1) {
-        const ch = command[i];
-        if (escaped) {
-            escaped = false;
-            continue;
-        }
-        if (ch == '\\' and !in_single) {
-            escaped = true;
-            continue;
-        }
-        if (ch == '\'' and !in_double) {
-            in_single = !in_single;
-            continue;
-        }
-        if (ch == '"' and !in_single) {
-            in_double = !in_double;
-            continue;
-        }
-        if (in_single or in_double) continue;
-
-        switch (ch) {
-            '&' => {
-                if (i + 1 < command.len and command[i + 1] == '&') return null;
-                return null;
-            },
-            '|' => {
-                if (i + 1 < command.len and command[i + 1] == '|') return null;
-                segment_start = i + 1;
-            },
-            ';', '\n' => segment_start = i + 1,
-            else => {},
-        }
-    }
-
-    if (in_single or in_double) return null;
-    const segment = std.mem.trim(u8, command[segment_start..], whitespace);
-    return if (segment.len == 0) null else segment;
 }
 
 pub fn skip_whitespace(input: []const u8, start: usize) usize {

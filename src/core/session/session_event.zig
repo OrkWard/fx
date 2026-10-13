@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const session = @import("session.zig");
 const session_codec = @import("session_codec.zig");
 const session_usage = @import("session_usage.zig");
@@ -904,27 +903,6 @@ pub const Reduction = struct {
     }
 };
 
-/// Test-fixture encoder for the read-only v3 importer. Current runtime code
-/// must never emit the legacy envelope.
-pub fn encodeLegacyFixtureFrame(alloc: Allocator, envelope: Envelope) ![]u8 {
-    if (!builtin.is_test) @compileError("legacy session encoding is test-only");
-    try validateEnvelope(envelope);
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    try out.writer.writeAll("{\"schema_version\":1,\"log_generation\":");
-    try writeHexString(&out.writer, &envelope.log_generation);
-    try out.writer.print(",\"seq\":{d},\"event_id\":", .{envelope.seq});
-    try writeHexString(&out.writer, &envelope.event_id);
-    try out.writer.print(",\"timestamp_ms\":{d},\"kind\":", .{envelope.timestamp_ms});
-    try writeJsonString(&out.writer, @tagName(envelope.kind()));
-    try out.writer.writeAll(",\"payload\":");
-    try writePayload(&out.writer, envelope.event);
-    try out.writer.writeAll("}\n");
-    if (out.written().len > event_frame_max_bytes) return error.EventFrameTooLarge;
-    return try out.toOwnedSlice();
-}
-
 inline fn failEnvelope(err: anytype) @TypeOf(err)!Envelope {
     return @errorCast(failEnvelopeDynamic(err));
 }
@@ -979,44 +957,6 @@ pub fn reduceJsonl(
     initial: ?session_codec.DurableSessionState,
 ) !Reduction {
     return reduceJsonlFrom(alloc, source, initial, .{});
-}
-
-/// Applies one contiguous semantic event frame to caller-owned state.
-/// On failure, `state` remains valid and unchanged.
-pub fn applyEventFrame(
-    alloc: Allocator,
-    state: *session_codec.DurableSessionState,
-    frame: []const u8,
-    start: ReductionStart,
-    expected_event_id: Identifier,
-) !ReductionBoundary {
-    if (start.generation == null or start.next_seq == 0) {
-        return error.InvalidReductionStart;
-    }
-    const frame_bytes = std.math.cast(u64, frame.len) orelse
-        return error.InvalidEventFrame;
-    var envelope = try decodeFrame(alloc, frame);
-    defer envelope.deinit(alloc);
-    var validator = SequenceValidator{
-        .generation = start.generation,
-        .next_seq = start.next_seq,
-    };
-    try validator.validate(envelope);
-    if (!std.mem.eql(u8, &envelope.event_id, &expected_event_id)) {
-        return error.InvalidEventFrame;
-    }
-    if (envelope.kind() == .session_started or
-        envelope.kind() == .state_replacement_started or
-        envelope.kind() == .state_replacement_chunk or
-        envelope.kind() == .state_replacement_committed)
-    {
-        return error.InvalidEventFrame;
-    }
-
-    var current: ?session_codec.DurableSessionState = state.*;
-    try applyDelta(alloc, &current, envelope);
-    state.* = current.?;
-    return reductionBoundary(envelope, frame_bytes);
 }
 
 inline fn failReduction(err: anytype) @TypeOf(err)!Reduction {
@@ -1585,122 +1525,6 @@ fn validateEnvelope(envelope: Envelope) !void {
     }
 }
 
-fn writePayload(writer: *std.Io.Writer, event: Event) !void {
-    switch (event) {
-        .session_started => |payload| {
-            try writer.writeAll("{\"id\":");
-            try writeJsonString(writer, payload.id);
-            try writer.print(",\"created_at_ms\":{d},\"origin_workspace_root\":", .{payload.created_at_ms});
-            try writeJsonString(writer, payload.origin_workspace_root);
-            try writer.writeAll(",\"workspace_root\":");
-            try writeJsonString(writer, payload.workspace_root);
-            try writer.writeAll(",\"conversation_language\":");
-            try writeJsonString(writer, payload.conversation_language.view());
-            try writer.writeAll(",\"preferences\":");
-            try writePreferences(writer, payload.preferences);
-            if (payload.usage) |usage| {
-                try writer.writeAll(",\"usage\":");
-                try session_usage.writeSnapshot(writer, usage);
-            }
-            if (payload.subagent_child) {
-                try writer.writeAll(",\"subagent_child\":true");
-            }
-            try writer.writeByte('}');
-        },
-        .preferences_changed => |payload| {
-            try writer.writeByte('{');
-            var wrote = false;
-            if (payload.provider) |provider| {
-                try writer.writeAll("\"provider\":");
-                try std.json.Stringify.value(provider, .{}, writer);
-                wrote = true;
-            }
-            if (payload.model) |model| {
-                if (wrote) try writer.writeByte(',');
-                try writer.writeAll("\"model\":");
-                try writeJsonString(writer, model);
-                wrote = true;
-            }
-            if (payload.effort) |effort| {
-                if (wrote) try writer.writeByte(',');
-                try writer.writeAll("\"effort\":");
-                try writeJsonString(writer, effort.label());
-                wrote = true;
-            }
-            if (payload.fast_mode) |fast_mode| {
-                if (wrote) try writer.writeByte(',');
-                try writer.print("\"fast_mode\":{s}", .{if (fast_mode) "true" else "false"});
-                wrote = true;
-            }
-            if (payload.ultrafast_mode) |ultrafast_mode| {
-                if (wrote) try writer.writeByte(',');
-                try writer.print("\"ultrafast_mode\":{s}", .{if (ultrafast_mode) "true" else "false"});
-            }
-            try writer.writeByte('}');
-        },
-        .workspace_rebound => |payload| {
-            try writer.writeAll("{\"previous_workspace_root\":");
-            try writeJsonString(writer, payload.previous_workspace_root);
-            try writer.writeAll(",\"workspace_root\":");
-            try writeJsonString(writer, payload.workspace_root);
-            try writer.writeByte('}');
-        },
-        .history_turn_committed => |payload| {
-            try writer.writeAll("{\"conversation_language\":");
-            try writeJsonString(writer, payload.conversation_language.view());
-            try writer.print(",\"total_input_tokens\":{d},\"total_output_tokens\":{d},\"turn\":", .{
-                payload.total_input_tokens,
-                payload.total_output_tokens,
-            });
-            try session_codec.writeHistoryTurn(writer, payload.turn);
-            if (payload.work_id) |id| {
-                try writer.writeAll(",\"work_id\":");
-                try writeJsonString(writer, id);
-            }
-            try writer.writeByte('}');
-        },
-        .usage_checkpointed => |payload| {
-            try writer.writeAll("{\"usage\":");
-            try session_usage.writeSnapshot(writer, payload.usage);
-            try writer.writeByte('}');
-        },
-        .recovery_checkpoint_set => |payload| {
-            try writer.writeAll("{\"checkpoint\":");
-            try session_codec.writeRecoveryCheckpoint(writer, payload.checkpoint);
-            try writer.writeByte('}');
-        },
-        .recovery_checkpoint_cleared => try writer.writeAll("{}"),
-        .state_replacement_started => |payload| {
-            try writer.writeAll("{\"replacement_id\":");
-            try writeHexString(writer, &payload.replacement_id);
-            try writer.writeAll(",\"reason\":");
-            try writeJsonString(writer, @tagName(payload.reason));
-            try writer.print(",\"encoded_bytes\":{d},\"sha256\":", .{payload.encoded_bytes});
-            try writeHexString(writer, &payload.sha256);
-            try writer.print(",\"chunk_count\":{d}}}", .{payload.chunk_count});
-        },
-        .state_replacement_chunk => |payload| {
-            try writer.writeAll("{\"replacement_id\":");
-            try writeHexString(writer, &payload.replacement_id);
-            try writer.print(",\"chunk_index\":{d},\"raw_bytes\":{d},\"chunk_sha256\":", .{
-                payload.chunk_index,
-                payload.raw_bytes,
-            });
-            try writeHexString(writer, &payload.chunk_sha256);
-            try writer.writeAll(",\"base64\":\"");
-            try std.base64.standard.Encoder.encodeWriter(writer, payload.bytes);
-            try writer.writeAll("\"}");
-        },
-        .state_replacement_committed => |payload| {
-            try writer.writeAll("{\"replacement_id\":");
-            try writeHexString(writer, &payload.replacement_id);
-            try writer.print(",\"encoded_bytes\":{d},\"sha256\":", .{payload.encoded_bytes});
-            try writeHexString(writer, &payload.sha256);
-            try writer.print(",\"chunk_count\":{d}}}", .{payload.chunk_count});
-        },
-    }
-}
-
 fn parsePayload(alloc: Allocator, kind: Kind, value: std.json.Value) !Event {
     return switch (kind) {
         .session_started => blk: {
@@ -1944,25 +1768,6 @@ fn parsePreferences(alloc: Allocator, value: std.json.Value) !session_codec.Dura
     };
 }
 
-fn writePreferences(
-    writer: *std.Io.Writer,
-    preferences: session_codec.DurableSessionPreferences,
-) !void {
-    try writer.writeAll("{\"model\":");
-    try writeJsonString(writer, preferences.model);
-    try writer.writeAll(",\"effort\":");
-    try writeJsonString(writer, preferences.effort.label());
-    try writer.print(",\"fast_mode\":{s}", .{
-        if (preferences.fast_mode) "true" else "false",
-    });
-    if (preferences.ultrafast_mode) {
-        try writer.writeAll(",\"ultrafast_mode\":true");
-    }
-    try writer.writeAll(",\"provider\":");
-    try std.json.Stringify.value(preferences.provider, .{}, writer);
-    try writer.writeByte('}');
-}
-
 fn exactObject(value: std.json.Value, keys: []const []const u8) !std.json.ObjectMap {
     const object = try requireObject(value);
     if (object.count() != keys.len) return error.InvalidEventFrame;
@@ -2044,20 +1849,6 @@ fn parseHex(comptime T: type, hex: []const u8) !T {
     const canonical = std.fmt.bytesToHex(value, .lower);
     if (!std.mem.eql(u8, &canonical, hex)) return error.InvalidEventFrame;
     return value;
-}
-
-fn writeHexString(writer: *std.Io.Writer, bytes: []const u8) !void {
-    try writer.writeByte('"');
-    const alphabet = "0123456789abcdef";
-    for (bytes) |byte| {
-        try writer.writeByte(alphabet[byte >> 4]);
-        try writer.writeByte(alphabet[byte & 0x0f]);
-    }
-    try writer.writeByte('"');
-}
-
-fn writeJsonString(writer: *std.Io.Writer, bytes: []const u8) !void {
-    try std.json.Stringify.value(bytes, .{}, writer);
 }
 
 fn sha256(bytes: []const u8) Digest {

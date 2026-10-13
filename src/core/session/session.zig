@@ -1449,30 +1449,6 @@ fn dupeImageAttachment(alloc: Allocator, src: ImageAttachment) !ImageAttachment 
 }
 /// Deep-copies one history turn; caller owns the returned turn and frees with freeHistoryTurn.
 pub const dupeHistoryTurn = core_types.dupeHistoryTurn;
-pub fn appendAssistantTurnWithExecution(
-    alloc: Allocator,
-    current: []HistoryTurn,
-    user_text: []const u8,
-    assistant_text: []const u8,
-    execution: *core_types.ExecutionMemory,
-) ![]HistoryTurn {
-    const user_copy = try alloc.dupe(u8, user_text);
-    errdefer alloc.free(user_copy);
-    const assistant_copy = try alloc.dupe(u8, assistant_text);
-    errdefer alloc.free(assistant_copy);
-    const next = try alloc.alloc(HistoryTurn, current.len + 1);
-    errdefer alloc.free(next);
-
-    @memmove(next[0..current.len], current);
-    next[current.len] = .{ .assistant = .{
-        .user = .{ .text = user_copy, .images = &.{} },
-        .assistant = assistant_copy,
-        .execution = execution.*,
-    } };
-    execution.* = .{};
-    if (current.len > 0) alloc.free(current);
-    return next;
-}
 
 /// Appends a finished turn to an owned prompt-context projection and reapplies its turn limit.
 /// Builds one owned assistant history turn; caller frees with freeHistoryTurn.

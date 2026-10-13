@@ -28,23 +28,6 @@ pub const Snapshot = struct {
     }
 };
 
-pub const BackgroundStatus = struct {
-    count: usize = 0,
-    running: bool = false,
-};
-
-pub fn backgroundStatus(rows: []const Row) BackgroundStatus {
-    var result: BackgroundStatus = .{};
-    for (rows) |row| {
-        if (row.lifecycle != .running or row.attention.attention != .background) {
-            continue;
-        }
-        result.count += 1;
-        result.running = true;
-    }
-    return result;
-}
-
 pub const Store = struct {
     rows: std.ArrayList(Row) = .empty,
 

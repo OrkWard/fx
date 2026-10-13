@@ -23,7 +23,7 @@ const history_range = @import("../shared/history_range.zig");
 const Allocator = std.mem.Allocator;
 
 pub const TurnPreferences = struct {
-    provider: @import("../config/model_provider.zig").ProviderId = .gateway,
+    provider: @import("../config/model_provider.zig").ProviderId = .codex,
     model: []const u8,
     effort: types.ReasoningEffort,
     /// The durable child preference wins when work resumes. Parent defaults are

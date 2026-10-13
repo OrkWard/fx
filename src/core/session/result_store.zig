@@ -639,18 +639,6 @@ pub fn openReaderManaged(
     return .{ .source = .{ .file = file }, .size = size };
 }
 
-/// Removes a stored result.
-pub fn deleteManaged(
-    capability: *session_child_store.SessionChildCapability,
-    handle: []const u8,
-) !void {
-    try validateHandle(handle);
-    capability.delete(.tool_results, handle) catch |err| switch (err) {
-        error.FileNotFound => return error.ResultHandleNotFound,
-        else => return err,
-    };
-}
-
 fn cappedInlineOutput(alloc: Allocator, tool_name: []const u8, text: []const u8, max_bytes: usize) ![]u8 {
     const marker = try alloc.print(
         "\n... [tool result truncated for {s}: original {d} bytes; cap is {d} bytes]\n",

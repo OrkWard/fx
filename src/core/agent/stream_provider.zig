@@ -262,7 +262,6 @@ pub const DeferredUsageReference = struct {
     provider: model_provider.ProviderId,
     generation_id: []const u8,
     scope: []const u8,
-    tenant: ?[]const u8 = null,
     account_id: ?[]const u8 = null,
     credential_source: types.CredentialSource,
     credential_identity: ?credential_authority.Identity,
@@ -363,7 +362,6 @@ pub const Result = union(enum) {
                     .deferred => |reference| {
                         alloc.free(reference.generation_id);
                         alloc.free(reference.scope);
-                        if (reference.tenant) |value| alloc.free(value);
                         if (reference.account_id) |value| alloc.free(value);
                     },
                     else => {},
@@ -384,14 +382,11 @@ fn dupeUsageReference(alloc: Allocator, source: DeferredUsageReference) Allocato
     errdefer alloc.free(generation_id);
     const scope = try alloc.dupe(u8, source.scope);
     errdefer alloc.free(scope);
-    const tenant = if (source.tenant) |value| try alloc.dupe(u8, value) else null;
-    errdefer if (tenant) |value| alloc.free(value);
     const account_id = if (source.account_id) |value| try alloc.dupe(u8, value) else null;
     return .{
         .provider = source.provider,
         .generation_id = generation_id,
         .scope = scope,
-        .tenant = tenant,
         .account_id = account_id,
         .credential_source = source.credential_source,
         .credential_identity = source.credential_identity,

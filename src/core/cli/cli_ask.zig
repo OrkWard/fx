@@ -25,8 +25,6 @@ const debug_trace = @import("../shared/debug_trace.zig");
 const diff_mod = @import("../output/diff.zig");
 const file_mutation = @import("../tooling/file_mutation.zig");
 const gateway_error_format = @import("../shared/gateway_error_format.zig");
-const http_pool = @import("../shared/http_pool.zig");
-const gateway_client = @import("../../gateway/client.zig");
 const image_attachments = @import("../images/image_attachments.zig");
 const hooks = @import("../hooks/hooks.zig");
 const notification_sound = @import("../notifications/sound.zig");
@@ -58,7 +56,6 @@ const subagent_domain = @import("../subagent/domain.zig");
 const subagent_execution = @import("../subagent/execution.zig");
 const subagent_resume_admission = @import("../subagent/resume_admission.zig");
 const subagent_tool_host = @import("../subagent/tool_host.zig");
-const subagent_model_contract = @import("../subagent/model_contract.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const builtin_tools = @import("../../builtins/tools.zig");
 const tool_projection_mod = @import("../tooling/tool_projection.zig");
@@ -70,7 +67,6 @@ const tool_result_errors = @import("../tooling/tool_result_errors.zig");
 const tool_runtime = @import("../tooling/tool_runtime.zig");
 const tool_set_contract = @import("../tooling/tool_set.zig");
 const web_fetch_runtime = @import("../tooling/web_fetch_runtime.zig");
-const web_search_runtime = @import("../tooling/web_search_runtime.zig");
 const types = @import("../shared/types.zig");
 const history_range = @import("../shared/history_range.zig");
 const worker_runtime = @import("../agent/worker_runtime.zig");
@@ -214,13 +210,9 @@ pub const Config = struct {
     command_usage: []const u8,
     default_model: []const u8,
     default_agent_step_limit: usize,
-    gateway_retry_count: usize,
-    gateway_chat_url: []const u8,
-    gateway_models_path: []const u8,
-    gateway_provider: gateway_provider.Provider,
+    oauth_transport: oauth_transport.Provider,
     provider_set: provider_set.Set,
     process_provider: process_provider.Provider = process_provider.unavailable_provider,
-    secret_store: host.SecretStore,
     prompt_policy: prompt_policy.Policy,
     skill_root_policy: skill_contract.RootPolicy,
     ignored_list_entries: []const []const u8,
@@ -402,8 +394,8 @@ const NotifyAttentionFn = *const fn (?*anyopaque) void;
 const PermissionApprovalPromptFn = *const fn (?*anyopaque, ?*anyopaque, WriteFn, []const u8, ?*anyopaque, NotifyAttentionFn) anyerror!PermissionApprovalPromptResult;
 const IsTtyFn = *const fn (?*anyopaque) bool;
 /// The final `?[]const u8` is the run's --model, which stands in for a provider without a saved model.
-const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, ?[]const u8) anyerror!app_lifecycle.StartupState;
-const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, credentials.AuthMode, ?[]const u8) anyerror!app_lifecycle.StartupState;
+const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, []const u8, usize, ?[]const u8) anyerror!app_lifecycle.StartupState;
+const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, []const u8, usize, credentials.AuthMode, ?[]const u8) anyerror!app_lifecycle.StartupState;
 const InitializeSessionStoresFn = *const fn (*AskContext) anyerror!void;
 const LoadSkillsFn = *const fn (
     Allocator,
@@ -539,11 +531,10 @@ const AskContext = struct {
     workspace_root: []const u8,
     workspace_access: workspace_access.WorkspaceAccess = .{},
     api_key: []const u8 = "",
-    gateway_team: ?[]const u8 = null,
     credential_source: ?types.CredentialSource = null,
     account_id: ?[]const u8 = null,
     refreshed_credential: ?credentials.Credential = null,
-    provider: model_provider.ProviderId = .gateway,
+    provider: model_provider.ProviderId = .codex,
     model_catalog_access: credentials.CatalogAccess = .{ .public_only = .no_credential },
     model: []const u8 = "",
     /// Resolved review-model override borrowed from the startup state for the
@@ -612,7 +603,6 @@ const AskContext = struct {
     web_search_progress_mutex: std.Io.Mutex = .init,
     step_count: usize = 0,
     web_fetch_runtime: web_fetch_runtime.Runtime = web_fetch_runtime.Runtime.init(.{}),
-    web_search_runtime: web_search_runtime.Runtime,
     capability_resolver: gateway_provider.CapabilityResolver = .{},
     lifecycle_runtime: hooks.Runtime,
     lifecycle_view: hooks.RuntimeView,
@@ -636,9 +626,6 @@ const AskContext = struct {
                 cfg.max_history_turns,
                 cfg.provider_set.deferredUsageProviders(),
             ),
-            .web_search_runtime = web_search_runtime.Runtime.init(.{
-                .provider = cfg.provider_set.gateway.fx_search.?,
-            }),
             .terminal_client = terminal_client_runtime.Runtime.init(
                 cfg.process_provider,
             ),
@@ -753,7 +740,6 @@ const AskContext = struct {
             }
         }
         self.web_fetch_runtime.deinit(self.alloc);
-        self.web_search_runtime.deinit();
         if (self.refreshed_credential) |*credential| credential.deinit(self.alloc);
         self.capability_resolver.deinit(self.alloc);
         self.lifecycle_runtime.deinit();
@@ -1005,18 +991,6 @@ const AskContext = struct {
 
     fn toolContext(self: *AskContext) tool_runtime.Context {
         const provider_capabilities = self.cfg.provider_set.select(self.provider).capabilities;
-        if (provider_capabilities.fx_search) {
-            self.web_search_runtime.configure(.{
-                .api_key = self.api_key,
-                .credential_source = self.credential_source,
-                .gateway_team = self.gateway_team,
-                .worker_model = self.model,
-                .gateway_retry_count = self.cfg.gateway_retry_count,
-                .gateway_chat_url = self.cfg.gateway_chat_url,
-                .usage = &self.session.usage,
-                .usage_allocator = self.alloc,
-            });
-        }
         const tc: tool_runtime.Context = .{
             .workspace_root = self.workspace_root,
             .access_scope = self.workspace_access.scope(self.workspace_root),
@@ -1030,24 +1004,17 @@ const AskContext = struct {
             .auto_compact_percent = self.auto_compact_percent,
             .api_key = self.api_key,
             .agent_stream_provider = self.agentStreamProvider(),
-            .gateway_team = self.gateway_team,
             .credential_source = self.credential_source,
             .account_id = self.account_id,
             .provider = self.provider,
             .provider_capabilities = provider_capabilities,
-            .oauth_transport = self.cfg.gateway_provider.oauth_transport,
-            .secret_store = self.cfg.secret_store,
+            .oauth_transport = self.cfg.oauth_transport,
             .model = self.model,
             .reviewer_model = self.reviewer_model,
-            .gateway_retry_count = self.cfg.gateway_retry_count,
-            .gateway_chat_url = self.cfg.gateway_chat_url,
-            .gateway_models_path = self.cfg.gateway_models_path,
             .agent_step_limit = self.agent_step_limit,
             .fast_mode = self.fast_mode,
             .ultrafast_mode = self.ultrafast_mode,
             .effort = self.effort,
-            .provider_order = if (self.provider == .gateway) self.provider_order else &.{},
-            .provider_strict = self.provider == .gateway and self.provider_strict,
             .first_call_tool_choice = self.first_call_tool_choice,
             .permission_mode = self.permission_mode,
             .permission_grants = &.{},
@@ -1076,17 +1043,9 @@ const AskContext = struct {
             .web_fetch_artifact_error = self.session.webFetchArtifactError(),
             .web_fetch_progress_ctx = @ptrCast(self),
             .on_web_fetch_progress = onWebFetchProgress,
-            .web_search_runtime_ready = false,
-            .web_search_backend = if (provider_capabilities.fx_search) self.web_search_runtime.dispatchBackend() else null,
-            .web_search_progress_ctx = @ptrCast(self),
-            .on_web_search_progress = onWebSearchProgress,
             .model_capability_resolver = .{
                 .ctx = @ptrCast(self),
                 .resolve_fn = resolveModelCapabilities,
-            },
-            .model_override_resolver = .{
-                .context = @ptrCast(self),
-                .resolve_fn = resolveModelOverride,
             },
             .interactive = false,
             .lifecycle_view = self.lifecycle_view,
@@ -1112,8 +1071,7 @@ const AskContext = struct {
             .credential = self.api_key,
             .credential_source = self.credential_source,
             .account_id = self.account_id,
-            .tenant = self.gateway_team,
-            .endpoint = self.cfg.gateway_chat_url,
+            .endpoint = "",
             .reviewer_model = self.reviewer_model,
             .cancel_flag = self.cancelFlag(),
             .usage = &self.session.usage,
@@ -1437,10 +1395,9 @@ fn missingCredentialResult(
     alloc: Allocator,
     options: RunOptions,
     provider: model_provider.ProviderId,
-    preferred: ?credentials.Source,
 ) !PromptRunResult {
     const status = auth_runtime.StatusSnapshot{
-        .required_source = auth_runtime.requestedSource(provider, preferred),
+        .required_source = auth_runtime.requestedSource(provider),
     };
     const message = status.missingHelp(.cli).?;
     try options.deps.write_stderr(options.deps.stderr_ctx, "fx ask: ");
@@ -1462,8 +1419,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     var startup = if (cfg.auth_mode == .host_managed)
         try options.deps.load_startup_state_with_auth_mode(
             alloc,
-            cfg.gateway_provider.oauth_transport,
-            cfg.secret_store,
+            cfg.oauth_transport,
             cfg.default_model,
             cfg.default_agent_step_limit,
             cfg.auth_mode,
@@ -1472,8 +1428,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     else
         try options.deps.load_startup_state(
             alloc,
-            cfg.gateway_provider.oauth_transport,
-            cfg.secret_store,
+            cfg.oauth_transport,
             cfg.default_model,
             cfg.default_agent_step_limit,
             options.model_override,
@@ -1481,24 +1436,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     defer startup.deinit(alloc);
     applyAskThemeChoice(startup.theme);
     cfg.provider_set.definitions = startup.configured_providers.definitions;
-    // Bind gateway chat traffic to a per-process connection pool and warm one
-    // connection in the background while the rest of startup continues.
-    var gateway_pool: ?*http_pool.HttpPool = null;
-    defer if (gateway_pool) |pool| {
-        if (pool.deinit() == .destroyed) alloc.destroy(pool);
-    };
-    if (io_mod.getenv("FX_BENCH") == null and startup.provider == .gateway) {
-        if (alloc.create(http_pool.HttpPool)) |pool| {
-            pool.* = http_pool.HttpPool.init(alloc);
-            gateway_pool = pool;
-            if (cfg.provider_set.gateway.agent_stream) |stream| {
-                var stamped = stream;
-                stamped.context = pool;
-                cfg.provider_set.gateway.agent_stream = stamped;
-            }
-            pool.warmAsync(gateway_client.resolveChatUrlForWarmup(cfg.gateway_chat_url));
-        } else |_| {}
-    }
     try checkHeadlessCancellation(options.deps);
 
     var permission_mode = toCorePermissionMode(startup.permission_mode);
@@ -1537,7 +1474,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         if (startup.credential_load_failure) |failure| {
             if (auth_runtime.preparationError(auth_runtime.classifyCredentialFailure(failure.source, failure.err))) |err| return err;
         }
-        return missingCredentialResult(alloc, options, startup.provider, startup.credential_source_preference);
+        return missingCredentialResult(alloc, options, startup.provider);
     }
 
     var owned_resumed_model: ?[]u8 = null;
@@ -1668,7 +1605,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     defer if (routed_credential) |*credential| credential.deinit(alloc);
     if (cfg.auth_mode == .host_managed) {
         ctx.api_key = "";
-        ctx.gateway_team = null;
         ctx.credential_source = .host_managed;
         ctx.account_id = null;
         ctx.model_catalog_access = .host_managed;
@@ -1690,27 +1626,18 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         const credential: *const credentials.Credential = if (startup_credential_is_final)
             &startup.credential.?
         else routed: {
-            const preferred_source = if (ctx.provider == .gateway) startup.credential_source_preference else null;
-            routed_credential = try auth_runtime.prepareCredential(
-                alloc,
-                cfg.gateway_provider.oauth_transport,
-                cfg.secret_store,
-                ctx.provider,
-                preferred_source,
-            );
+            routed_credential = try auth_runtime.prepareCredential(alloc, cfg.oauth_transport, ctx.provider);
             if (routed_credential == null) {
-                return missingCredentialResult(alloc, options, ctx.provider, preferred_source);
+                return missingCredentialResult(alloc, options, ctx.provider);
             }
             break :routed &routed_credential.?;
         };
         ctx.api_key = credential.token;
-        ctx.gateway_team = credential.gatewayTeam();
         ctx.credential_source = credential.source;
         ctx.account_id = credential.accountId();
         ctx.model_catalog_access = credentials.catalogAccessForCredentialAndAccount(
             credential.source,
             credential.token,
-            credential.gatewayTeam(),
             credential.accountId(),
         );
         {
@@ -1813,7 +1740,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .authorized_image_catalog = authorized_image_catalog,
         .model = @constCast(ctx.model),
         .api_key = @constCast(ctx.api_key),
-        .gateway_team = if (ctx.gateway_team) |team| @constCast(team) else null,
         .credential_source = ctx.credential_source,
         .account_id = if (ctx.account_id) |account_id| @constCast(account_id) else null,
         .provider = ctx.provider,
@@ -1847,8 +1773,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .system_prompt = cfg.prompt_policy.system_prompt,
         .model_prompt_overlay = cfg.prompt_policy.modelPromptOverlay(ctx.model),
         .skill_catalog = .{ .skills = loaded_skills.skills, .diagnostics = loaded_skills.diagnostics },
-        .gateway_retry_count = cfg.gateway_retry_count,
-        .gateway_chat_url = cfg.gateway_chat_url,
         .advertised_tool_names = tool_projection.advertised_names,
         .advertised_functions = tool_projection.advertised_functions,
         .provider_capabilities = cfg.provider_set.select(ctx.provider).capabilities,
@@ -1860,8 +1784,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .fast_mode = ctx.fast_mode,
         .ultrafast_mode = ctx.ultrafast_mode,
         .effort = ctx.effort,
-        .provider_order = if (ctx.provider == .gateway) ctx.provider_order else &.{},
-        .provider_strict = ctx.provider == .gateway and ctx.provider_strict,
         .first_call_tool_choice = ctx.first_call_tool_choice,
         .workspace_root = ctx.workspace_root,
         .access_scope = ctx.workspace_access.scope(ctx.workspace_root),
@@ -1940,7 +1862,6 @@ fn maybeStartAskTitleTask(
         .model = title_model,
         .prompt_excerpt = excerpt,
         .api_key = if (ctx.api_key.len > 0) ctx.api_key else null,
-        .gateway_team = ctx.gateway_team,
         .account_id = ctx.account_id,
         .credential_source = ctx.credential_source,
         .stream_provider = agent_stream,
@@ -2177,7 +2098,7 @@ fn refreshGatewayCredential(
         return null;
     }
     var refreshed = (try auth_runtime.refreshCredentialForAccount(
-        ctx.cfg.gateway_provider.oauth_transport,
+        ctx.cfg.oauth_transport,
         ctx.alloc,
         source,
         mode,
@@ -2193,9 +2114,7 @@ fn adoptRefreshedAskCredential(
     refreshed: *credentials.Credential,
 ) ![]u8 {
     if (ctx.credential_source != refreshed.source) return error.CredentialAuthorityChanged;
-    if (!optionalCredentialFieldEqual(ctx.account_id, refreshed.accountId()) or
-        !optionalCredentialFieldEqual(ctx.gateway_team, refreshed.gatewayTeam()))
-    {
+    if (!optionalCredentialFieldEqual(ctx.account_id, refreshed.accountId())) {
         return error.CredentialAuthorityChanged;
     }
 
@@ -2205,18 +2124,14 @@ fn adoptRefreshedAskCredential(
     ctx.refreshed_credential = refreshed.*;
     refreshed.token = &.{};
     refreshed.account_id = null;
-    refreshed.team_id = null;
-    refreshed.team_slug = null;
 
     const current = &ctx.refreshed_credential.?;
     ctx.api_key = current.token;
     ctx.credential_source = current.source;
     ctx.account_id = current.accountId();
-    ctx.gateway_team = current.gatewayTeam();
     ctx.model_catalog_access = credentials.catalogAccessForCredentialAndAccount(
         current.source,
         current.token,
-        current.gatewayTeam(),
         current.accountId(),
     );
     return worker_token;
@@ -2276,7 +2191,7 @@ fn resolveModelCapabilities(raw_ctx: *anyopaque, _: Allocator, model: []const u8
         catalog,
         .{
             .access = ctx.model_catalog_access,
-            .endpoint = ctx.cfg.gateway_models_path,
+            .endpoint = "",
             .cancel_flag = ctx.cancelFlag(),
         },
         model,
@@ -2290,33 +2205,6 @@ fn availableModelCapabilities(raw_ctx: *anyopaque, model: []const u8) model_capa
         model,
         ctx.cfg.provider_set.select(ctx.provider).fallbackModelCapabilities(model),
     );
-}
-
-/// Subagent model overrides resolve against the same catalog the capability
-/// path uses. The resolve loads the catalog on first use; only cancellation
-/// or an unavailable catalog falls back to raw passthrough.
-fn resolveModelOverride(raw_ctx: ?*anyopaque, alloc: Allocator, raw_model: []const u8) Allocator.Error!subagent_model_contract.ModelCatalogMatch {
-    const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx.?));
-    const bundle = ctx.cfg.provider_set.select(ctx.provider);
-    const catalog_provider = bundle.model_catalog orelse return .no_catalog;
-    _ = ctx.capability_resolver.resolve(
-        ctx.alloc,
-        catalog_provider,
-        .{
-            .access = ctx.model_catalog_access,
-            .endpoint = ctx.cfg.gateway_models_path,
-            .cancel_flag = ctx.cancelFlag(),
-        },
-        raw_model,
-        bundle.fallbackModelCapabilities(raw_model),
-    ) catch return .no_catalog;
-    const entries = ctx.capability_resolver.catalogEntries() orelse return .no_catalog;
-    var ids = try model_catalog.projectModelIds(alloc, entries);
-    defer {
-        for (ids.items) |id| alloc.free(id);
-        ids.deinit(alloc);
-    }
-    return subagent_model_contract.matchCatalogModel(alloc, ids.items, raw_model);
 }
 
 fn finalizeTurn(raw_ctx: *anyopaque, turn_id: u64, outcome: types.TurnPresentationOutcome, disposition: ?types.ProviderCompletionDisposition) !void {
@@ -3291,17 +3179,6 @@ fn clearPendingToolProgress(ctx: *AskContext) void {
     ctx.deferred_tool_progress.clearRetainingCapacity();
 }
 
-fn onWebSearchProgress(raw_ctx: *anyopaque, _: []const u8, progress: types.WebSearchProgress) void {
-    const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
-    if (ctx.output_mode.isTerminal()) return;
-    const alloc = std.heap.c_allocator;
-    const line = tool_presentation.formatWebSearchProgressPlain(alloc, progress) catch return;
-    defer alloc.free(line);
-    ctx.web_search_progress_mutex.lockUncancelable(io_mod.getIo());
-    defer ctx.web_search_progress_mutex.unlock(io_mod.getIo());
-    ctx.writeLine(line) catch {};
-}
-
 fn onWebFetchProgress(raw_ctx: *anyopaque, _: []const u8, progress: types.WebFetchProgress) void {
     const ctx: *AskContext = @ptrCast(@alignCast(raw_ctx));
     if (ctx.output_mode.isTerminal()) return;
@@ -3862,7 +3739,6 @@ fn applyAskThemeChoice(settings_theme: ?[]const u8) void {
 fn loadStartupStateDefault(
     alloc: Allocator,
     transport: oauth_transport.Provider,
-    secret_store: host.SecretStore,
     default_model: []const u8,
     default_agent_step_limit: usize,
     model_override: ?[]const u8,
@@ -3870,7 +3746,6 @@ fn loadStartupStateDefault(
     return app_lifecycle.loadStartupStateForRun(
         alloc,
         transport,
-        secret_store,
         default_model,
         default_agent_step_limit,
         .local,

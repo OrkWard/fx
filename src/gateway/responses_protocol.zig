@@ -9,7 +9,6 @@ const json_comparison = @import("../core/shared/json_comparison.zig");
 
 pub fn selectReplayParts(alloc: std.mem.Allocator, replay: ?types.ProviderReplay, _: []const types.ToolCall, text: bool, reasoning: bool) !?types.ProviderReplay {
     const source = replay orelse return null;
-    if (source.source.provider == .gateway) return error.InvalidProviderState;
     if (text and reasoning) return source;
     if (!text and !reasoning) return null;
     if (source.parts_json.len > types.ProviderReplay.max_bytes) return error.ProviderStateTooLarge;
@@ -1123,7 +1122,7 @@ pub fn buildSubscriptionBilling(
     created_at_ms: i64,
     usage: types.Usage,
 ) !?types.ProviderBilling {
-    if (provider == .gateway or created_at_ms < 0) return null;
+    if (created_at_ms < 0) return null;
     const input_tokens = usage.input_tokens orelse return null;
     const output_tokens = usage.output_tokens orelse return null;
     const qualified_model = try alloc.print(

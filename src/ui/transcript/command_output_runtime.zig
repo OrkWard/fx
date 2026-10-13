@@ -1596,24 +1596,6 @@ const CompactLinePlan = struct {
     hidden: bool = false,
 };
 
-/// Builds the block-wide compact command projection for the active width.
-/// Row admission is physical rather than callback/logical-line based, with at
-/// most five rows reserved for command output and its process presentation.
-pub fn renderCompactCommandOutput(
-    alloc: Allocator,
-    block: CommandOutputBlock,
-    policy: CommandOutputRenderPolicy,
-    cols: u16,
-) !CommandOutputProjection {
-    return renderCompactCommandOutputWithProcessPresentation(
-        alloc,
-        block,
-        policy,
-        cols,
-        null,
-    );
-}
-
 pub fn renderCompactCommandOutputWithProcessPresentation(
     alloc: Allocator,
     block: CommandOutputBlock,
@@ -1912,25 +1894,6 @@ fn processStatusRow(
     };
     defer alloc.free(full);
     return alloc.dupe(u8, display_width.prefixByWidthIgnoringAnsi(full, cols));
-}
-
-/// Width-aware, uncapped projection for one retained logical command record.
-/// Both streams deliberately share the same neutral style; callers preserve
-/// stream order separately.
-pub fn renderFullCommandOutputRecord(
-    alloc: Allocator,
-    styles: Styles,
-    text: []const u8,
-    cols: u16,
-) ![]u8 {
-    const wrapped = try assistant_wrap.wrapLiteralCommandOutput(alloc, text, cols);
-    defer alloc.free(wrapped);
-
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-    try appendDimmedCommandRows(&out, alloc, styles, wrapped);
-    try out.append(alloc, '\n');
-    return out.toOwnedSlice(alloc);
 }
 
 pub fn renderCommandOutputRecordWithPrimaryGutter(

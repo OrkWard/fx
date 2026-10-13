@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const process_identity = @import("process_identity.zig");
 
 const Allocator = std.mem.Allocator;
@@ -89,40 +88,8 @@ fn unsupportedSignalProcess(
     return error.Unsupported;
 }
 
-fn captureTokenForTest(
-    _: ?*anyopaque,
-    alloc: Allocator,
-    pid: []const u8,
-) ProviderError!process_identity.ProcessInstanceToken {
-    return process_identity.captureProcessInstanceToken(alloc, pid) catch |err| switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.InvalidPid => error.InvalidPid,
-        error.ProcessNotFound => error.ProcessNotFound,
-        error.ProcessIdentityUnavailable => error.ProcessIdentityUnavailable,
-        else => error.ProcessIdentityUnsupported,
-    };
-}
-
-fn matchTokenForTest(
-    _: ?*anyopaque,
-    alloc: Allocator,
-    pid: []const u8,
-    expected: process_identity.ProcessInstanceToken,
-) process_identity.TokenMatch {
-    return process_identity.matchProcessInstanceToken(alloc, pid, expected);
-}
-
 pub const unavailable_provider = Provider{
     .capture_token_fn = unsupportedCaptureToken,
     .match_token_fn = unavailableMatchToken,
     .signal_process_fn = unsupportedSignalProcess,
 };
-
-pub const process_identity_test_provider = if (builtin.is_test)
-    Provider{
-        .capture_token_fn = captureTokenForTest,
-        .match_token_fn = matchTokenForTest,
-        .signal_process_fn = unsupportedSignalProcess,
-    }
-else
-    unavailable_provider;

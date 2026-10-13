@@ -349,19 +349,6 @@ pub fn snapshotCaptureScript(
     return std.mem.replaceOwned(u8, alloc, template, "@NONCE@", nonce);
 }
 
-pub fn formatInvocationCommand(
-    alloc: Allocator,
-    invocation: *const Invocation,
-) Allocator.Error![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(alloc);
-    for (invocation.argv(), 0..) |word, index| {
-        if (index != 0) try output.append(alloc, ' ');
-        try appendShellWord(&output, alloc, word);
-    }
-    return output.toOwnedSlice(alloc);
-}
-
 fn removeInteractiveFlag(invocation: *Invocation) void {
     std.debug.assert(invocation.len > 0);
     std.debug.assert(std.mem.eql(u8, invocation.values[invocation.len - 1], "-i"));

@@ -52,13 +52,6 @@ pub const attention_required = HookDefinition{
     .purpose = "lets handlers observe when a foreground turn is waiting for user attention",
 };
 
-pub const all_hooks = [_]HookDefinition{
-    pre_tool_use,
-    stop,
-    post_turn_end,
-    attention_required,
-};
-
 pub const ScopeKind = enum {
     interactive,
     ask,

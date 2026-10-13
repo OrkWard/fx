@@ -619,21 +619,6 @@ pub fn formatWebSearchActionDetail(alloc: Allocator, args: std.json.ObjectMap) !
 }
 
 /// The caller owns the returned allocation and must free it with `alloc`.
-pub fn formatWebSearchProgressPlain(alloc: Allocator, progress: types.WebSearchProgress) ![]u8 {
-    var query_buf: [160]u8 = undefined;
-    return switch (progress) {
-        .query_started => |query| alloc.print(
-            "Searching {s}",
-            .{text_utils.clippedLabel(&query_buf, query, 120)},
-        ),
-        .results_received => |entry| alloc.print(
-            "Found {d} result{s} for {s}",
-            .{ entry.result_count, if (entry.result_count == 1) "" else "s", text_utils.clippedLabel(&query_buf, entry.query, 120) },
-        ),
-    };
-}
-
-/// The caller owns the returned allocation and must free it with `alloc`.
 pub fn formatWebFetchProgressPlain(alloc: Allocator, progress: types.WebFetchProgress) ![]u8 {
     var url_buf: [types.WebFetchCompletion.max_url_len]u8 = undefined;
     return switch (progress) {

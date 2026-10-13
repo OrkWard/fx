@@ -1,7 +1,6 @@
 const std = @import("std");
 const question_prompt = @import("../../core/agent/question_prompt.zig");
 const auth_runtime = @import("../../core/auth/auth_runtime.zig");
-const credentials = @import("../../core/auth/credentials.zig");
 const image_attachments = @import("../../core/images/image_attachments.zig");
 const command_specs = @import("../../core/slash_commands/command_specs.zig");
 const display_width = @import("../../core/shared/display_width.zig");
@@ -194,50 +193,6 @@ fn slashRawAnchor(input_items: []const u8, prefix: []const u8) ?usize {
     return leading_ws + slash_anchor;
 }
 
-pub fn measureRawInputGeometry(
-    ctx: RenderContext,
-    terminal_cols: u16,
-    content_bottom: u16,
-    input_visible: bool,
-    modal_active: bool,
-    show_model_query: bool,
-    show_file_query: bool,
-) RawInputGeometry {
-    return measureRawInputGeometryPrepared(
-        ctx,
-        terminal_cols,
-        content_bottom,
-        input_visible,
-        modal_active,
-        show_model_query,
-        show_file_query,
-        null,
-    );
-}
-
-pub fn measureRawInputGeometryPrepared(
-    ctx: RenderContext,
-    terminal_cols: u16,
-    content_bottom: u16,
-    input_visible: bool,
-    modal_active: bool,
-    show_model_query: bool,
-    show_file_query: bool,
-    prepared_slash_completion_count: ?usize,
-) RawInputGeometry {
-    return measureRawInputGeometryPreparedWithProvider(
-        ctx,
-        terminal_cols,
-        content_bottom,
-        input_visible,
-        modal_active,
-        show_model_query,
-        false,
-        show_file_query,
-        prepared_slash_completion_count,
-    );
-}
-
 pub fn measureRawInputGeometryPreparedWithProvider(
     ctx: RenderContext,
     terminal_cols: u16,
@@ -302,18 +257,6 @@ pub fn measureRawInputGeometryPreparedWithProvider(
 fn authPickerInteractionHint(view: auth_runtime.PickerView, width: u16) ?[]const u8 {
     if (!view.active or view.include_skip) return null;
 
-    if (view.stage == .api_key and view.api_key_inline) {
-        const key_variants = [_][]const u8{
-            "enter saves     esc cancels     " ++ credentials.stored_key_backend_label,
-            "enter saves  esc cancels",
-            "enter  esc",
-        };
-        for (key_variants) |candidate| {
-            if (display_width.visibleWidth(candidate) <= width) return candidate;
-        }
-        return key_variants[key_variants.len - 1];
-    }
-
     const root_variants = [_][]const u8{
         "↑↓ navigate     enter open     esc close",
         "↑↓ move  enter open  esc",
@@ -330,12 +273,6 @@ fn authPickerInteractionHint(view: auth_runtime.PickerView, width: u16) ?[]const
         "↑↓ navigate     enter use     esc back",
         "↑↓ move  enter use  esc",
         "enter use  esc back",
-        "enter esc",
-    };
-    const team_variants = [_][]const u8{
-        "type to search     ↑↓ navigate     enter use     esc back",
-        "type  ↑↓ move  enter  esc",
-        "↑↓ move  enter  esc",
         "enter esc",
     };
     const codex_sign_in_variants = [_][]const u8{
@@ -359,8 +296,7 @@ fn authPickerInteractionHint(view: auth_runtime.PickerView, width: u16) ?[]const
     const variants = switch (view.stage) {
         .root => root_variants,
         .connections => connections_variants,
-        .provider, .switch_credential => selection_variants,
-        .change_team => team_variants,
+        .provider => selection_variants,
         .sign_in => switch (view.sign_in_source) {
             .chatgpt_subscription => codex_sign_in_variants,
             .grok_subscription => if (view.sign_in_code_visible)
@@ -369,7 +305,6 @@ fn authPickerInteractionHint(view: auth_runtime.PickerView, width: u16) ?[]const
                 grok_browser_variants,
             else => return null,
         },
-        .api_key => return null,
     };
     for (variants) |candidate| {
         if (display_width.visibleWidth(candidate) <= width) return candidate;

@@ -348,10 +348,6 @@ pub fn recordResize(cols: u16, rows: u16) void {
     writeFrame(.resize, &payload);
 }
 
-pub fn recordSigint() void {
-    writeFrame(.sigint, "");
-}
-
 pub fn recordMarker(label: []const u8) void {
     writeFrame(.marker, label);
 }

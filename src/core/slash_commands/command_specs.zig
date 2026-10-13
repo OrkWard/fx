@@ -13,18 +13,15 @@ pub const TopLevelKind = enum {
     issue,
     login,
     logout,
-    setup,
     status,
     permissions,
     slack,
     models,
     provider,
     doctor,
-    teams,
     session,
     sessions,
     @"resume",
-    credits,
     usage,
     upgrade,
     replay,
@@ -58,7 +55,6 @@ pub const SlashKind = enum {
     compact,
     settings,
     alias,
-    credits,
     paste,
     fast,
     ultrafast,
@@ -167,25 +163,6 @@ pub const SlashSpec = struct {
 };
 
 pub const SlashRegistry = mod_registry.CommandRegistry(SlashSpec);
-pub const child_chat_slash_command_count: usize = 3;
-
-pub fn childChatSlashRegistry(
-    registry: SlashRegistry,
-    storage: *[child_chat_slash_command_count]SlashSpec,
-) SlashRegistry {
-    var count: usize = 0;
-    for (registry.commands) |spec| {
-        switch (spec.kind) {
-            .quit, .model, .skills => {
-                std.debug.assert(count < storage.len);
-                storage[count] = spec;
-                count += 1;
-            },
-            else => {},
-        }
-    }
-    return .{ .commands = storage[0..count] };
-}
 
 pub const HelpMenu = struct {
     active: bool = false,
@@ -383,14 +360,6 @@ pub fn topLevelKindFromToken(registry: TopLevelRegistry, token: []const u8) ?Top
         if (matchesCommandToken(token, spec.token, spec.aliases)) return spec.kind;
     }
     return null;
-}
-
-pub fn renderSlashHelp(alloc: Allocator, registry: SlashRegistry) ![]u8 {
-    return renderSlashEntries(alloc, registry, false);
-}
-
-pub fn renderSlashWelcome(alloc: Allocator, registry: SlashRegistry) ![]u8 {
-    return renderSlashEntries(alloc, registry, true);
 }
 
 pub fn helpCatalogCount(registry: SlashRegistry, query: []const u8) usize {
@@ -1262,29 +1231,6 @@ fn splitAllowlistArgQuery(query: []const u8) AllowlistArgQuery {
         }
     }
     return .{ .word = trimmed_start, .rest = "", .has_rest = false };
-}
-
-fn renderSlashEntries(alloc: Allocator, registry: SlashRegistry, welcome_only: bool) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    var first = true;
-    for (registry.commands) |spec| {
-        if (welcome_only) {
-            if (!spec.show_in_welcome) continue;
-            if (!first) try out.writer.writeAll("  ");
-            first = false;
-            try out.writer.writeAll(spec.command);
-            continue;
-        }
-
-        const entry = spec.help_entry orelse continue;
-        if (!first) try out.writer.writeByte(' ');
-        first = false;
-        try out.writer.writeAll(entry);
-    }
-
-    return try out.toOwnedSlice();
 }
 
 fn topLevelSpec(registry: TopLevelRegistry, kind: TopLevelKind) TopLevelSpec {

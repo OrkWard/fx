@@ -25,7 +25,6 @@
 const std = @import("std");
 const window = @import("window.zig");
 const summarize = @import("summarize.zig");
-const ledger = @import("ledger.zig");
 const model = @import("model.zig");
 const checkpoint = @import("checkpoint.zig");
 const records = @import("records.zig");

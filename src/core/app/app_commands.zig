@@ -286,7 +286,6 @@ pub fn Handlers(comptime App: type) type {
                 .compact_history = commandCompactHistory,
                 .handle_settings = commandHandleSettings,
                 .handle_alias = commandHandleAlias,
-                .show_credits = commandShowCredits,
                 .paste_clipboard = commandPasteClipboard,
                 .toggle_fast = commandToggleFast,
                 .handle_ultrafast = commandHandleUltrafast,
@@ -1282,33 +1281,6 @@ pub fn Handlers(comptime App: type) type {
             }, true);
         }
 
-        fn commandShowCredits(ctx: *anyopaque) !void {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            var snapshot = app.creditsProvider().fetch(app.alloc, .{
-                .credential = app.auth.apiKey(),
-                .credential_source = if (comptime @hasDecl(@TypeOf(app.auth), "credentialSource"))
-                    app.auth.credentialSource()
-                else
-                    null,
-                .tenant = app.auth.gatewayTeam(),
-            });
-            defer snapshot.deinit(app.alloc);
-            const text = snapshot.renderInteractiveBody(app.alloc) catch {
-                try app.writeDomainNotice(.{
-                    .topic = "credits",
-                    .tone = .@"error",
-                    .body = "Failed to render credits.",
-                }, true);
-                return;
-            };
-            defer app.alloc.free(text);
-            try app.writeDomainNotice(.{
-                .topic = "credits",
-                .tone = if (snapshot.err_message == null) .neutral else .@"error",
-                .body = text,
-            }, true);
-        }
-
         fn commandPasteClipboard(ctx: *anyopaque) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             try image_commands.Commands(App).attachClipboard(app);
@@ -1758,11 +1730,10 @@ fn writeAuthStateSummary(writer: *std.Io.Writer, app: anytype) !void {
 
     const auth_view = app.auth.view();
     try writer.print(
-        "auth: source={s} refreshable={s} gateway_team={s}\n",
+        "auth: source={s} refreshable={s}\n",
         .{
             auth_view.activeSourceLabel(),
             boolLabel(auth_view.refreshable),
-            auth_view.gatewayTeamStatus().label(),
         },
     );
 }

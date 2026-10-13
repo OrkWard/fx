@@ -4,7 +4,6 @@ const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const agent_steps = @import("../config/agent_steps.zig");
 const config_runtime = @import("../config/config_runtime.zig");
-const host = @import("../hosts/host.zig");
 const session_store = @import("../session/session_store.zig");
 const types = @import("../shared/types.zig");
 const model_provider = @import("../config/model_provider.zig");
@@ -33,7 +32,7 @@ pub const Check = struct {
 pub const Snapshot = struct {
     workspace_root: []u8,
     model: []const u8,
-    provider: model_provider.ProviderId = .gateway,
+    provider: model_provider.ProviderId = .codex,
     owned_model: ?[]u8 = null,
     auth: auth_runtime.StatusSnapshot = .{},
     permission_mode: types.PermissionMode,
@@ -43,7 +42,6 @@ pub const Snapshot = struct {
     pub fn deinit(self: *Snapshot, alloc: Allocator) void {
         alloc.free(self.workspace_root);
         if (self.owned_model) |model| alloc.free(model);
-        self.auth.deinit(alloc);
         for (self.checks) |*entry| entry.deinit(alloc);
         alloc.free(self.checks);
         self.* = undefined;
@@ -52,7 +50,6 @@ pub const Snapshot = struct {
 
 pub fn collect(
     alloc: Allocator,
-    secret_store: host.SecretStore,
     default_model: []const u8,
     default_agent_step_limit: usize,
 ) !Snapshot {
@@ -75,7 +72,6 @@ pub fn collect(
     errdefer {
         alloc.free(snapshot.workspace_root);
         if (snapshot.owned_model) |model| alloc.free(model);
-        snapshot.auth.deinit(alloc);
     }
 
     const workspace_detail = try alloc.print("using workspace {s}", .{snapshot.workspace_root});
@@ -88,8 +84,7 @@ pub fn collect(
     }
 
     var detailed = config_runtime.loadMergedSettingsDetailed(alloc, snapshot.workspace_root) catch |err| {
-        // Settings are unreadable, so no remembered choice is available to honour.
-        snapshot.auth = try auth_runtime.loadStatusSnapshot(alloc, secret_store, null);
+        snapshot.auth = try auth_runtime.loadStatusSnapshotForProvider(alloc, snapshot.provider);
         try appendConfigLoadFailureCheck(&checks, alloc, "config", "failed to load config", err);
         try appendAuthCheck(&checks, alloc, snapshot.auth);
         try appendConfigLoadFailureCheck(&checks, alloc, "startup", "failed to resolve startup settings", err);
@@ -101,14 +96,9 @@ pub fn collect(
         return snapshot;
     };
     defer detailed.deinit(alloc);
-    snapshot.provider = detailed.settings.provider orelse .gateway;
+    snapshot.provider = detailed.settings.provider orelse .codex;
 
-    snapshot.auth = try auth_runtime.loadStatusSnapshotForProvider(
-        alloc,
-        secret_store,
-        snapshot.provider,
-        detailed.settings.credential_source,
-    );
+    snapshot.auth = try auth_runtime.loadStatusSnapshotForProvider(alloc, snapshot.provider);
 
     try appendConfigCheck(&checks, alloc, paths, detailed.diagnostics);
     try appendConfigDiagnosticChecks(&checks, alloc, detailed.diagnostics);

@@ -14,43 +14,8 @@ const row_text = @import("row_text.zig");
 
 const Allocator = std.mem.Allocator;
 pub const inline_picker_column_gap_width: usize = 4;
-const team_query_prefix = "Vercel team · Search: ";
-const compact_team_query_prefix = "Search: ";
-
-const TeamQueryProjection = struct {
-    prefix: []const u8,
-    query: []const u8,
-
-    fn cursorColumn(self: TeamQueryProjection, width: u16) u16 {
-        const content_end = display_width.visibleWidth(self.prefix) +
-            display_width.visibleWidth(self.query) + 1;
-        return @intCast(@min(content_end, width));
-    }
-};
-
-pub fn authPickerQueryCursorColumn(view: auth_runtime.PickerView, width: u16) ?u16 {
-    if (view.stage != .change_team or width == 0) return null;
-    return teamQueryProjection(view.team_query, width).cursorColumn(width);
-}
-
-fn teamQueryProjection(query: []const u8, width: u16) TeamQueryProjection {
-    const available: usize = width;
-    if (query.len == 0) return .{
-        .prefix = display_width.prefixByWidth(team_query_prefix, available),
-        .query = "",
-    };
-
-    const prefix = if (display_width.visibleWidth(team_query_prefix) < available)
-        team_query_prefix
-    else if (display_width.visibleWidth(compact_team_query_prefix) < available)
-        compact_team_query_prefix
-    else
-        "";
-    const query_width = available - display_width.visibleWidth(prefix);
-    return .{
-        .prefix = prefix,
-        .query = display_width.suffixByWidth(query, query_width),
-    };
+pub fn authPickerQueryCursorColumn(_: auth_runtime.PickerView, _: u16) ?u16 {
+    return null;
 }
 
 pub fn authPickerRowCount(view: auth_runtime.PickerView) u16 {
@@ -61,17 +26,8 @@ pub fn authPickerRowCount(view: auth_runtime.PickerView) u16 {
             else => 7,
         };
     }
-    if (view.stage == .api_key) return 4;
     if (view.stage == .root and view.include_skip) return 18;
-    if (isSetupListStage(view.stage)) return @intCast(2 + @max(view.choiceCount(), 1));
-    return @intCast(1 + @max(view.choiceCount(), 1));
-}
-
-fn isSetupListStage(stage: auth_runtime.PickerStage) bool {
-    return switch (stage) {
-        .root, .connections, .provider, .change_team, .switch_credential => true,
-        .sign_in, .api_key => false,
-    };
+    return @intCast(2 + @max(view.choiceCount(), 1));
 }
 
 fn setupChoiceLabel(view: auth_runtime.PickerView, choice: auth_runtime.Choice) []const u8 {
@@ -80,24 +36,20 @@ fn setupChoiceLabel(view: auth_runtime.PickerView, choice: auth_runtime.Choice) 
             .action => |action| switch (action) {
                 .connections => "Connections",
                 .switch_provider => "Model provider",
-                .change_team => "Vercel team",
-                .switch_credential => "Credential source",
-                .login, .chatgpt_login, .grok_login, .setup, .automatic => "",
+                .chatgpt_login, .grok_login => "",
             },
-            .provider, .source, .team => "",
+            .provider => "",
         },
         .connections => switch (choice) {
             .action => |action| switch (action) {
-                .login => "Vercel account",
                 .chatgpt_login => "Codex subscription",
                 .grok_login => "Grok subscription",
-                .setup => "AI Gateway API key",
-                .connections, .change_team, .switch_credential, .switch_provider, .automatic => "",
+                .connections, .switch_provider => "",
             },
-            .provider, .source, .team => "",
+            .provider => "",
         },
-        .provider, .change_team, .switch_credential => view.choiceLabel(choice),
-        .sign_in, .api_key => "",
+        .provider => view.choiceLabel(choice),
+        .sign_in => "",
     };
 }
 
@@ -107,43 +59,26 @@ fn setupChoiceValue(view: auth_runtime.PickerView, choice: auth_runtime.Choice) 
             .action => |action| switch (action) {
                 .connections => if (view.available_sources.count() > 0) "connected" else "not connected",
                 .switch_provider => view.choiceLabel(.{ .provider = view.active_provider }),
-                .change_team => if (!view.fx_login_session_available)
-                    "sign in to manage"
-                else if (view.current_team != null)
-                    "selected"
-                else
-                    "choose a team",
-                .switch_credential => if (view.active_source != null)
-                    view.activeSourceLabel()
-                else
-                    "not connected",
-                .login, .chatgpt_login, .grok_login, .setup, .automatic => "",
+                .chatgpt_login, .grok_login => "",
             },
-            .provider, .source, .team => "",
+            .provider => "",
         },
         .connections => switch (choice) {
             .action => |action| switch (action) {
-                .login => if (view.fx_login_session_available) "connected" else "not connected",
                 .chatgpt_login => if (view.available_sources.contains(.chatgpt_subscription)) "connected" else "not connected",
                 .grok_login => if (view.available_sources.contains(.grok_subscription)) "connected" else "not connected",
-                .setup => if (view.available_sources.contains(.stored_key))
-                    "stored"
-                else if (view.available_sources.contains(.ai_gateway_api_key))
-                    "environment"
-                else
-                    "not configured",
-                .connections, .change_team, .switch_credential, .switch_provider, .automatic => "",
+                .connections, .switch_provider => "",
             },
-            .provider, .source, .team => "",
+            .provider => "",
         },
-        .provider, .change_team, .switch_credential => view.choiceDescription(choice),
-        .sign_in, .api_key => "",
+        .provider => view.choiceDescription(choice),
+        .sign_in => "",
     };
 }
 
 fn detailValueColumn(width: u16) usize {
     const width_usize: usize = width;
-    const minimum = display_width.visibleWidth("  AI Gateway API key") + 2;
+    const minimum = display_width.visibleWidth("  Codex subscription") + 2;
     return @min(width_usize, @max(width_usize * 2 / 3, minimum));
 }
 
@@ -158,30 +93,19 @@ fn composeSetupChoiceRow(
     if (width == 0) return row;
 
     const selected = view.choiceIsSelected(choice);
-    const enabled = view.choiceEnabled(choice);
-    const style = if (selected and enabled) ui_render.selected_completion_style else ui_render.dim_style;
+    const style = if (selected) ui_render.selected_completion_style else ui_render.dim_style;
     try row.appendSlice(alloc, style);
-    try row.appendSlice(alloc, if (selected and enabled) "› " else "  ");
+    try row.appendSlice(alloc, if (selected) "› " else "  ");
 
     const value_col = detailValueColumn(width);
     const label_width = value_col -| 2;
-    try row_text.appendSingleLineEllipsized(
-        alloc,
-        &row,
-        setupChoiceLabel(view, choice),
-        label_width,
-    );
+    try row_text.appendSingleLineEllipsized(alloc, &row, setupChoiceLabel(view, choice), label_width);
     try row.appendSlice(alloc, ui_render.reset_style);
 
     if (value_col < width) {
         try row_text.appendSpacesToColumn(alloc, &row, value_col);
         try row.appendSlice(alloc, style);
-        try row_text.appendSingleLineEllipsized(
-            alloc,
-            &row,
-            setupChoiceValue(view, choice),
-            @as(usize, width) - value_col,
-        );
+        try row_text.appendSingleLineEllipsized(alloc, &row, setupChoiceValue(view, choice), @as(usize, width) - value_col);
         try row.appendSlice(alloc, ui_render.reset_style);
     }
     return row;
@@ -195,21 +119,13 @@ fn composeSetupHeaderRow(
     var row: std.ArrayList(u8) = .empty;
     errdefer row.deinit(alloc);
     try row.appendSlice(alloc, ui_render.dim_style);
-    if (view.stage == .change_team) {
-        const projection = teamQueryProjection(view.team_query, width);
-        try row_text.appendClipped(alloc, &row, projection.prefix, width);
-        const remaining: u16 = width -| @as(u16, @intCast(display_width.visibleWidth(projection.prefix)));
-        try row_text.appendClipped(alloc, &row, projection.query, remaining);
-    } else {
-        const heading = switch (view.stage) {
-            .root => "Setup",
-            .connections => "Connections",
-            .provider => "Model provider",
-            .switch_credential => "Credential source",
-            .sign_in, .api_key, .change_team => unreachable,
-        };
-        try row_text.appendClipped(alloc, &row, heading, width);
-    }
+    const heading = switch (view.stage) {
+        .root => "Setup",
+        .connections => "Connections",
+        .provider => "Model provider",
+        .sign_in => unreachable,
+    };
+    try row_text.appendClipped(alloc, &row, heading, width);
     try row.appendSlice(alloc, ui_render.reset_style);
     return row;
 }
@@ -222,15 +138,7 @@ fn composeSetupEmptyRow(
     var row: std.ArrayList(u8) = .empty;
     errdefer row.deinit(alloc);
     try row.appendSlice(alloc, ui_render.dim_style);
-    try row_text.appendClipped(alloc, &row, switch (view.stage) {
-        .provider => "  No providers available",
-        .change_team => if (view.team_query.len == 0)
-            "  No Vercel teams available"
-        else
-            "  No matching Vercel teams",
-        .switch_credential => "  No credentials available",
-        .root, .connections, .sign_in, .api_key => "",
-    }, width);
+    try row_text.appendClipped(alloc, &row, if (view.stage == .provider) "  No providers available" else "", width);
     try row.appendSlice(alloc, ui_render.reset_style);
     return row;
 }
@@ -244,7 +152,6 @@ fn composeSetupPickerRow(
 ) !std.ArrayList(u8) {
     if (width == 0 or row_index >= row_count) return .empty;
     if (row_count == 1) {
-        if (view.stage == .change_team) return composeSetupHeaderRow(alloc, view, width);
         const selected = view.selected_choice orelse return composeSetupEmptyRow(alloc, view, width);
         return composeSetupChoiceRow(alloc, view, selected, width);
     }
@@ -290,16 +197,10 @@ pub noinline fn composeAuthPickerRow(
             width,
         );
     }
-    if (view.stage == .api_key) {
-        return composeApiKeyPickerRow(alloc, view.api_key_mask_count, row_index, width);
-    }
     if (view.stage == .root and view.include_skip) {
         return composeOnboardingPickerRow(alloc, view, row_index, row_count, width);
     }
-    if (isSetupListStage(view.stage)) {
-        return composeSetupPickerRow(alloc, view, row_index, row_count, width);
-    }
-    unreachable;
+    return composeSetupPickerRow(alloc, view, row_index, row_count, width);
 }
 
 fn signInProjectedRowIndex(
@@ -405,8 +306,8 @@ fn composeOnboardingPickerRow(
     const label = switch (source_row_index) {
         0 => "   Welcome to fx",
         1 => "",
-        2 => "   fx can access AI models with an account, subscription, or API key.",
-        3 => "   Choose a sign-in option below, or add your own API key.",
+        2 => "   fx can access AI models with a subscription or a configured provider.",
+        3 => "   Choose a sign-in option below.",
         4 => "",
         5 => "   You can change this anytime with /setup.",
         6 => "",
@@ -548,10 +449,8 @@ fn composeSignInPickerRow(
     const label = switch (row_index) {
         0 => if (source == .chatgpt_subscription)
             "   Sign in with Codex"
-        else if (source == .grok_subscription)
-            "   Sign in with Grok"
         else
-            "   Sign in with Vercel",
+            "   Sign in with Grok",
         1, 4 => "",
         2 => std.mem.print(
             &label_buf,
@@ -559,10 +458,8 @@ fn composeSignInPickerRow(
             .{snapshot.verification_uri},
         ) catch if (source == .chatgpt_subscription)
             "   Open the Codex authorization page"
-        else if (source == .grok_subscription)
-            "   Open the Grok authorization page"
         else
-            "   Open the Vercel device authorization page",
+            "   Open the Grok authorization page",
         3 => if (snapshot.user_code.len == 0)
             ""
         else
@@ -589,47 +486,6 @@ fn composeSignInPickerRow(
     return row;
 }
 
-fn composeApiKeyPickerRow(
-    alloc: Allocator,
-    mask_count: usize,
-    row_index: u16,
-    width: u16,
-) !std.ArrayList(u8) {
-    var row: std.ArrayList(u8) = .empty;
-    errdefer row.deinit(alloc);
-    if (width == 0) return row;
-
-    try row.appendSlice(alloc, if (row_index == 1)
-        ui_render.selected_completion_style
-    else
-        ui_render.dim_style);
-    switch (row_index) {
-        0 => try row_text.appendClipped(alloc, &row, "   Paste your AI Gateway API key", width),
-        1 => {
-            try row_text.appendClipped(alloc, &row, "   ┃ ", width);
-            if (mask_count == 0) {
-                try row.appendSlice(alloc, ui_render.dim_style);
-                try row_text.appendClipped(alloc, &row, "Paste or type a key", width -| 5);
-            } else {
-                for (0..@min(mask_count, width -| 5)) |_| try row.appendSlice(alloc, "•");
-            }
-        },
-        2 => try row_text.appendClipped(alloc, &row, "   enter saves · esc cancels", width),
-        3 => {
-            var label_buf: [128]u8 = undefined;
-            const label = std.mem.print(
-                &label_buf,
-                "   Saves to {s}",
-                .{credentials.stored_key_backend_label},
-            ) catch "   Saves to configured credential store";
-            try row_text.appendClipped(alloc, &row, label, width);
-        },
-        else => {},
-    }
-    try row.appendSlice(alloc, ui_render.reset_style);
-    return row;
-}
-
 pub fn activeListPickerReservedRows(terminal_rows: u16, input_extra: u16, banner_rows: u16) u16 {
     const fixed_rows: u16 = 5 +| input_extra +| banner_rows;
     const available_rows = terminal_rows -| fixed_rows;
@@ -651,10 +507,6 @@ pub fn pickerWindow(count: usize, selected: usize, max_rows: u16) PickerWindow {
     return list_window.centered(count, selected, max_rows);
 }
 
-pub fn edgeScrollPickerWindow(count: usize, selected: usize, max_rows: u16) PickerWindow {
-    return list_window.edgeFromSelection(count, selected, max_rows);
-}
-
 pub fn edgeScrollPickerWindowFromStart(count: usize, start: usize, max_rows: u16) PickerWindow {
     return list_window.edgeFromStart(count, start, max_rows);
 }
@@ -672,30 +524,6 @@ pub const SlashMenuLayout = struct {
     result_count: usize,
     window: PickerWindow,
 };
-
-pub fn slashMenuLayout(
-    registry: command_specs.SlashRegistry,
-    prefix: []const u8,
-    skills: []const skill_runtime.Skill,
-    selection_index: usize,
-    current_window_start: usize,
-    terminal_rows: u16,
-    input_extra: u16,
-    banner_rows: u16,
-) ?SlashMenuLayout {
-    if (command_specs.argCompletionAnchor(prefix) != 0) return null;
-    const command_count = command_specs.slashCompletionCount(registry, prefix);
-    const result_count = mixedSlashCompletionCount(registry, prefix, skills);
-    return slashMenuLayoutForCounts(
-        command_count,
-        result_count,
-        selection_index,
-        current_window_start,
-        terminal_rows,
-        input_extra,
-        banner_rows,
-    );
-}
 
 pub fn preparedSlashMenuLayout(
     prepared: *const PreparedSlashMenu,
@@ -848,23 +676,10 @@ pub fn composeFilePickerOptionRow(
     return row;
 }
 
-pub fn composePickerStatusRow(
-    alloc: Allocator,
-    kind: input_presentation.PickerKind,
-    model_stage: picker_state.ModelPickerStage,
-    loading: bool,
-    failed: bool,
-    start_col: u16,
-    width: u16,
-) !std.ArrayList(u8) {
-    return composePickerStatusRowWithProvider(alloc, kind, model_stage, .provider, loading, failed, start_col, width);
-}
-
 pub fn composePickerStatusRowWithProvider(
     alloc: Allocator,
     kind: input_presentation.PickerKind,
     model_stage: picker_state.ModelPickerStage,
-    provider_stage: picker_state.ProviderPickerStage,
     loading: bool,
     failed: bool,
     start_col: u16,
@@ -888,13 +703,7 @@ pub fn composePickerStatusRowWithProvider(
             .effort => "no matching effort",
             .fast => "no matching mode",
         },
-        .provider_stage => switch (provider_stage) {
-            .provider => "no matching providers",
-            .method => "no matching sign-in methods",
-            .team => if (loading) "loading teams..." else if (failed) "unable to load teams" else "no matching teams",
-            .key_source => "no matching key sources",
-            .api_key => "",
-        },
+        .provider_stage => "no matching providers",
         .models => "no models available",
         .file => if (loading)
             "indexing files..."
@@ -1046,20 +855,6 @@ fn appendStyledPathRange(
         cursor = visible_end;
     }
     if (cursor < source_end) try row.appendSlice(alloc, item.path[cursor..source_end]);
-}
-
-pub fn slashCompletionCommandColumnWidth(
-    registry: command_specs.SlashRegistry,
-    prefix: []const u8,
-    window: PickerWindow,
-) usize {
-    var width: usize = 0;
-    var match_idx = window.start;
-    while (match_idx < window.end) : (match_idx += 1) {
-        const label = command_specs.nthSlashCompletionLabel(registry, prefix, match_idx) orelse continue;
-        width = @max(width, display_width.visibleWidth(label));
-    }
-    return width + 2;
 }
 
 const MixedSlashCompletionEntry = union(enum) {

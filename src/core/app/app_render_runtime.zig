@@ -570,37 +570,18 @@ pub fn Runtime(comptime App: type) type {
                 app.input_runtime.picker.activeProviderPickerQuery(&app.input_runtime.edit_state)
             else
                 null;
-            var provider_stage: picker_state.ProviderPickerStage = .provider;
             var provider_picker_items: []const []const u8 = &.{};
             var provider_picker_annotations: []const []const u8 = &.{};
             var provider_picker_index: usize = 0;
             var provider_picker_window_start: usize = 0;
             var provider_picker_anchor: usize = 0;
             if (provider_query) |picker_query| {
-                provider_stage = picker_query.stage;
                 provider_picker_anchor = picker_query.token_start;
                 const count = provider_picker_runtime.Runtime(App).columnOptions(app, picker_query, &provider_picker_column);
                 provider_picker_items = provider_picker_column.labels[0..count];
                 provider_picker_annotations = provider_picker_column.annotations[0..count];
-                switch (picker_query.stage) {
-                    .provider => {
-                        provider_picker_index = app.input_runtime.picker.provider_column_index;
-                        provider_picker_window_start = app.input_runtime.picker.provider_column_window_start;
-                    },
-                    .method => {
-                        provider_picker_index = app.input_runtime.picker.method_column_index;
-                        provider_picker_window_start = app.input_runtime.picker.method_column_window_start;
-                    },
-                    .team => {
-                        provider_picker_index = app.input_runtime.picker.team_column_index;
-                        provider_picker_window_start = app.input_runtime.picker.team_column_window_start;
-                    },
-                    .key_source => {
-                        provider_picker_index = app.input_runtime.picker.key_source_column_index;
-                        provider_picker_window_start = app.input_runtime.picker.key_source_column_window_start;
-                    },
-                    .api_key => {},
-                }
+                provider_picker_index = app.input_runtime.picker.provider_column_index;
+                provider_picker_window_start = app.input_runtime.picker.provider_column_window_start;
             }
 
             const completion_rt = input_completion_runtime.CompletionRuntime(App);
@@ -695,9 +676,7 @@ pub fn Runtime(comptime App: type) type {
                 .pending_prompt_activity = pendingPromptActivityVisible(app),
                 .completed_assistant_presentation_tail = app.pacer.hasCompletedAssistantPresentationTail(),
                 .writing_response = app.pacer.hasPending(),
-                // A launch credential still loading must not flash "run /login".
-                .has_api_key = app.auth.credentialSource() != null or
-                    (if (comptime @hasDecl(@TypeOf(app.auth), "startupCredentialPending")) app.auth.startupCredentialPending() else false),
+                .has_api_key = app.auth.credentialSource() != null,
                 .model = visible_model,
                 .pending_images = app.pending_images.items,
                 .permission_mode = if (comptime @hasField(App, "permission_engine"))
@@ -721,7 +700,6 @@ pub fn Runtime(comptime App: type) type {
                 .model_completion_window_start = picker_window_start,
                 .model_completion_anchor = picker_anchor,
                 .provider_query_active = provider_query != null,
-                .provider_picker_stage = provider_stage,
                 .provider_picker_completions = provider_picker_items,
                 .provider_picker_annotations = provider_picker_annotations,
                 .provider_picker_completion_index = provider_picker_index,

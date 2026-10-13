@@ -15,7 +15,7 @@ const Allocator = std.mem.Allocator;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const DurableSessionPreferences = struct {
-    provider: model_provider.ProviderId = .gateway,
+    provider: model_provider.ProviderId = .codex,
     model: []u8,
     effort: types.ReasoningEffort,
     fast_mode: bool,
@@ -56,13 +56,8 @@ pub fn parse_preferences(alloc: Allocator, value: std.json.Value) !DurableSessio
         try exactObject(value, &.{ "model", "effort", "fast_mode", "ultrafast_mode" })
     else
         try exactObject(value, &.{ "model", "effort", "fast_mode" });
-    const provider: model_provider.ProviderId = if (legacy) blk: {
-        if (!std.mem.eql(u8, try requireString(object, "connection_id"), "vercel")) return error.InvalidDurableField;
-        break :blk .gateway;
-    } else if (object.contains("provider"))
-        model_provider.parse_saved(object.get("provider").?) catch return error.InvalidDurableField
-    else
-        .gateway;
+    if (legacy or !object.contains("provider")) return error.InvalidDurableField;
+    const provider = model_provider.parse_saved(object.get("provider").?) catch return error.InvalidDurableField;
     const model = try requireString(object, if (legacy) "model_id" else "model");
     try validateModel(model);
     const effort = types.ReasoningEffort.parse(try requireString(object, "effort")) orelse return error.InvalidDurableField;
@@ -489,10 +484,6 @@ pub fn encodeState(state: DurableSessionState, writer: *std.Io.Writer) !EncodeSu
     };
 }
 
-pub fn decodeState(alloc: Allocator, source: *std.Io.Reader, limits: DecodeLimits) !DurableSessionState {
-    return decodeStateWithUsageContract(alloc, source, limits, false);
-}
-
 /// Reads an old persisted state without requiring modern cache-token totals.
 /// Caller owns the state; all non-usage validation remains unchanged.
 pub fn decodeLegacyState(alloc: Allocator, source: *std.Io.Reader, limits: DecodeLimits) !DurableSessionState {
@@ -829,10 +820,6 @@ fn validateStateWithPermissionMigration(
             }
         }
     }
-}
-
-pub fn validateModelPreference(value: []const u8) !void {
-    try validateModel(value);
 }
 
 pub fn parseConversationLanguage(raw: []const u8) !session.ConversationLanguage {
@@ -1308,16 +1295,14 @@ pub fn parseRecoveryCheckpoint(alloc: Allocator, value: std.json.Value) !Recover
     errdefer alloc.free(assistant_source);
     const execution = try parseExecutionMemory(alloc, object.get("execution") orelse return error.InvalidSessionFormat);
     errdefer session.freeExecutionMemory(alloc, execution);
-    const authority = if (legacy_route) TurnAuthority{
-        .provider = .gateway,
-        .model = try parseDurableBytes(alloc, object.get("route_model") orelse return error.InvalidSessionFormat),
-    } else if (version == 1) legacy: {
+    if (legacy_route) return error.InvalidSessionFormat;
+    const authority = if (version == 1) legacy: {
         const model = try parseDurableBytes(alloc, object.get("route_model") orelse return error.InvalidSessionFormat);
         break :legacy TurnAuthority{
             .provider = if (object.get("route_provider")) |provider_value| blk: {
                 if (provider_value != .string) return error.InvalidDurableField;
                 break :blk model_provider.parse(provider_value.string) orelse return error.InvalidDurableField;
-            } else .gateway,
+            } else return error.InvalidDurableField,
             .model = model,
         };
     } else try parseTurnAuthority(alloc, object.get("authority") orelse return error.InvalidSessionFormat);
@@ -2130,16 +2115,6 @@ fn parseProviderReplay(alloc: Allocator, value: std.json.Value) !?types.Provider
         replay.parts_json.len == 0 or replay.parts_json.len > types.ProviderReplay.max_bytes or
         !std.unicode.utf8ValidateSlice(replay.parts_json)) return error.InvalidSessionFormat;
     return try types.dupeProviderReplay(alloc, replay);
-}
-
-/// Writes `calls` as the JSON array durable history stores them in.
-pub fn writeToolCalls(writer: *std.Io.Writer, calls: []const session.ToolCall) !void {
-    try writer.writeByte('[');
-    for (calls, 0..) |tool_call, index| {
-        if (index > 0) try writer.writeByte(',');
-        try writeExecutionToolCall(writer, tool_call, .durable);
-    }
-    try writer.writeByte(']');
 }
 
 /// Parses the array `writeToolCalls` writes. The caller owns the result.

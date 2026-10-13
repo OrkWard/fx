@@ -99,30 +99,6 @@ pub const PageData = struct {
     }
 };
 
-pub fn encodeHeader(alloc: Allocator, header: Header) Allocator.Error![]u8 {
-    std.debug.assert(header.active_count_known);
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    out.writer.writeAll(header_magic) catch return error.OutOfMemory;
-    writeInt(&out.writer, u32, header_schema_version) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.storage_epoch) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.generation) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.high_watermark) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.active_count) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.free_head) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.delivery_offset) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.migration_inode) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.migration_size) catch return error.OutOfMemory;
-    writeInt(&out.writer, i128, header.migration_mtime_ns) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.migration_offset) catch return error.OutOfMemory;
-    out.writer.writeByte(@backingInt(header.pending_kind)) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.pending_slot) catch return error.OutOfMemory;
-    writeInt(&out.writer, u64, header.pending_next_free) catch return error.OutOfMemory;
-    writeInt(&out.writer, u16, header.pending_child_len) catch return error.OutOfMemory;
-    out.writer.writeAll(header.pendingChild()) catch return error.OutOfMemory;
-    return out.toOwnedSlice();
-}
-
 pub fn decodeHeader(bytes: []const u8) Error!Header {
     var cursor = ByteCursor{ .bytes = bytes };
     if (!std.mem.eql(u8, try cursor.take(header_magic.len), header_magic)) {

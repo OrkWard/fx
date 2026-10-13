@@ -11,7 +11,6 @@ const compactor = @import("../compactor/compactor.zig");
 const model_catalog_metrics = @import("model_catalog_metrics.zig");
 
 pub const NetworkCall = network_metrics.NetworkCall;
-pub const NetworkCallKind = network_metrics.NetworkCallKind;
 pub const NetworkLifetimeStats = network_metrics.LifetimeStats;
 pub const NetworkTurnRollup = network_metrics.TurnRollup;
 pub const network_turn_rollup_capacity = network_metrics.turn_rollup_capacity;
@@ -56,10 +55,6 @@ pub fn snapshotNetworkTurnRollups(out: []NetworkTurnRollup) usize {
     return network_metrics.snapshotTurnRollups(out);
 }
 
-pub fn recordToolCall(call: ToolCallMetric) void {
-    tool_call_metrics.record(call);
-}
-
 /// Records a model-catalog load, capability lookup, or image gate outcome so
 /// the /trace report can explain capability rejections without FX_TRACE.
 pub fn recordModelCatalogEvent(failed: bool, kind: model_catalog_metrics.Kind, comptime fmt: []const u8, args: anytype) void {
@@ -88,8 +83,4 @@ pub fn resetSession() void {
     render_metrics.reset();
     compactor.resetTrace();
     model_catalog_metrics.reset();
-}
-
-pub fn resetForTest() void {
-    resetSession();
 }

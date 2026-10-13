@@ -485,28 +485,6 @@ pub fn prepareFileMutationTargets(
     ) };
 }
 
-pub fn evaluatePreparedFileMutationTargets(
-    alloc: std.mem.Allocator,
-    workspace_root: []const u8,
-    kind: file_mutation_contract.Kind,
-    prepared: *file_mutation_contract.ResolvedFileMutationTargets,
-    permission_mode: types.PermissionMode,
-    rules: types.PermissionRuleSet,
-    session_grants: []const types.PermissionGrant,
-    local_grants: []const types.PermissionGrant,
-) FileTargetEvaluationError!file_mutation_contract.FileTargetPolicyResult {
-    return evaluatePreparedFileMutationTargetsInScope(
-        alloc,
-        workspace_access.AccessScope.primaryOnly(workspace_root),
-        kind,
-        prepared,
-        permission_mode,
-        rules,
-        session_grants,
-        local_grants,
-    );
-}
-
 pub fn evaluatePreparedFileMutationTargetsInScope(
     alloc: std.mem.Allocator,
     access_scope: workspace_access.AccessScope,
@@ -593,35 +571,6 @@ pub fn authorizePreparedFileMutationTargets(
         drafts,
         false,
     ) };
-}
-
-pub fn evaluateFileMutationTargets(
-    alloc: std.mem.Allocator,
-    workspace_root: []const u8,
-    input: file_mutation_contract.FileMutationInput,
-    permission_mode: types.PermissionMode,
-    rules: types.PermissionRuleSet,
-    session_grants: []const types.PermissionGrant,
-    local_grants: []const types.PermissionGrant,
-) FileTargetEvaluationError!file_mutation_contract.FileTargetPolicyResult {
-    var prepared = switch (try prepareFileMutationTargets(
-        alloc,
-        workspace_root,
-        input,
-    )) {
-        .target_resolution_failure => |failure| return .{ .target_resolution_failure = failure },
-        .prepared => |value| value,
-    };
-    return evaluatePreparedFileMutationTargets(
-        alloc,
-        workspace_root,
-        std.meta.activeTag(input),
-        &prepared,
-        permission_mode,
-        rules,
-        session_grants,
-        local_grants,
-    );
 }
 
 fn walkFileTargetDirectories(
@@ -1088,11 +1037,6 @@ pub fn allowsExternalPath(tool_name: []const u8) bool {
     return false;
 }
 
-pub fn isFilesystemMutationTool(tool_name: []const u8) bool {
-    return std.mem.eql(u8, tool_name, "write_file") or
-        std.mem.eql(u8, tool_name, "edit_file");
-}
-
 pub fn displayTargetForPolicy(alloc: std.mem.Allocator, workspace_root: []const u8, target_path: []const u8, target_kind: PermissionTargetKind) ![]u8 {
     return switch (target_kind) {
         .command_cwd => displayCommandTarget(alloc, workspace_root, target_path),
@@ -1111,10 +1055,6 @@ pub fn ruleDecisionFor(alloc: std.mem.Allocator, rules: types.PermissionRuleSet,
 
 pub fn ruleDecisionForPermissionPattern(rules: types.PermissionRuleSet, permission: []const u8, pattern: []const u8, fallback: RuleDecision) RuleDecision {
     return evaluateRuleset(rules.rules, permission, pattern) orelse fallback;
-}
-
-pub fn rulesDenyAllTargetsForPermission(rules: types.PermissionRuleSet, permission: []const u8) bool {
-    return rulesDenyAllTargetsForPermissionAndTool(rules, permission, null);
 }
 
 pub fn rulesDenyAllTargetsForTool(rules: types.PermissionRuleSet, tool_name: []const u8) bool {
@@ -1443,41 +1383,6 @@ pub fn permissionNameForTool(tool_name: []const u8) []const u8 {
     if (isWebFetchToolName(tool_name)) return web_fetch_permission;
     if (std.mem.eql(u8, tool_name, "skill") or std.mem.eql(u8, tool_name, "install_skill")) return "skill";
     return tool_name;
-}
-
-/// Returns the persistent rule pattern for a session grant. Caller owns the returned slice.
-pub fn permissionRulePatternForGrant(alloc: std.mem.Allocator, workspace_root: []const u8, permission_name: []const u8, pattern: []const u8) ![]u8 {
-    const permission = permissionNameForTool(permission_name);
-    if (isWebSearchToolName(permission)) return alloc.dupe(u8, "*");
-    if (std.mem.eql(u8, permission, web_fetch_permission)) return canonicalWebFetchDomainPattern(alloc, pattern);
-    if (std.mem.eql(u8, permission, "bash")) {
-        if (command_environment.isExplicitPermissionCommandIdentity(pattern)) {
-            return alloc.dupe(u8, pattern);
-        }
-        if (std.mem.find(u8, pattern, "::")) |separator| {
-            return alloc.dupe(u8, pattern[separator + 2 ..]);
-        }
-        return alloc.dupe(u8, pattern);
-    }
-
-    if (std.mem.eql(u8, permission, "url") or
-        std.mem.eql(u8, permission, "skill"))
-    {
-        return alloc.dupe(u8, pattern);
-    }
-
-    if (std.Io.Dir.path.isAbsolute(pattern) and pathing.pathInside(workspace_root, pattern)) {
-        if (directoryTreePatternMatches(pattern, workspace_root)) return alloc.dupe(u8, "*");
-
-        const relative = std.Io.Dir.path.relativeAlloc(alloc, "/", null, workspace_root, pattern) catch return alloc.dupe(u8, pattern);
-        if (relative.len == 0) {
-            alloc.free(relative);
-            return alloc.dupe(u8, "*");
-        }
-        return relative;
-    }
-
-    return alloc.dupe(u8, pattern);
 }
 
 fn patternForRuleMatch(alloc: std.mem.Allocator, workspace_root: []const u8, tool_name: []const u8, target_path: []const u8, target_kind: PermissionTargetKind) ![]u8 {

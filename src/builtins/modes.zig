@@ -2,7 +2,6 @@ const mode_contract = @import("../core/modes/mode_contract.zig");
 const mode_registry = @import("../core/modes/mode_registry.zig");
 
 pub const ModeSpec = mode_contract.ModeSpec;
-pub const ToolPolicy = mode_contract.ToolPolicy;
 pub const default_mode_id = "auto";
 
 /// The CLI's `/permissions` modes, in display order.

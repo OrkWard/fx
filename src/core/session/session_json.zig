@@ -13,166 +13,8 @@ pub const LegacySchemaVersion = enum(u8) {
     v2 = 2,
 };
 
-/// Renders one session record as JSON; caller owns the returned slice and frees with allocator.free.
-pub const SessionTokenUsage = struct {
-    input: u64 = 0,
-    output: u64 = 0,
-    web_search_requests: u64 = 0,
-};
-
-pub noinline fn renderSessionJson(
-    alloc: Allocator,
-    active_id: []const u8,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-    language: session.ConversationLanguage,
-    workspace_root: []const u8,
-    history: []const session.HistoryTurn,
-    token_usage: SessionTokenUsage,
-) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    try out.writer.writeAll("{\"schema_version\":1,\"id\":");
-    try std.json.Stringify.value(active_id, .{}, &out.writer);
-    try out.writer.print(",\"created_at_ms\":{d},\"updated_at_ms\":{d}", .{ created_at_ms, updated_at_ms });
-    try out.writer.writeAll(",\"workspace_root\":");
-    try std.json.Stringify.value(workspace_root, .{}, &out.writer);
-    try out.writer.writeAll(",\"conversation_language\":");
-    try std.json.Stringify.value(language.view(), .{}, &out.writer);
-    if (token_usage.input > 0 or token_usage.output > 0) {
-        try out.writer.print(",\"total_input_tokens\":{d},\"total_output_tokens\":{d}", .{ token_usage.input, token_usage.output });
-    }
-    if (token_usage.web_search_requests > 0) {
-        try out.writer.print(",\"total_web_search_requests\":{d}", .{token_usage.web_search_requests});
-    }
-    try out.writer.print(",\"history_len\":{d},\"history\":[", .{history.len});
-
-    for (history, 0..) |turn, i| {
-        if (i > 0) try out.writer.writeByte(',');
-        try writeHistoryTurnJson(&out.writer, turn);
-    }
-
-    try out.writer.writeAll("]}");
-    return try out.toOwnedSlice();
-}
-
-fn writeHistoryTurnJson(writer: *std.Io.Writer, turn: session.HistoryTurn) !void {
-    switch (turn) {
-        .compacted_summary => |entry| {
-            try writer.writeAll("{\"kind\":\"compacted_summary\",\"summary\":");
-            try std.json.Stringify.value(entry.summary, .{}, writer);
-            try writer.print(",\"removed_turn_count\":{d},\"compaction_count\":{d}", .{ entry.removed_turn_count, entry.compaction_count });
-            try writer.writeByte('}');
-        },
-        .assistant => |entry| {
-            try writer.writeAll("{\"kind\":\"assistant\",\"user\":");
-            try writeUserTurnJson(writer, entry.user);
-            try writer.writeAll(",\"assistant\":");
-            try std.json.Stringify.value(entry.assistant, .{}, writer);
-            if (!entry.execution.isEmpty()) {
-                try writer.writeAll(",\"execution\":");
-                try writeExecutionMemoryJson(writer, entry.execution);
-            }
-            try writer.writeByte('}');
-        },
-        .interrupted => |entry| {
-            try writer.writeAll("{\"kind\":\"interrupted\",\"user\":");
-            try writeUserTurnJson(writer, entry.user);
-            try writer.writeAll(",\"assistant\":");
-            if (entry.assistant) |assistant| {
-                try std.json.Stringify.value(assistant, .{}, writer);
-            } else {
-                try writer.writeAll("null");
-            }
-            try writer.writeAll(",\"tool_call\":");
-            if (entry.tool_call) |tool_call| {
-                try writeToolCallJson(writer, tool_call);
-            } else {
-                try writer.writeAll("null");
-            }
-            try writer.writeAll(",\"completed_tool_names\":");
-            try writeStringArrayJson(writer, entry.completed_tool_names);
-            try writer.writeAll(",\"terminal_reason\":");
-            try std.json.Stringify.value(@tagName(entry.terminal_reason), .{}, writer);
-            if (entry.cancellation_origin == .compaction) {
-                try writer.writeAll(",\"cancellation_origin\":\"compaction\"");
-            }
-            if (!entry.execution.isEmpty()) {
-                try writer.writeAll(",\"execution\":");
-                try writeExecutionMemoryJson(writer, entry.execution);
-            }
-            try writer.writeByte('}');
-        },
-    }
-}
-
-fn writeToolCallJson(writer: *std.Io.Writer, tool_call: session.ToolCall) !void {
-    try writer.writeAll("{\"id\":");
-    try std.json.Stringify.value(tool_call.id, .{}, writer);
-    try writer.writeAll(",\"name\":");
-    try std.json.Stringify.value(tool_call.name, .{}, writer);
-    try writer.writeAll(",\"arguments_json\":");
-    try std.json.Stringify.value(tool_call.arguments_json, .{}, writer);
-    try writer.writeAll(",\"provider_result\":");
-    if (tool_call.provider_result) |provider_result| {
-        try std.json.Stringify.value(provider_result, .{}, writer);
-    } else {
-        try writer.writeAll("null");
-    }
-    try writer.writeByte('}');
-}
-
 pub fn writeExecutionMemoryJson(writer: *std.Io.Writer, execution: session.ExecutionMemory) !void {
     try session_codec.writeExecutionMemoryJson(writer, execution, .presentation);
-}
-
-fn writeUserTurnJson(writer: *std.Io.Writer, user: session.UserTurn) !void {
-    try writer.writeAll("{\"text\":");
-    try std.json.Stringify.value(user.text, .{}, writer);
-    try writer.writeAll(",\"images\":[");
-    for (user.images, 0..) |image, i| {
-        if (i > 0) try writer.writeByte(',');
-        try writer.writeAll("{\"path\":");
-        try std.json.Stringify.value(image.path, .{}, writer);
-        try writer.writeAll(",\"media_type\":");
-        try std.json.Stringify.value(image.media_type, .{}, writer);
-        try writer.writeAll(",\"snapshot_path\":");
-        try writeImageSnapshotLocatorJson(writer, image.snapshot_path);
-        try writer.writeAll(",\"snapshot_sha256\":");
-        try std.json.Stringify.value(image.snapshot_sha256, .{}, writer);
-        try writer.writeByte('}');
-    }
-    try writer.writeAll("]}");
-}
-
-fn writeImageSnapshotLocatorJson(writer: *std.Io.Writer, value: ?[]const u8) !void {
-    const path = value orelse {
-        try writer.writeAll("null");
-        return;
-    };
-    var locator_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const locator = try session.projectSnapshotLocator(&locator_buffer, path);
-    try std.json.Stringify.value(locator, .{}, writer);
-}
-
-fn writeStringArrayJson(writer: *std.Io.Writer, items: anytype) !void {
-    try writer.writeByte('[');
-    for (items, 0..) |item, i| {
-        if (i > 0) try writer.writeByte(',');
-        try std.json.Stringify.value(item, .{}, writer);
-    }
-    try writer.writeByte(']');
-}
-
-/// Parses a session summary; caller owns returned fields and frees with SessionSummary.deinit.
-pub fn parseSessionSummary(comptime SessionSummary: type, alloc: Allocator, json_text: []const u8) !SessionSummary {
-    var source = std.Io.Reader.fixed(json_text);
-    return parseLegacySummaryStreaming(SessionSummary, alloc, &source) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.UnsupportedSessionSchema => return error.UnsupportedSessionSchema,
-        else => return error.InvalidSessionFormat,
-    };
 }
 
 pub fn parseLegacySummaryStreaming(
@@ -305,11 +147,6 @@ fn parseLegacySummaryStreamingImpl(
         @field(result, "schema_version") = try legacySchemaVersion(schema_version.?);
     }
     return result;
-}
-
-/// Parses a full stored session; caller owns returned fields and frees with StoredSession.deinit.
-pub noinline fn parseStoredSession(comptime StoredSession: type, alloc: Allocator, json_text: []const u8) !StoredSession {
-    return parseLegacyExact(StoredSession, alloc, json_text);
 }
 
 pub fn parseLegacyExact(
@@ -987,14 +824,6 @@ fn parseUserTurn(alloc: Allocator, value: std.json.Value) !session.UserTurn {
 
 fn parseConversationLanguage(raw: []const u8) !session.ConversationLanguage {
     return session.ConversationLanguage.fromSlice(raw) catch error.InvalidSessionFormat;
-}
-
-/// Parses only the workspace_root field; caller owns a returned string and frees with allocator.free.
-pub fn parseWorkspaceRoot(alloc: Allocator, json_text: []const u8) !?[]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_text, .{}) catch return error.InvalidSessionFormat;
-    defer parsed.deinit();
-    const root = try requireObject(parsed.value);
-    return try optionalStringDup(alloc, root.get("workspace_root"));
 }
 
 fn validateImagesArray(alloc: Allocator, maybe_value: ?std.json.Value) ![]session.ImageAttachment {

@@ -7,7 +7,6 @@ const Allocator = std.mem.Allocator;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const manifest_max_bytes: usize = 64 * 1024;
-pub const checkpoint_max_bytes: usize = 32 * 1024 * 1024;
 pub const Digest = [Sha256.digest_length]u8;
 
 pub const Manifest = struct {
@@ -39,94 +38,6 @@ pub const Manifest = struct {
         self.* = undefined;
     }
 };
-
-pub const Checkpoint = struct {
-    session_id: []u8,
-    log_generation: session_event.Identifier,
-    through_seq: u64,
-    through_event_id: session_event.Identifier,
-    through_event_log_bytes: u64,
-    state: session_codec.DurableSessionState,
-
-    pub fn deinit(self: *Checkpoint, alloc: Allocator) void {
-        alloc.free(self.session_id);
-        self.state.deinit(alloc);
-        self.* = undefined;
-    }
-};
-
-inline fn failCheckpoint(err: anytype) @TypeOf(err)!Checkpoint {
-    return @errorCast(failCheckpointDynamic(err));
-}
-
-noinline fn failCheckpointDynamic(err: anyerror) anyerror!Checkpoint {
-    return err;
-}
-
-pub const EventBoundary = struct {
-    log_generation: session_event.Identifier,
-    seq: u64,
-    event_id: session_event.Identifier,
-    event_log_bytes: u64,
-    semantic: bool,
-};
-
-pub fn encodeManifest(alloc: Allocator, manifest: Manifest) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    try out.writer.writeAll(
-        "{\"schema_version\":3,\"storage_format\":\"event_log_v1\",\"id\":",
-    );
-    try writeJsonString(&out.writer, manifest.id);
-    try out.writer.writeAll(",\"authority_id\":");
-    try writeHexString(&out.writer, &manifest.authority_id);
-    try out.writer.writeAll(",\"log_generation\":");
-    try writeHexString(&out.writer, &manifest.log_generation);
-    try out.writer.print(",\"created_at_ms\":{d},\"updated_at_ms\":{d}", .{
-        manifest.created_at_ms,
-        manifest.updated_at_ms,
-    });
-    try out.writer.writeAll(",\"origin_workspace_root\":");
-    try writeJsonString(&out.writer, manifest.origin_workspace_root);
-    try out.writer.writeAll(",\"workspace_root\":");
-    try writeJsonString(&out.writer, manifest.workspace_root);
-    try out.writer.writeAll(",\"conversation_language\":");
-    try writeJsonString(&out.writer, manifest.conversation_language.view());
-    try out.writer.print(
-        ",\"history_len\":{d},\"total_input_tokens\":{d},\"total_output_tokens\":{d},\"last_event_seq\":{d},\"event_log_bytes\":{d},\"event_log_stat_fingerprint\":",
-        .{
-            manifest.history_len,
-            manifest.total_input_tokens,
-            manifest.total_output_tokens,
-            manifest.last_event_seq,
-            manifest.event_log_bytes,
-        },
-    );
-    try writeHexString(&out.writer, &manifest.event_log_stat_fingerprint);
-    try out.writer.print(",\"generation_base_seq\":{d},\"generation_base_bytes\":{d},\"checkpoint_seq\":", .{
-        manifest.generation_base_seq,
-        manifest.generation_base_bytes,
-    });
-    if (manifest.checkpoint_seq) |seq| {
-        try out.writer.print("{d}", .{seq});
-    } else {
-        try out.writer.writeAll("null");
-    }
-    try out.writer.writeAll(",\"checkpoint_sha256\":");
-    if (manifest.checkpoint_sha256) |digest| {
-        try writeHexString(&out.writer, &digest);
-    } else {
-        try out.writer.writeAll("null");
-    }
-    try out.writer.writeAll(",\"preferences\":");
-    try writePreferences(&out.writer, manifest.preferences);
-    try out.writer.writeByte('}');
-
-    if (out.written().len > manifest_max_bytes) return error.ManifestTooLarge;
-    try validateManifest(manifest);
-    return try out.toOwnedSlice();
-}
 
 pub fn decodeManifest(alloc: Allocator, bytes: []const u8) !Manifest {
     if (bytes.len == 0 or bytes.len > manifest_max_bytes) return error.ManifestTooLarge;
@@ -252,124 +163,6 @@ fn durablePreferencesEqual(
         left.ultrafast_mode == right.ultrafast_mode;
 }
 
-pub fn encodeCheckpoint(alloc: Allocator, checkpoint: Checkpoint) ![]u8 {
-    try validateCheckpoint(checkpoint);
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    try out.writer.writeAll("{\"schema_version\":1,\"session_id\":");
-    try writeJsonString(&out.writer, checkpoint.session_id);
-    try out.writer.writeAll(",\"log_generation\":");
-    try writeHexString(&out.writer, &checkpoint.log_generation);
-    try out.writer.print(",\"through_seq\":{d},\"through_event_id\":", .{
-        checkpoint.through_seq,
-    });
-    try writeHexString(&out.writer, &checkpoint.through_event_id);
-    try out.writer.print(",\"through_event_log_bytes\":{d},\"state\":", .{
-        checkpoint.through_event_log_bytes,
-    });
-    _ = try session_codec.encodeState(checkpoint.state, &out.writer);
-    try out.writer.writeByte('}');
-
-    if (out.written().len > checkpoint_max_bytes) return error.CheckpointTooLarge;
-    return try out.toOwnedSlice();
-}
-
-pub fn decodeCheckpoint(alloc: Allocator, bytes: []const u8) !Checkpoint {
-    return decodeCheckpointImpl(alloc, bytes) catch |err| switch (err) {
-        error.OutOfMemory => return failCheckpoint(error.OutOfMemory),
-        error.CheckpointTooLarge => return failCheckpoint(error.CheckpointTooLarge),
-        else => return failCheckpoint(error.InvalidCheckpoint),
-    };
-}
-
-fn decodeCheckpointImpl(alloc: Allocator, bytes: []const u8) !Checkpoint {
-    if (bytes.len == 0 or bytes.len > checkpoint_max_bytes) return error.CheckpointTooLarge;
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, bytes, .{
-        .parse_numbers = false,
-    }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.InvalidCheckpoint,
-    };
-    defer parsed.deinit();
-    const root = try exactObject(parsed.value, &.{
-        "schema_version",
-        "session_id",
-        "log_generation",
-        "through_seq",
-        "through_event_id",
-        "through_event_log_bytes",
-        "state",
-    });
-    if (try requireU64(root, "schema_version") != 1) return error.InvalidCheckpoint;
-
-    var state_json: std.Io.Writer.Allocating = .init(alloc);
-    defer state_json.deinit();
-    try std.json.Stringify.value(
-        root.get("state") orelse return error.InvalidCheckpoint,
-        .{},
-        &state_json.writer,
-    );
-    var state_source = std.Io.Reader.fixed(state_json.written());
-    var state = session_codec.decodeState(alloc, &state_source, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.InvalidCheckpoint,
-    };
-    errdefer state.deinit(alloc);
-    const session_id = try dupeString(alloc, root, "session_id");
-    errdefer alloc.free(session_id);
-    const checkpoint = Checkpoint{
-        .session_id = session_id,
-        .log_generation = try parseIdentifier(try requireString(root, "log_generation")),
-        .through_seq = try requireU64(root, "through_seq"),
-        .through_event_id = try parseIdentifier(try requireString(root, "through_event_id")),
-        .through_event_log_bytes = try requireU64(root, "through_event_log_bytes"),
-        .state = state,
-    };
-    try validateCheckpoint(checkpoint);
-    return checkpoint;
-}
-
-pub fn validateCheckpointReference(
-    manifest: Manifest,
-    checkpoint_bytes: []const u8,
-    checkpoint: Checkpoint,
-    watermark: EventBoundary,
-    checkpoint_boundary: EventBoundary,
-) !void {
-    const expected_hash = manifest.checkpoint_sha256 orelse return error.StaleCheckpoint;
-    if (!std.mem.eql(u8, &sha256(checkpoint_bytes), &expected_hash)) {
-        return error.CheckpointHashMismatch;
-    }
-    if (manifest.checkpoint_seq == null or
-        manifest.checkpoint_seq.? != checkpoint.through_seq or
-        !std.mem.eql(u8, checkpoint.session_id, manifest.id) or
-        !std.mem.eql(u8, &checkpoint.log_generation, &manifest.log_generation) or
-        !std.mem.eql(u8, &watermark.log_generation, &manifest.log_generation) or
-        !std.mem.eql(u8, &checkpoint_boundary.log_generation, &manifest.log_generation))
-    {
-        return error.StaleCheckpoint;
-    }
-    if (!checkpoint_boundary.semantic or
-        checkpoint_boundary.seq != checkpoint.through_seq or
-        checkpoint_boundary.event_log_bytes != checkpoint.through_event_log_bytes or
-        !std.mem.eql(u8, &checkpoint_boundary.event_id, &checkpoint.through_event_id))
-    {
-        return error.InvalidCheckpointBoundary;
-    }
-    if (!watermark.semantic or
-        watermark.seq != manifest.last_event_seq or
-        watermark.event_log_bytes != manifest.event_log_bytes or
-        checkpoint.through_seq > watermark.seq or
-        checkpoint.through_event_log_bytes > watermark.event_log_bytes)
-    {
-        return error.StaleCheckpoint;
-    }
-    if (!std.mem.eql(u8, checkpoint.state.id, manifest.id)) {
-        return error.StaleCheckpoint;
-    }
-}
-
 pub fn sha256(bytes: []const u8) Digest {
     var digest: Digest = undefined;
     Sha256.hash(bytes, &digest, .{});
@@ -402,34 +195,6 @@ fn validateManifest(manifest: Manifest) !void {
     {
         return error.InvalidManifest;
     }
-}
-
-fn validateCheckpoint(checkpoint: Checkpoint) !void {
-    session_codec.validateState(checkpoint.state) catch return error.InvalidCheckpoint;
-    if (checkpoint.through_seq == 0 or checkpoint.through_event_log_bytes == 0 or
-        !std.mem.eql(u8, checkpoint.session_id, checkpoint.state.id))
-    {
-        return error.InvalidCheckpoint;
-    }
-}
-
-fn writePreferences(
-    writer: *std.Io.Writer,
-    preferences: session_codec.DurableSessionPreferences,
-) !void {
-    try writer.writeAll("{\"model\":");
-    try writeJsonString(writer, preferences.model);
-    try writer.writeAll(",\"effort\":");
-    try writeJsonString(writer, preferences.effort.label());
-    try writer.print(",\"fast_mode\":{s}", .{
-        if (preferences.fast_mode) "true" else "false",
-    });
-    if (preferences.ultrafast_mode) {
-        try writer.writeAll(",\"ultrafast_mode\":true");
-    }
-    try writer.writeAll(",\"provider\":");
-    try std.json.Stringify.value(preferences.provider, .{}, writer);
-    try writer.writeByte('}');
 }
 
 fn parsePreferences(alloc: Allocator, value: std.json.Value) !session_codec.DurableSessionPreferences {
@@ -518,18 +283,4 @@ fn parseHex(comptime T: type, hex: []const u8) !T {
     const canonical = std.fmt.bytesToHex(value, .lower);
     if (!std.mem.eql(u8, &canonical, hex)) return error.InvalidManifest;
     return value;
-}
-
-fn writeHexString(writer: *std.Io.Writer, bytes: []const u8) !void {
-    const alphabet = "0123456789abcdef";
-    try writer.writeByte('"');
-    for (bytes) |byte| {
-        try writer.writeByte(alphabet[byte >> 4]);
-        try writer.writeByte(alphabet[byte & 0x0f]);
-    }
-    try writer.writeByte('"');
-}
-
-fn writeJsonString(writer: *std.Io.Writer, bytes: []const u8) !void {
-    try std.json.Stringify.value(bytes, .{}, writer);
 }

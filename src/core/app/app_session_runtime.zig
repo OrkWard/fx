@@ -264,7 +264,7 @@ pub const SessionPreferencePatch = struct {
             .ultrafast_mode = self.ultrafast_mode,
         };
         if (self.model) |model| patch.model_preference = .{
-            .provider = self.provider orelse .gateway,
+            .provider = self.provider orelse .codex,
             .model = model,
         };
         return patch;
@@ -2990,16 +2990,15 @@ pub fn Runtime(comptime App: type) type {
                 .task_running = app.session_persistence.title_generation.task != null,
             })) return;
             const session_id = activeSessionId(app) orelse return;
-            const credential = app.auth.gatewayCredential() orelse return;
+            if (!app.auth.hasUsableCredential()) return;
 
             const task = session_title_generation.Task.create(.{
                 .session_id = session_id,
                 .model = title_model.?,
                 .prompt_excerpt = excerpt,
-                .api_key = credential.api_key,
-                .gateway_team = credential.gateway_team,
+                .api_key = app.auth.apiKey(),
                 .account_id = app.auth.accountId(),
-                .credential_source = credential.source,
+                .credential_source = app.auth.credentialSource(),
                 .stream_provider = app.agentStreamProvider(),
             }) catch |err| {
                 app.session_persistence.title_generation.recordSpawnFailure(session_id, title_model.?, err);

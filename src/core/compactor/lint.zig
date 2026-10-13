@@ -540,21 +540,3 @@ fn normalized(arena: Allocator, text: []const u8) Allocator.Error![]const u8 {
     }
     return std.mem.trimEnd(u8, out.items, " ");
 }
-
-const test_tools = [_]Record{
-    .{ .number = 7, .text = "T7 shell: zig build test\nResult:\n{\"exit_code\":1,\"output\":\"2 of 141 tests failed in src/core/app.zig\"}", .failed = true },
-    .{ .number = 8, .text = "T8 read_file: src/core/app.zig\nResult:\nconst max_bytes = 16_384;\nfn resumeForWrite() void {}" },
-    .{ .number = 9, .text = "T9 shell: git log\nResult:\ncommit 707afac508e1 bumped zlib to 0.0.10" },
-};
-const test_turns = [_]Record{.{ .number = 4, .text = "M4 turn: fix the tests\nUser 4:\nNever push to main. Keep the fix small.\n", .first_tool = 7, .last_tool = 9 }};
-const test_sources: Sources = .{
-    .turn_count = 4,
-    .tool_count = 9,
-    .turns = &test_turns,
-    .tools = &test_tools,
-    .users = &.{"Never push to main. Keep the fix small."},
-};
-
-fn checked(arena: Allocator, written: ledger.Written, earlier: []const checkpoint.Entry, counts: *Counts) !ledger.Written {
-    return check(arena, written, earlier, test_sources, counts);
-}

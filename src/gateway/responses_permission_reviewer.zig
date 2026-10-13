@@ -5,7 +5,7 @@ const types = @import("../core/shared/types.zig");
 const io_mod = @import("../core/shared/io.zig");
 const debug_trace = @import("../core/shared/debug_trace.zig");
 const session_usage = @import("../core/session/session_usage.zig");
-const vercel_protocol = @import("vercel_protocol.zig");
+const review_messages = @import("review_messages.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -84,7 +84,7 @@ fn buildReviewPayload(
     cancel_flag: *std.atomic.Value(bool),
 ) ![]u8 {
     const runtime: *Runtime = @ptrCast(@alignCast(raw));
-    const expanded = try vercel_protocol.expandPendingToolReviewMessages(
+    const expanded = try review_messages.expandPendingToolReviewMessages(
         alloc,
         messages,
         target_call_id,
@@ -103,41 +103,6 @@ fn buildReviewPayload(
         .budget = .{ .deadline = deadline, .cancel_flag = cancel_flag },
     });
 }
-
-pub fn buildPayloadForTest(
-    alloc: Allocator,
-    model: []const u8,
-    instructions: []const types.ChatMessage,
-    messages: []const types.ChatMessage,
-    target_call_id: []const u8,
-    deadline: std.Io.Clock.Timestamp,
-    cancel_flag: *std.atomic.Value(bool),
-    build_fn: BuildFn,
-) ![]u8 {
-    var runtime = Runtime{
-        .input = .{},
-        .adapter = .{
-            .source = .ai_gateway_api_key,
-            .model = model,
-            .build_fn = build_fn,
-            .validate_fn = validateUnavailable,
-            .send_fn = undefined,
-        },
-    };
-    return buildReviewPayload(
-        &runtime,
-        alloc,
-        model,
-        "",
-        instructions,
-        messages,
-        target_call_id,
-        deadline,
-        cancel_flag,
-    );
-}
-
-fn validateUnavailable(_: Allocator, _: permission_auto_classifier.ProviderInput) !void {}
 
 const OwnedResult = struct {
     result: stream_provider.Result,
@@ -195,7 +160,6 @@ fn sendReview(
                 .secret_bytes = runtime.input.credential,
                 .source = runtime.adapter.source,
                 .account_id = runtime.input.account_id,
-                .tenant_context = runtime.input.tenant,
             } },
         .model = model,
         .retry_count = 1,

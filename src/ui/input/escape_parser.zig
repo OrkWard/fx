@@ -475,11 +475,6 @@ fn sgrMouseAction(button: u16, column: u16, row: u16, terminator: u8) InputEscap
     } };
 }
 
-pub fn consumeInputEscapeByte(stage: *u8, param: *u16, param2: *u16, byte: u8) ?InputEscapeAction {
-    var mouse = MouseInput{};
-    return consumeInputEscapeByteWithMouse(stage, param, param2, &mouse, byte);
-}
-
 pub fn consumeInputEscapeByteWithMouse(
     stage: *u8,
     param: *u16,

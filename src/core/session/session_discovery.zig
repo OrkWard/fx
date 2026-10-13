@@ -99,16 +99,6 @@ const LegacyCandidateSummary = struct {
     }
 };
 
-/// Frees every diagnostic in the list and the list itself. Call once on the
-/// slice returned by `Store.inspectForDoctor`.
-pub fn freeDoctorDiagnostics(
-    alloc: Allocator,
-    diagnostics: *std.ArrayList(DoctorDiagnostic),
-) void {
-    for (diagnostics.items) |*diagnostic| diagnostic.deinit(alloc);
-    diagnostics.deinit(alloc);
-}
-
 /// Appends one diagnostic for `session_id`; dupes the id so the caller keeps
 /// ownership of its slice. `bytes` carries an optional size for size-based kinds.
 pub fn appendDoctorDiagnostic(

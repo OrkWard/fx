@@ -11,8 +11,8 @@ const utf8PrefixLength = @import("../../config/context_limits.zig").utf8PrefixLe
 const Allocator = std.mem.Allocator;
 const ChatMessage = types.ChatMessage;
 
-/// Claude routes reject request bodies over 32 MiB, the strictest limit
-/// measured through AI Gateway. Gemini and OpenAI routes accept larger ones.
+/// Claude routes reject request bodies over 32 MiB, the strictest known
+/// limit. Gemini and OpenAI routes accept larger ones.
 pub const default_max_request_bytes: usize = 30 * 1024 * 1024;
 /// Anthropic accepts at most 100 images in one request.
 pub const default_max_request_images: usize = 100;

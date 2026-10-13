@@ -1,7 +1,6 @@
 const std = @import("std");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
-const message = @import("../shared/message.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const types = @import("../shared/types.zig");
 
@@ -77,13 +76,6 @@ pub fn buildNormalChatExecutionMemory(
     messages: []const types.ChatMessage,
 ) !types.ExecutionMemory {
     return buildNormalExecutionMemory(ChatMessageAdapter, alloc, messages);
-}
-
-pub fn buildNormalMessageExecutionMemory(
-    alloc: Allocator,
-    messages: []const message.Message,
-) !types.ExecutionMemory {
-    return buildNormalExecutionMemory(MessageAdapter, alloc, messages);
 }
 
 pub fn dupeCompletedPersistedToolCalls(
@@ -284,57 +276,6 @@ const ChatMessageAdapter = struct {
 
     fn content(value: Message) ?[]const u8 {
         return value.content;
-    }
-};
-
-const MessageAdapter = struct {
-    fn standalone(_: Message) bool {
-        return false;
-    }
-    pub const Message = message.Message;
-
-    fn providerReplay(_: Message) ?types.ProviderReplay {
-        return null;
-    }
-
-    fn isAssistant(value: Message) bool {
-        return value.role == .assistant;
-    }
-
-    fn isTool(value: Message) bool {
-        return value.role == .tool;
-    }
-
-    fn isUser(value: Message) bool {
-        return value.role == .user;
-    }
-
-    fn isPermissionFeedback(value: Message) bool {
-        return value.role == .user and value.permission_feedback;
-    }
-
-    fn toolCalls(value: Message) []const ToolCall {
-        return value.tool_calls;
-    }
-
-    fn toolCallId(value: Message) ?[]const u8 {
-        return value.tool_call_id;
-    }
-
-    fn toolName(value: Message) ?[]const u8 {
-        return value.tool_name;
-    }
-
-    fn toolResultStatus(value: Message) ?types.PersistedToolStatus {
-        return value.tool_result_status;
-    }
-
-    fn toolResultMemory(value: Message) ?types.ToolResultMemory {
-        return value.tool_result_memory;
-    }
-
-    fn content(value: Message) ?[]const u8 {
-        return if (value.content) |content_value| content_value.asText() else null;
     }
 };
 

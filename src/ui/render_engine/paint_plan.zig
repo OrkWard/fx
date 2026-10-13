@@ -548,20 +548,3 @@ pub fn validateCursor(layout: Layout, cursor: FrameCursorTarget) PaintPlanError!
     if (cursor.row == 0 or cursor.row > layout.rows) return error.CursorOutOfBounds;
     if (cursor.col == 0 or cursor.col > layout.cols) return error.CursorOutOfBounds;
 }
-
-pub fn transcriptBottomLimit(
-    footer_top: u16,
-    activity: activity_overlay.ActivityPlacement,
-    bottom_reserved_rows: u16,
-) u16 {
-    if (footer_top <= 1) return 0;
-    var bottom = footer_top - 1;
-    if (activity.reservedTopRow()) |reserved_top| {
-        if (reserved_top <= 1) return 0;
-        bottom = @min(bottom, reserved_top - 1);
-    } else if (bottom_reserved_rows > 0) {
-        if (bottom_reserved_rows >= bottom) return 0;
-        bottom -= bottom_reserved_rows;
-    }
-    return bottom;
-}

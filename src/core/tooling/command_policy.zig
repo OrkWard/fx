@@ -57,30 +57,6 @@ fn safer_alternative_for_risk(risk: DestructiveEffect) []const u8 {
     };
 }
 
-/// Returns an informational annotation for non-error non-zero exit codes.
-pub fn semantic_exit_annotation(command_text: []const u8, exit_code: i64, stderr_text: []const u8) ?[]const u8 {
-    if (exit_code == 0) return null;
-
-    const analysis = command_classification.analysis_command_tail(command_text);
-    const terminal = command_classification.terminal_exit_segment(analysis) orelse return null;
-    const base = command_classification.base_command_token(terminal) orelse return null;
-
-    if (is_pattern_matcher(base)) {
-        return if (exit_code == 1) "note: no matches found" else null;
-    }
-    if (std.mem.eql(u8, base, "find")) {
-        if (exit_code != 1 or !looks_like_find_access_issue(stderr_text)) return null;
-        return "note: some paths could not be read";
-    }
-    if (std.mem.eql(u8, base, "diff") or std.mem.eql(u8, base, "cmp")) {
-        return if (exit_code == 1) "note: compared files differ" else null;
-    }
-    if (std.mem.eql(u8, base, "test") or std.mem.eql(u8, base, "[")) {
-        return if (exit_code == 1) "note: condition evaluated false" else null;
-    }
-    return null;
-}
-
 fn destructive_effect_in_analysis(command: []const u8) ?DestructiveEffect {
     var effect: ?DestructiveEffect = null;
     var in_single = false;
@@ -519,29 +495,6 @@ fn is_pattern_matcher(command: []const u8) bool {
         std.mem.eql(u8, command, "fgrep") or
         std.mem.eql(u8, command, "rg") or
         std.mem.eql(u8, command, "ag");
-}
-
-fn looks_like_find_access_issue(stderr_text: []const u8) bool {
-    return contains_ascii_ignore_case(stderr_text, "permission denied") or
-        contains_ascii_ignore_case(stderr_text, "operation not permitted");
-}
-
-fn contains_ascii_ignore_case(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (ascii_eql_ignore_case(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
-
-fn ascii_eql_ignore_case(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |left, right| {
-        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
-    }
-    return true;
 }
 
 fn has_shell_boundary(command: []const u8) bool {

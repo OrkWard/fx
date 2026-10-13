@@ -416,10 +416,6 @@ fn maxTablePayloadRowLen(rows: []const payload.TableRow) usize {
     return max;
 }
 
-pub fn parseTablePayload(alloc: Allocator, buf: []const u8, link_id: *u32) !payload.TablePayload {
-    return parseTablePayloadWithFootnotes(alloc, buf, null, link_id);
-}
-
 pub fn parseTablePayloadWithFootnotes(
     alloc: Allocator,
     buf: []const u8,

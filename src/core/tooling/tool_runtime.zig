@@ -3,7 +3,6 @@ const skill_contract = @import("../skills/skill_contract.zig");
 const builtin = @import("builtin");
 const agent_stream_provider = @import("../agent/stream_provider.zig");
 const oauth_transport = @import("../auth/oauth_transport.zig");
-const host_mod = @import("../hosts/host.zig");
 const command_contract = @import("../execution/command_contract.zig");
 const command_environment = @import("../execution/command_environment.zig");
 const managed_execution = @import("../execution/managed_execution.zig");
@@ -30,7 +29,6 @@ const session_child_store = @import("../session/session_child_store.zig");
 const command_replay_store = @import("../session/command_replay_store.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const tool_admission = @import("tool_admission.zig");
-const tool_args = @import("tool_args.zig");
 const command_result_mapping = @import("command_result_mapping.zig");
 const tool_dispatch = @import("tool_dispatch.zig");
 const tool_specs = @import("tool_specs.zig");
@@ -58,12 +56,6 @@ const ToolExecutionResult = tool_contracts.ToolExecutionResult;
 const SessionRuntime = session_runtime.SessionRuntime;
 const WorkerRuntime = worker_runtime.WorkerRuntime;
 
-const helpers = struct {
-    const requiredStringArg = tool_args.requiredStringArg;
-    const parseToolArgsObject = tool_args.parseToolArgsObject;
-};
-
-const parseToolArgsObject = helpers.parseToolArgsObject;
 const context_limits = @import("../config/context_limits.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const host_capabilities = @import("../hosts/host.zig");
@@ -84,16 +76,14 @@ pub const Context = struct {
     auto_compact_percent: u8 = compactor.default_percent,
     api_key: []const u8,
     agent_stream_provider: agent_stream_provider.Provider = agent_stream_provider.unavailable_provider,
-    gateway_team: ?[]const u8 = null,
     credential_source: ?types.CredentialSource = null,
     account_id: ?[]const u8 = null,
-    provider: model_provider.ProviderId = .gateway,
+    provider: model_provider.ProviderId = .codex,
     provider_capabilities: provider_set.Bundle.Capabilities = .{
         .fx_search = true,
         .vision_fallback = true,
     },
     oauth_transport: oauth_transport.Provider = oauth_transport.unavailable_provider,
-    secret_store: host_mod.SecretStore = host_mod.unavailable_secret_store,
     model: []const u8,
     /// Resolved review-model override for automatic permission review. Empty
     /// keeps the reviewer provider's compiled default.
@@ -103,9 +93,6 @@ pub const Context = struct {
     root_user_messages: []const []const u8 = &.{},
     root_user_evidence_complete: bool = false,
     current_turn_messages: []const ChatMessage = &.{},
-    gateway_retry_count: usize,
-    gateway_chat_url: []const u8,
-    gateway_models_path: []const u8 = "/v1/models",
     agent_step_limit: usize,
     fast_mode: bool = false,
     ultrafast_mode: bool = false,
@@ -166,7 +153,6 @@ pub const Context = struct {
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?tool_dispatch.WebFetchProgressFn = null,
     model_capability_resolver: ?model_capabilities.Resolver = null,
-    model_override_resolver: ?subagent_tool_host.ModelOverrideResolver = null,
     /// False when running outside an interactive TUI (e.g. `fx ask`). Tools
     /// that require a live user (like `ask_user_question`) short-circuit
     /// in that case.
@@ -245,8 +231,7 @@ pub const Context = struct {
             .credential = self.api_key,
             .credential_source = self.credential_source,
             .account_id = self.account_id,
-            .tenant = self.gateway_team,
-            .endpoint = self.gateway_chat_url,
+            .endpoint = "",
             .reviewer_model = self.reviewer_model,
             .cancel_flag = self.cancel_flag,
             .usage = &self.session.usage,
@@ -847,9 +832,8 @@ fn executeVisionRequest(
         .stream_provider = state.runtime.agent_stream_provider,
         .api_key = state.runtime.api_key,
         .credential_source = state.runtime.credential_source,
-        .gateway_team = state.runtime.gateway_team,
         .session_id = state.runtime.lifecycle_scope.session_id,
-        .retry_count = state.runtime.gateway_retry_count,
+        .retry_count = 3,
         .cancel_flag = state.runtime.cancel_flag,
         .usage = &state.runtime.session.usage,
         .usage_allocator = state.runtime.session_allocator,
@@ -1470,7 +1454,6 @@ fn executeSubagentProvider(
         .steering_worker = if (ctx.interactive) ctx.worker else null,
         .progress = if (progress_bridge) |*bridge| bridge.sink() else null,
         .model_capability_resolver = ctx.model_capability_resolver,
-        .model_override_resolver = ctx.model_override_resolver,
     }) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         if (err == error.Cancelled) return error.Cancelled;

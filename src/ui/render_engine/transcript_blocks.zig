@@ -1080,14 +1080,6 @@ fn wrappedColumnSpan(measure: TableColumnMeasure, break_words: bool) TableColumn
         .{ .base = word, .target = measure.natural };
 }
 
-pub fn renderCodeBlockForTranscript(
-    alloc: Allocator,
-    block: assistant_presentation.CodeBlockPayload,
-    cols: u16,
-) ![]u8 {
-    return renderCodeBlockForTranscriptWithTheme(alloc, block, cols, .dark);
-}
-
 fn renderCodeBlockForTranscriptWithTheme(
     alloc: Allocator,
     block: assistant_presentation.CodeBlockPayload,
@@ -2346,18 +2338,6 @@ pub fn renderEntriesToBytes(
     return (try renderEntries(alloc, entries, cols, styles, .{})).bytes;
 }
 
-pub fn renderEntriesWithOverridesToBytes(
-    alloc: Allocator,
-    entries: []const TranscriptEntry,
-    cols: u16,
-    styles: Styles,
-    entry_overrides: []const EntryRenderOverride,
-) ![]u8 {
-    return (try renderEntries(alloc, entries, cols, styles, .{
-        .entry_overrides = entry_overrides,
-    })).bytes;
-}
-
 pub fn renderEntriesWithProjectionToBytes(
     alloc: Allocator,
     entries: []const TranscriptEntry,
@@ -2380,49 +2360,6 @@ pub fn renderedEntryStartLine(
     const rendered = try renderEntries(alloc, entries, cols, styles, .{ .target_entry_id = entry_id });
     defer alloc.free(rendered.bytes);
     return rendered.target_entry_start_line;
-}
-
-pub const TranscriptFlowBytes = struct {
-    bytes: []u8,
-    trailing_boundary_blank_rows: u16,
-    target_entry_start_line: ?usize = null,
-};
-
-pub fn renderEntriesToFlowBytes(
-    alloc: Allocator,
-    entries: []const TranscriptEntry,
-    cols: u16,
-    styles: Styles,
-) !TranscriptFlowBytes {
-    return renderEntriesToFlowBytesForEntry(alloc, entries, cols, styles, null);
-}
-
-pub fn renderEntriesToFlowBytesForEntry(
-    alloc: Allocator,
-    entries: []const TranscriptEntry,
-    cols: u16,
-    styles: Styles,
-    target_entry_id: ?u32,
-) !TranscriptFlowBytes {
-    const rendered = try renderEntries(alloc, entries, cols, styles, .{ .target_entry_id = target_entry_id });
-    errdefer alloc.free(rendered.bytes);
-
-    const boundary = splitTrailingBoundaryRows(rendered.bytes);
-    if (boundary.content_len == rendered.bytes.len) {
-        return .{
-            .bytes = rendered.bytes,
-            .trailing_boundary_blank_rows = boundary.blank_rows,
-            .target_entry_start_line = rendered.target_entry_start_line,
-        };
-    }
-
-    const trimmed = try alloc.dupe(u8, rendered.bytes[0..boundary.content_len]);
-    alloc.free(rendered.bytes);
-    return .{
-        .bytes = trimmed,
-        .trailing_boundary_blank_rows = boundary.blank_rows,
-        .target_entry_start_line = rendered.target_entry_start_line,
-    };
 }
 
 pub const TranscriptPreparationBytes = struct {
@@ -2663,13 +2600,6 @@ pub fn tailVisibleBlockKind(entries: []const TranscriptEntry) ?TranscriptBlockKi
 
 pub fn compactTailVisibleBlockKind(entries: []const TranscriptEntry) ?TranscriptBlockKind {
     return tailVisibleBlockKindOmittingEntries(entries, null, &.{}, .compact);
-}
-
-pub fn compactTailVisibleBlockKindWithoutEntry(
-    entries: []const TranscriptEntry,
-    omitted_entry_id: u32,
-) ?TranscriptBlockKind {
-    return tailVisibleBlockKindOmittingEntries(entries, omitted_entry_id, &.{}, .compact);
 }
 
 pub fn compactTailVisibleBlockKindForProjection(

@@ -887,36 +887,6 @@ fn mapReadLinkError(err: std.Io.Dir.ReadLinkError) FileTargetResolveError {
     };
 }
 
-pub fn resolveWorkspacePathEntry(
-    arena: std.mem.Allocator,
-    workspace_root: []const u8,
-    input_path: []const u8,
-) ![]const u8 {
-    const parts = try resolveWorkspacePathEntryParts(arena, workspace_root, input_path);
-    const resolved_parent = try resolveWorkspacePath(arena, workspace_root, parts.parent, .existing);
-    return std.Io.Dir.path.join(arena, &.{ resolved_parent, parts.basename });
-}
-
-pub fn resolveWorkspacePathEntryExisting(
-    arena: std.mem.Allocator,
-    workspace_root: []const u8,
-    input_path: []const u8,
-) ![]const u8 {
-    const target = try resolveWorkspacePathEntry(arena, workspace_root, input_path);
-    _ = try std.Io.Dir.cwd().statFile(io_mod.getIo(), target, .{ .follow_symlinks = false });
-    return target;
-}
-
-pub fn resolveWorkspacePathEntryCreate(
-    arena: std.mem.Allocator,
-    workspace_root: []const u8,
-    input_path: []const u8,
-) ![]const u8 {
-    const parts = try resolveWorkspacePathEntryParts(arena, workspace_root, input_path);
-    const resolved_parent = try resolveWorkspacePathEntryCreateParent(arena, workspace_root, parts.parent);
-    return std.Io.Dir.path.join(arena, &.{ resolved_parent, parts.basename });
-}
-
 pub fn resolveCreateTargetPath(
     arena: std.mem.Allocator,
     workspace_root: []const u8,
@@ -1091,64 +1061,6 @@ pub fn workspaceRelativePath(
 ) ![]const u8 {
     if (!pathInside(workspace_root, absolute)) return arena.dupe(u8, absolute);
     return std.Io.Dir.path.relativeAlloc(arena, "/", null, workspace_root, absolute) catch try arena.dupe(u8, absolute);
-}
-
-pub fn ensureParentDirectories(path_abs: []const u8) !void {
-    const parent = std.Io.Dir.path.dirname(path_abs) orelse return;
-
-    var root = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), "/", .{});
-    defer root.close(io_mod.getIo());
-
-    const relative_to_root = std.mem.trimStart(u8, parent, "/");
-    if (relative_to_root.len == 0) return;
-    try root.createDirPath(io_mod.getIo(), relative_to_root);
-}
-
-const PathEntryParts = struct {
-    parent: []const u8,
-    basename: []const u8,
-};
-
-fn resolveWorkspacePathEntryParts(
-    arena: std.mem.Allocator,
-    workspace_root: []const u8,
-    input_path: []const u8,
-) !PathEntryParts {
-    const cleaned = std.mem.trim(u8, input_path, path_entry_whitespace);
-    if (cleaned.len == 0) return error.InvalidPath;
-
-    if (invalidPathEntryBasename(std.Io.Dir.path.basename(cleaned))) return error.InvalidPath;
-
-    const absolute = if (std.Io.Dir.path.isAbsolute(cleaned))
-        try std.Io.Dir.path.resolveAlloc(arena, &.{cleaned})
-    else
-        try std.Io.Dir.path.resolveAlloc(arena, &.{ workspace_root, cleaned });
-
-    const parent = std.Io.Dir.path.dirname(absolute) orelse return error.PathOutsideWorkspace;
-    const basename = std.Io.Dir.path.basename(absolute);
-    if (invalidPathEntryBasename(basename)) return error.InvalidPath;
-
-    return .{ .parent = parent, .basename = basename };
-}
-
-fn resolveWorkspacePathEntryCreateParent(
-    arena: std.mem.Allocator,
-    workspace_root: []const u8,
-    parent: []const u8,
-) ![]const u8 {
-    const resolved_parent = io_mod.realpathAlloc(arena, parent) catch |err| switch (err) {
-        error.FileNotFound => return resolveCreateTargetFromNearestExisting(arena, workspace_root, parent),
-        else => return err,
-    };
-
-    try ensurePathInsideWorkspace(workspace_root, resolved_parent);
-    var dir = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), resolved_parent, .{});
-    dir.close(io_mod.getIo());
-    return resolved_parent;
-}
-
-fn invalidPathEntryBasename(basename: []const u8) bool {
-    return basename.len == 0 or std.mem.eql(u8, basename, ".") or std.mem.eql(u8, basename, "..");
 }
 
 pub fn pathInside(root: []const u8, candidate: []const u8) bool {

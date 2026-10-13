@@ -1,27 +1,13 @@
 const std = @import("std");
 const credentials = @import("../auth/credentials.zig");
-const oauth_transport = @import("../auth/oauth_transport.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
-const output_contracts = @import("../output/output_contracts.zig");
 const model_catalog = @import("model_catalog.zig");
 const model_catalog_metadata = @import("model_catalog_metadata.zig");
 
 const Allocator = std.mem.Allocator;
-
-pub const ResolveChatUrlFn = *const fn (?*anyopaque, []const u8) []const u8;
-
-pub const ChatUrlProvider = struct {
-    /// When set, context must remain valid until every in-flight `resolve` returns.
-    context: ?*anyopaque = null,
-    resolve_fn: ResolveChatUrlFn,
-
-    pub fn resolve(self: ChatUrlProvider, fallback: []const u8) []const u8 {
-        return self.resolve_fn(self.context, fallback);
-    }
-};
 
 pub const CliModelCatalogInput = struct {
     access: credentials.CatalogAccess = .{ .public_only = .no_credential },
@@ -59,53 +45,6 @@ pub const CliModelCatalogProvider = struct {
     ) CliModelCatalogResult {
         return self.fetch_fn(self.context, alloc, input);
     }
-};
-
-pub const CreditsLookupInput = struct {
-    credential: ?[]const u8,
-    credential_source: ?credentials.Source = null,
-    tenant: ?[]const u8,
-};
-
-pub const FetchCreditsFn = *const fn (
-    ?*anyopaque,
-    Allocator,
-    CreditsLookupInput,
-) output_contracts.CreditsSnapshot;
-
-pub const CreditsProvider = struct {
-    /// When set, context must remain valid until every in-flight `fetch` returns.
-    context: ?*anyopaque = null,
-    fetch_fn: FetchCreditsFn,
-
-    /// The returned snapshot owns its populated provider fields. The caller
-    /// must call `CreditsSnapshot.deinit`.
-    pub fn fetch(
-        self: CreditsProvider,
-        alloc: Allocator,
-        input: CreditsLookupInput,
-    ) output_contracts.CreditsSnapshot {
-        return self.fetch_fn(self.context, alloc, input);
-    }
-};
-
-fn fetchCreditsUnavailable(
-    _: ?*anyopaque,
-    alloc: Allocator,
-    _: CreditsLookupInput,
-) output_contracts.CreditsSnapshot {
-    return .{
-        .err_message = alloc.dupe(u8, "Credits are unavailable for the selected provider.") catch null,
-    };
-}
-
-pub const unavailable_credits_provider = CreditsProvider{
-    .fetch_fn = fetchCreditsUnavailable,
-};
-
-pub const Provider = struct {
-    oauth_transport: oauth_transport.Provider,
-    chat_url: ChatUrlProvider,
 };
 
 const CapabilityResolverState = enum {

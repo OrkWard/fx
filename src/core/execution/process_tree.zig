@@ -911,14 +911,6 @@ fn captureMacOSSnapshot(pid: std.posix.pid_t) !ProcessSnapshot {
     };
 }
 
-pub fn processIsAlive(alloc: Allocator, pid: std.posix.pid_t) !bool {
-    const snapshot = captureSnapshot(alloc, pid) catch |err| switch (err) {
-        error.ProcessNotFound => return false,
-        else => return err,
-    };
-    return snapshotIsAlive(snapshot);
-}
-
 fn snapshotIsAlive(snapshot: ProcessSnapshot) bool {
     return !snapshot.zombie;
 }

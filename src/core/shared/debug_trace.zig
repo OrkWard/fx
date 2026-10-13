@@ -211,20 +211,6 @@ fn skipTerminalEscape(text: []const u8, start: usize) usize {
     return start + 2;
 }
 
-pub fn redactedJsonPreview(alloc: Allocator, text: []const u8) ![]u8 {
-    if (text.len == 0) return alloc.dupe(u8, "<empty>");
-
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, text, .{}) catch {
-        return alloc.print("<invalid-json bytes={d}>", .{text.len});
-    };
-    defer parsed.deinit();
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    try writeRedactedJsonValuePreview(&out.writer, parsed.value, 0, .preserve);
-    return out.toOwnedSlice();
-}
-
 pub fn keylessJsonPreview(alloc: Allocator, text: []const u8) ![]u8 {
     if (text.len == 0) return alloc.dupe(u8, "<empty>");
 
@@ -307,25 +293,6 @@ fn writeRedactedJsonValuePreview(
         .bool => try writer.writeAll("<bool>"),
         .null => try writer.writeAll("<null>"),
     }
-}
-
-pub fn resetForTest() void {
-    shutdown();
-    next_turn_id.store(1, .seq_cst);
-    next_step_id.store(1, .seq_cst);
-    next_subagent_id.store(1, .seq_cst);
-}
-
-pub fn configureForTest(alloc: Allocator, path: []const u8) !void {
-    const owned = try alloc.dupe(u8, path);
-    defer alloc.free(owned);
-    try configure(.{ .file_path = owned });
-}
-
-pub fn configureForTestWithScopes(alloc: Allocator, path: []const u8, scope_filter: []const u8) !void {
-    const owned = try alloc.dupe(u8, path);
-    defer alloc.free(owned);
-    try configure(.{ .file_path = owned, .scope_filter = scope_filter });
 }
 
 pub fn configure(options: Options) !void {

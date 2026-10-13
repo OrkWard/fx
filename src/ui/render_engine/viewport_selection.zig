@@ -244,26 +244,6 @@ pub fn hardLineRefAt(lines: HardLineStarts, total_len: usize, index: usize) Line
     return .{ .start = @intCast(start), .len = @intCast(end - start) };
 }
 
-pub fn hardLineIndexAtWithPolicy(bytes: []const u8, offset: usize) usize {
-    var line: usize = 0;
-    var i: usize = 0;
-    const end = @min(offset, bytes.len);
-    while (i < end) : (i += 1) {
-        if (bytes[i] == '\n' and i + 1 < bytes.len) line += 1;
-    }
-    return line;
-}
-
-pub fn transcriptLineAt(starts: []const usize, total_len: usize, index: usize) LineRef {
-    const start = starts[index];
-    const end = if (index + 1 < starts.len) starts[index + 1] - 1 else total_len;
-    return .{ .start = @intCast(start), .len = @intCast(end - start) };
-}
-
-pub fn hardLineIndexAt(bytes: []const u8, offset: usize) usize {
-    return hardLineIndexAtWithPolicy(bytes, offset);
-}
-
 pub fn hardLineAt(bytes: []const u8, index: usize) []const u8 {
     var line: usize = 0;
     var start: usize = 0;

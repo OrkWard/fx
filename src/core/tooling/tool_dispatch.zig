@@ -423,27 +423,6 @@ pub const Tool = struct {
 
 pub const Registry = mod_registry.ToolRegistry(Tool);
 
-pub const ProgressLabelKind = enum {
-    none,
-    started,
-    completed,
-};
-
-/// Classifies rendered tool progress through the registered presentation labels.
-pub fn classifyProgressLabel(registry: Registry, text: []const u8) ProgressLabelKind {
-    for (registry.tools) |tool| {
-        if (startsWithProgressLabel(text, tool.action_label)) return .started;
-        if (startsWithProgressLabel(text, tool.completed_action_label)) return .completed;
-    }
-    return .none;
-}
-
-fn startsWithProgressLabel(text: []const u8, label: []const u8) bool {
-    if (!std.mem.startsWith(u8, text, label)) return false;
-    if (text.len == label.len) return true;
-    return text[label.len] == ' ';
-}
-
 pub const RunCommandCompatibilityMatch = struct {
     tool: *const Tool,
     compatibility: RunCommandCompatibility,
@@ -616,107 +595,6 @@ fn decodeAndValidateToolCall(
     };
 }
 
-/// A registered call that passed local availability and permission admission.
-pub const AdmittedToolCall = struct {
-    tool: *const Tool,
-    input: ToolInput,
-    context: DispatchContext,
-    permission_decision: permission_gate.Decision,
-
-    pub fn deinit(self: AdmittedToolCall) void {
-        var permission_decision = self.permission_decision;
-        permission_decision.deinit(self.context.allocator);
-        self.input.deinit(self.context.allocator);
-    }
-};
-
-/// Result of generic tool lookup, validation, availability, and permission admission.
-pub const AdmissionResult = union(enum) {
-    not_registered,
-    failure: []u8,
-    admitted: AdmittedToolCall,
-};
-
-/// Admits one model-requested registered call without executing it.
-pub fn admitToolCall(ctx: DispatchContext, registry: Registry, call: message.ToolCall) DispatchError!AdmissionResult {
-    var call_ctx = ctx;
-    const validated = try decodeAndValidateRegisteredToolCall(call_ctx, registry, call);
-    switch (validated) {
-        .not_registered => return .not_registered,
-        .failure => |reason| return .{ .failure = reason },
-        .input => |input| {
-            var input_transferred = false;
-            defer if (!input_transferred) input.value.deinit(call_ctx.allocator);
-
-            if (try localToolAvailabilityFailure(call_ctx, input.tool, input.value)) |reason| {
-                return .{ .failure = reason };
-            }
-
-            var decision = permission_gate.decideOrdinary(input.tool, input.value, call_ctx);
-            var decision_transferred = false;
-            defer if (!decision_transferred) decision.deinit(call_ctx.allocator);
-
-            switch (decision.action) {
-                .allow => {},
-                .deny => {
-                    traceDeniedWebSearch(.{}, call, decision.denial_reason orelse .policy_denied);
-                    return .{ .failure = try deniedToolResultBody(call_ctx.allocator, input.tool.name, decision) };
-                },
-                .ask => {
-                    traceDeniedWebSearch(.{}, call, .permission_required);
-                    return .{ .failure = try tool_result_errors.toolPermissionDeniedJson(call_ctx.allocator, input.tool.name, .permission_required) };
-                },
-            }
-
-            const captured_command = input.tool.executor_kind == .run_command or
-                if (input.tool.captured_command_fn) |classify|
-                    classify(input.value)
-                else
-                    false;
-            if (captured_command) {
-                const authority = decision.execution_authority orelse {
-                    return .{ .failure = try call_ctx.allocator.dupe(u8, "captured command permission allowed without execution authority") };
-                };
-                call_ctx.execution_authority = switch (authority) {
-                    .run_command => |command_authority| .{ .run_command = command_authority },
-                    else => {
-                        return .{ .failure = try call_ctx.allocator.dupe(u8, "captured command permission returned invalid execution authority") };
-                    },
-                };
-            } else {
-                if (decision.execution_authority != null) {
-                    return .{ .failure = try call_ctx.allocator.dupe(u8, "non-command permission returned command execution authority") };
-                }
-                call_ctx.execution_authority = .ordinary;
-            }
-
-            if (core_permissions.isFilesystemMutationTool(input.tool.name)) {
-                var execution_decision = permission_gate.decideOrdinary(input.tool, input.value, call_ctx);
-                defer execution_decision.deinit(call_ctx.allocator);
-                switch (execution_decision.action) {
-                    .allow => {},
-                    .deny => {
-                        return .{ .failure = try deniedToolResultBody(call_ctx.allocator, input.tool.name, execution_decision) };
-                    },
-                    .ask => {
-                        return .{ .failure = try tool_result_errors.toolPermissionDeniedJson(call_ctx.allocator, input.tool.name, .permission_required) };
-                    },
-                }
-            }
-
-            const admitted = AdmissionResult{ .admitted = .{
-                .tool = input.tool,
-                .input = input.value,
-                .context = call_ctx,
-                .permission_decision = decision,
-            } };
-            input_transferred = true;
-            decision_transferred = true;
-            return admitted;
-        },
-    }
-}
-
 /// Owned tool-result message body produced by dispatch.
 pub const DispatchResult = struct {
     model_content_kind: ModelContentKind = .ordinary,
@@ -765,55 +643,6 @@ pub const AuthorizedDispatchResult = struct {
     }
 };
 
-/// Runs one model-requested tool call through lookup, validation, gate, and call.
-pub fn dispatchToolCall(ctx: DispatchContext, registry: Registry, call: message.ToolCall) DispatchError!DispatchResult {
-    var captured_usage: ?core_types.ToolUsage = null;
-    var captured_web_search_completion: ?core_types.WebSearchCompletion = null;
-    var captured_web_fetch_completion: ?core_types.WebFetchCompletion = null;
-    var captured_tool_result_memory: ?core_types.ToolResultMemory = null;
-    var captured_model_content_kind: ModelContentKind = .ordinary;
-    var captured_command_result_json: ?[]const u8 = null;
-    var call_ctx = ctx;
-    if (call_ctx.inner_usage_sink == null) call_ctx.inner_usage_sink = &captured_usage;
-    if (call_ctx.web_search_completion_sink == null) call_ctx.web_search_completion_sink = &captured_web_search_completion;
-    if (call_ctx.web_fetch_completion_sink == null) call_ctx.web_fetch_completion_sink = &captured_web_fetch_completion;
-    if (call_ctx.tool_result_memory_sink == null) call_ctx.tool_result_memory_sink = &captured_tool_result_memory;
-    if (call_ctx.model_content_kind_sink == null) call_ctx.model_content_kind_sink = &captured_model_content_kind;
-    call_ctx.model_content_kind_sink.?.* = .ordinary;
-    if (call_ctx.command_result_json_sink == null) call_ctx.command_result_json_sink = &captured_command_result_json;
-
-    const admission = try admitToolCall(call_ctx, registry, call);
-    switch (admission) {
-        .not_registered => return failure(try call_ctx.allocator.print("unknown tool: {s}", .{call.name})),
-        .failure => |reason| return failure(reason),
-        .admitted => |admitted| {
-            defer admitted.deinit();
-
-            const result = try admitted.tool.call(admitted.context, admitted.input);
-            const inner_usage = if (admitted.context.inner_usage_sink) |slot| slot.* else captured_usage;
-            const web_search_completion = if (admitted.context.web_search_completion_sink) |slot| slot.* else captured_web_search_completion;
-            const web_fetch_completion = if (admitted.context.web_fetch_completion_sink) |slot| slot.* else captured_web_fetch_completion;
-            const tool_result_memory = if (admitted.context.tool_result_memory_sink) |slot| slot.* else captured_tool_result_memory;
-            const command_result_json = if (admitted.context.command_result_json_sink) |slot| slot.* else captured_command_result_json;
-            const output = result.intoAuthorized();
-            return .{
-                .status = output.status,
-                .model_content_kind = if (output.status == .success)
-                    if (admitted.context.model_content_kind_sink) |kind| kind.* else .ordinary
-                else
-                    .ordinary,
-                .body = output.body,
-                .images = output.images,
-                .inner_usage = inner_usage,
-                .web_search_completion = web_search_completion,
-                .web_fetch_completion = web_fetch_completion,
-                .tool_result_memory = tool_result_memory,
-                .command_result_json = command_result_json,
-            };
-        },
-    }
-}
-
 /// Runs one already-authorized registered tool call through lookup, validation, and call.
 pub fn dispatchAuthorizedToolCall(
     ctx: DispatchContext,
@@ -838,16 +667,6 @@ pub fn dispatchAuthorizedToolCall(
             return result.intoAuthorized();
         },
     }
-}
-
-pub fn reportInnerUsage(ctx: DispatchContext, usage: core_types.ToolUsage) void {
-    const sink = ctx.inner_usage_sink orelse return;
-    sink.* = usage;
-}
-
-pub fn reportWebSearchCompletion(ctx: DispatchContext, completion: core_types.WebSearchCompletion) void {
-    const sink = ctx.web_search_completion_sink orelse return;
-    sink.* = completion;
 }
 
 pub fn reportWebFetchCompletion(ctx: DispatchContext, completion: core_types.WebFetchCompletion) void {
@@ -922,11 +741,6 @@ pub fn localToolAvailabilityFailureForCall(
 
 fn failure(body: []u8) DispatchResult {
     return .{ .status = .failure, .body = body };
-}
-
-fn deniedToolResultBody(alloc: Allocator, tool_name: []const u8, decision: permission_gate.Decision) ![]u8 {
-    if (decision.structured_model_output) return alloc.dupe(u8, decision.reason);
-    return tool_result_errors.toolPermissionDeniedJson(alloc, tool_name, decision.denial_reason orelse .policy_denied);
 }
 
 pub fn traceDeniedWebSearch(ctx: debug_trace.TraceContext, call: message.ToolCall, reason: core_types.ToolPermissionDenialReason) void {

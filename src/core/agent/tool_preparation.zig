@@ -324,26 +324,6 @@ fn isCapturedCommandCall(
     return action == .string and std.mem.eql(u8, action.string, expected_action);
 }
 
-/// Reprojects a prepared registered ordinary candidate immediately before its
-/// permission boundary. A mismatch means the scope used for project context is
-/// no longer the scope the raw permission/dispatch path would observe.
-pub fn ordinaryApplicableTargetsFresh(
-    alloc: Allocator,
-    call: ToolCall,
-    tool_registry: tool_dispatch.Registry,
-    workspace_root: []const u8,
-    candidate: *const Candidate,
-) Allocator.Error!bool {
-    return ordinaryApplicableTargetsFreshInScope(
-        alloc,
-        call,
-        tool_registry,
-        workspace_root,
-        null,
-        candidate,
-    );
-}
-
 pub fn ordinaryApplicableTargetsFreshInScope(
     alloc: Allocator,
     call: ToolCall,

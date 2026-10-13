@@ -20,7 +20,7 @@ It works with the model you choose, and its output is closer to a Unix shell tha
 ## Features
 
 - **Small and fast**: the Apple silicon release has a hard size limit, and startup is benchmarked on every pull request. CI fails a change if any measured command takes longer than 2 ms on Linux ([benchmarks](benchmarks/)).
-- **Any model**: use Vercel AI Gateway, your ChatGPT or Grok subscription, or any OpenAI-compatible endpoint such as Ollama or OpenRouter ([custom connections](https://fx.sh/docs/configure-fx/custom-model-connections)).
+- **Any model**: use your ChatGPT or Grok subscription, or any OpenAI-compatible endpoint such as Ollama or OpenRouter ([custom connections](https://fx.sh/docs/configure-fx/custom-model-connections)).
 - **Inline output**: the conversation stays in your terminal's scrollback, where you can scroll, search, and copy it like any other command's output. tmux bindings and copy mode keep working, and terminals that support the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) can show when fx is busy or waiting for you.
 - **Your own shell**: commands run in your login shell with your aliases, functions, and `PATH`. fx runs your startup files once and reuses the result, so a slow `.zshrc` doesn't slow down every command.
 - **Permissions**: the default `auto` mode runs routine work, such as editing project files and running tests, without asking. Anything else goes to a model that checks it for prompt injection or malicious behavior first. Switch to `ask` to approve each action yourself, or to `full-access` to turn the checks off ([permissions](https://fx.sh/docs/configure-fx/permissions)).
@@ -40,10 +40,8 @@ fx runs on macOS and Linux, on x86_64 and arm64. The installer puts it in `~/.lo
 Sign in with one of these:
 
 ```bash
-fx login          # Vercel AI Gateway
 fx login codex    # ChatGPT subscription
 fx login grok     # Grok subscription
-fx setup          # AI Gateway API key
 ```
 
 Then open a project and start fx:

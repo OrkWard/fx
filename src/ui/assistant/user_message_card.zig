@@ -22,10 +22,6 @@ var accent_style: []const u8 = shared_theme.fx_dark.user_card_accent_style;
 
 var marker_style: []const u8 = shared_theme.fx_dark.user_card_marker_style;
 
-pub fn setStyle(light: bool, terminal_bg: ?Rgb) void {
-    applyTheme(shared_theme.builtin(light), terminal_bg);
-}
-
 pub fn applyTheme(theme: shared_theme.Theme, _: ?Rgb) void {
     marker_style = theme.user_card_marker_style;
     accent_style = theme.user_card_accent_style;
@@ -73,32 +69,6 @@ fn wrapCut(text: []const u8, row_budget: usize) WrapCut {
         return .{ .keep_bytes = end + unit.byte_len, .skip_bytes = end + unit.byte_len };
     }
     return .{ .keep_bytes = prefix.len, .skip_bytes = prefix.len };
-}
-
-pub fn buildUserPromptCard(
-    alloc: std.mem.Allocator,
-    text: []const u8,
-    images: []const types.ImageAttachment,
-    cols: u16,
-) ![]u8 {
-    return buildUserPromptCardWithSkillTokens(alloc, text, images, cols, &.{});
-}
-
-pub fn buildUserPromptCardWithSkillTokens(
-    alloc: std.mem.Allocator,
-    text: []const u8,
-    images: []const types.ImageAttachment,
-    cols: u16,
-    skill_tokens: []const visual_layout.SkillTokenSpan,
-) ![]u8 {
-    return buildUserPromptCardWithSkillTokensAndLinks(
-        alloc,
-        text,
-        images,
-        cols,
-        skill_tokens,
-        false,
-    );
 }
 
 pub fn buildUserPromptCardWithSkillTokensForTerminalPresentation(
@@ -162,29 +132,6 @@ pub fn buildUserPromptCardTailForTerminalPresentationInterruptible(
         checkpoint,
         max_rows,
     );
-}
-
-fn buildUserPromptCardWithSkillTokensAndLinks(
-    alloc: std.mem.Allocator,
-    text: []const u8,
-    images: []const types.ImageAttachment,
-    cols: u16,
-    skill_tokens: []const visual_layout.SkillTokenSpan,
-    linked_images: bool,
-) ![]u8 {
-    return buildUserPromptCardWithSkillTokensAndLinksInterruptible(
-        alloc,
-        text,
-        images,
-        cols,
-        skill_tokens,
-        linked_images,
-        null,
-        null,
-    ) catch |err| switch (err) {
-        error.InputPending => unreachable,
-        else => |other| return other,
-    };
 }
 
 fn buildUserPromptCardWithSkillTokensAndLinksInterruptible(

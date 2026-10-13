@@ -123,15 +123,6 @@ pub fn composeFileApprovalScreenRow(
     };
 }
 
-pub fn inlineApprovalPanelRows(
-    alloc: Allocator,
-    label: []const u8,
-    width: u16,
-    terminal_rows: u16,
-) !u16 {
-    return inlineApprovalPanelRowsForCommand(alloc, label, null, width, terminal_rows);
-}
-
 pub fn inlineApprovalPanelRowsForCommand(
     alloc: Allocator,
     label: []const u8,

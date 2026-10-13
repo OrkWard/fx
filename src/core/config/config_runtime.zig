@@ -41,7 +41,6 @@ pub const Settings = struct {
     models: model_preferences.Preferences = .{},
     provider: ?model_provider.ProviderId = null,
     permission_mode: ?types.PermissionMode = null,
-    credential_source: ?types.CredentialSource = null,
     yolo_acknowledged: ?bool = null,
     max_agent_steps: ?usize = null,
     max_tool_result_bytes: ?usize = null,
@@ -279,10 +278,6 @@ pub fn discoverPaths(alloc: Allocator, workspace_root: []const u8) !Paths {
     return discoverPathsWithOptionalHome(alloc, io_mod.getenv("HOME"), workspace_root);
 }
 
-pub fn discoverPathsFromHome(alloc: Allocator, home_dir: []const u8, workspace_root: []const u8) !Paths {
-    return discoverPathsWithOptionalHome(alloc, home_dir, workspace_root);
-}
-
 pub fn providerEnvOverride() ?[]const u8 {
     const raw = io_mod.getenv("FX_PROVIDER") orelse return null;
     if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return null;
@@ -312,9 +307,9 @@ pub fn selectProviderModel(
     provider_override: ?model_provider.ProviderId,
     run_model: ?[]const u8,
 ) ModelSelectionError!model_provider.ProviderSelection {
-    const provider = provider_override orelse settings.provider orelse .gateway;
+    _ = default_model;
+    const provider = provider_override orelse settings.provider orelse .codex;
     const model = settings.models.get(provider) orelse switch (provider) {
-        .gateway => default_model,
         .codex => run_model orelse return error.CodexModelNotSelected,
         .grok => run_model orelse return error.GrokModelNotSelected,
         .configured => run_model orelse return error.ConfiguredModelNotSelected,
@@ -355,12 +350,6 @@ pub fn loadConfiguredProviders(alloc: Allocator) !configured_provider.Registry {
 
 pub fn loadMergedSettings(alloc: Allocator, workspace_root: []const u8) !Settings {
     var paths = try discoverPaths(alloc, workspace_root);
-    defer paths.deinit(alloc);
-    return loadMergedSettingsFromPaths(alloc, paths);
-}
-
-pub fn loadMergedSettingsFromHome(alloc: Allocator, home_dir: []const u8, workspace_root: []const u8) !Settings {
-    var paths = try discoverPathsFromHome(alloc, home_dir, workspace_root);
     defer paths.deinit(alloc);
     return loadMergedSettingsFromPaths(alloc, paths);
 }
@@ -577,7 +566,7 @@ fn loadMergedSettingsDetailedWithOptionalHome(
     try resolve_provider_selection(&settings);
     if (providerEnvOverride() != null) sources.provider = .process_override;
     if (modelEnvOverride() != null) {
-        const override_provider = model_provider.NameKey.fromProvider(settings.provider orelse .gateway);
+        const override_provider = model_provider.NameKey.fromProvider(settings.provider orelse .codex);
         sources.models.set(override_provider, .process_override) catch |err| switch (err) {
             error.TooManyModelPreferences => debug_trace.logf(
                 "config",
@@ -631,7 +620,7 @@ fn loadMergedSettingsDetailedWithOptionalHome(
     return .{
         .settings = settings,
         .diagnostics = try diagnostics.toOwnedSlice(alloc),
-        .model_source = sources.models.get(model_provider.NameKey.fromProvider(settings.provider orelse .gateway)),
+        .model_source = sources.models.get(model_provider.NameKey.fromProvider(settings.provider orelse .codex)),
         .sources = sources,
         .ultrafast_mode_env_override = ultrafast_mode_env_override,
         .permission_sources = permission_sources,
@@ -803,7 +792,6 @@ fn isProfileOnlySettingKey(key: []const u8) bool {
         "auto_upgrade",
         "update_channel",
         "permission_mode",
-        "credential_source",
         "yolo_acknowledged",
         "permission",
         "additional_directories",
@@ -988,17 +976,6 @@ fn diagnosticCauseForUserStoreError(err: anyerror) ConfigDiagnosticCause {
     };
 }
 
-pub fn loadStartupStatusSettingsFromHome(alloc: Allocator, home_dir: []const u8, workspace_root: []const u8) !StartupStatusSettings {
-    var paths = try discoverPathsFromHome(alloc, home_dir, workspace_root);
-    defer paths.deinit(alloc);
-    return loadStartupStatusSettingsFromPaths(alloc, paths);
-}
-
-pub fn ensureStateLayout(paths: Paths) !void {
-    if (paths.home_fx_dir) |dir| try ensureAbsoluteDir(dir);
-    if (paths.sessions_dir) |dir| try ensureAbsoluteDir(dir);
-}
-
 pub fn parsePermissionMode(raw: []const u8) ?types.PermissionMode {
     return types.PermissionMode.parse(raw);
 }
@@ -1018,23 +995,6 @@ pub fn makeAbsolutePath(path_abs: []const u8) !void {
     const relative_to_root = std.mem.trimStart(u8, path_abs, "/");
     if (relative_to_root.len == 0) return;
     try root.createDirPath(zio, relative_to_root);
-}
-
-fn ensureAbsoluteDir(path_abs: []const u8) !void {
-    const zio = io_mod.getIo();
-    var dir = std.Io.Dir.openDirAbsolute(zio, path_abs, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            try makeAbsolutePath(path_abs);
-            return;
-        },
-        else => return err,
-    };
-    dir.close(zio);
-}
-
-pub fn userSettingsPath(alloc: Allocator) !?[]u8 {
-    const home = io_mod.getenv("HOME") orelse return null;
-    return try profile_paths.settingsPath(alloc, home);
 }
 
 pub const AllowlistResetScope = settings_store.AllowlistResetScope;
@@ -1234,46 +1194,6 @@ pub fn loadMergedSettingsFromPaths(alloc: Allocator, paths: Paths) !Settings {
     return settings;
 }
 
-pub fn loadStartupStatusSettingsFromPaths(alloc: Allocator, paths: Paths) !StartupStatusSettings {
-    return loadStartupStatusSettingsFromPathsFast(alloc, paths) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            var settings = try loadMergedSettingsFromPaths(alloc, paths);
-            defer settings.deinit(alloc);
-            return startupStatusSettingsFromSettings(alloc, settings);
-        },
-    };
-}
-
-fn loadStartupStatusSettingsFromPathsFast(alloc: Allocator, paths: Paths) !StartupStatusSettings {
-    var settings = StartupStatusSettings{};
-    errdefer settings.deinit(alloc);
-
-    const user_text = try readOptionalUserSettingsFile(alloc, paths);
-    defer if (user_text) |owned| alloc.free(owned);
-
-    if (try readOptionalFile(alloc, paths.workspace_settings)) |workspace_text| {
-        defer alloc.free(workspace_text);
-        var workspace_settings = try parseStartupStatusSettingsJson(alloc, workspace_text, null, .project);
-        defer workspace_settings.deinit(alloc);
-        mergeStartupStatusSettings(&settings, &workspace_settings, alloc);
-    }
-
-    if (user_text) |text| {
-        var user_settings = try parseStartupStatusSettingsJson(alloc, text, null, .profile);
-        defer user_settings.deinit(alloc);
-        mergeStartupStatusSettings(&settings, &user_settings, alloc);
-    }
-
-    if (user_text) |text| {
-        var override_settings = try parseStartupStatusSettingsJson(alloc, text, paths.workspace_root, .profile);
-        defer override_settings.deinit(alloc);
-        mergeStartupStatusSettings(&settings, &override_settings, alloc);
-    }
-
-    return settings;
-}
-
 fn readOptionalUserSettingsFile(alloc: Allocator, paths: Paths) !?[]u8 {
     if (paths.home_dir) |home| {
         var store = try settings_store.Store.initFromHome(alloc, home, .read_only);
@@ -1292,24 +1212,6 @@ fn readOptionalUserSettingsFile(alloc: Allocator, paths: Paths) !?[]u8 {
     }
     if (paths.user_settings) |path| return try readOptionalFile(alloc, path);
     return null;
-}
-
-fn startupStatusSettingsFromSettings(alloc: Allocator, settings: Settings) !StartupStatusSettings {
-    return .{
-        .model = if (settings.models.get(.gateway)) |model| try alloc.dupe(u8, model) else null,
-        .permission_mode = settings.permission_mode,
-        .max_agent_steps = settings.max_agent_steps,
-    };
-}
-
-fn mergeStartupStatusSettings(target: *StartupStatusSettings, incoming: *StartupStatusSettings, alloc: Allocator) void {
-    if (incoming.model) |value| {
-        if (target.model) |current| alloc.free(current);
-        target.model = value;
-        incoming.model = null;
-    }
-    if (incoming.permission_mode) |value| target.permission_mode = value;
-    if (incoming.max_agent_steps) |value| target.max_agent_steps = value;
 }
 
 fn mergeWorkspaceOverridesFromValue(target: *Settings, alloc: Allocator, root_value: std.json.Value, workspace_root: []const u8) !void {
@@ -1359,175 +1261,11 @@ fn parseSettingsJsonForLayer(alloc: Allocator, json_text: []const u8, layer: Set
     return parseSettingsValueForLayer(alloc, parsed.value, layer, false, true);
 }
 
-const JsonStringToken = struct {
-    text: []const u8,
-    owned: ?[]u8 = null,
-
-    fn deinit(self: JsonStringToken, alloc: Allocator) void {
-        if (self.owned) |value| alloc.free(value);
-    }
-};
-
 const SettingsLayer = enum {
     profile,
     profile_workspace,
     project,
 };
-
-fn parseStartupStatusSettingsJson(
-    alloc: Allocator,
-    json_text: []const u8,
-    target_workspace: ?[]const u8,
-    layer: SettingsLayer,
-) !StartupStatusSettings {
-    var scanner = std.json.Scanner.initCompleteInput(alloc, json_text);
-    defer scanner.deinit();
-
-    var settings = try parseStartupStatusObject(&scanner, alloc, target_workspace, layer);
-    errdefer settings.deinit(alloc);
-    try expectConfigJsonToken(try scanner.next(), .end_of_document);
-    return settings;
-}
-
-fn parseStartupStatusObject(
-    scanner: *std.json.Scanner,
-    alloc: Allocator,
-    target_workspace: ?[]const u8,
-    layer: SettingsLayer,
-) anyerror!StartupStatusSettings {
-    try expectConfigJsonToken(try scanner.next(), .object_begin);
-    var settings = StartupStatusSettings{};
-    errdefer settings.deinit(alloc);
-
-    while (true) {
-        const token = try scanner.nextAlloc(alloc, .alloc_if_needed);
-        switch (token) {
-            .object_end => return settings,
-            .string, .allocated_string => {
-                const key = try configJsonStringFromToken(token);
-                defer key.deinit(alloc);
-
-                if (target_workspace) |workspace| {
-                    if (std.mem.eql(u8, key.text, "workspaces")) {
-                        var workspace_settings = try parseStartupStatusWorkspaceOverrides(scanner, alloc, workspace);
-                        defer workspace_settings.deinit(alloc);
-                        mergeStartupStatusSettings(&settings, &workspace_settings, alloc);
-                    } else {
-                        try scanner.skipValue();
-                    }
-                } else if (layer == .profile and std.mem.eql(u8, key.text, "model")) {
-                    try readStartupStatusModel(scanner, alloc, &settings);
-                } else if (layer == .profile and std.mem.eql(u8, key.text, "permission_mode")) {
-                    settings.permission_mode = try readStartupStatusPermissionMode(scanner);
-                } else if (std.mem.eql(u8, key.text, "max_agent_steps")) {
-                    settings.max_agent_steps = try readStartupStatusUsize(scanner);
-                } else {
-                    try scanner.skipValue();
-                }
-            },
-            else => {
-                freeConfigJsonToken(alloc, token);
-                return error.InvalidSettingsShape;
-            },
-        }
-    }
-}
-
-fn parseStartupStatusWorkspaceOverrides(scanner: *std.json.Scanner, alloc: Allocator, target_workspace: []const u8) anyerror!StartupStatusSettings {
-    try expectConfigJsonToken(try scanner.next(), .object_begin);
-    var settings = StartupStatusSettings{};
-    errdefer settings.deinit(alloc);
-
-    while (true) {
-        const token = try scanner.nextAlloc(alloc, .alloc_if_needed);
-        switch (token) {
-            .object_end => return settings,
-            .string, .allocated_string => {
-                const key = try configJsonStringFromToken(token);
-                defer key.deinit(alloc);
-
-                if (std.mem.eql(u8, key.text, target_workspace)) {
-                    var workspace_settings = try parseStartupStatusObject(scanner, alloc, null, .profile);
-                    defer workspace_settings.deinit(alloc);
-                    mergeStartupStatusSettings(&settings, &workspace_settings, alloc);
-                } else {
-                    try scanner.skipValue();
-                }
-            },
-            else => {
-                freeConfigJsonToken(alloc, token);
-                return error.InvalidSettingsShape;
-            },
-        }
-    }
-}
-
-fn readStartupStatusModel(scanner: *std.json.Scanner, alloc: Allocator, settings: *StartupStatusSettings) !void {
-    const token = try scanner.nextAlloc(alloc, .alloc_if_needed);
-    switch (token) {
-        .string, .allocated_string => {
-            const value = try configJsonStringFromToken(token);
-            defer value.deinit(alloc);
-            const trimmed = std.mem.trim(u8, value.text, " \t\r\n");
-            if (trimmed.len == 0) return;
-            const owned = try alloc.dupe(u8, trimmed);
-            if (settings.model) |current| alloc.free(current);
-            settings.model = owned;
-        },
-        else => {
-            freeConfigJsonToken(alloc, token);
-            return error.InvalidModelType;
-        },
-    }
-}
-
-fn readStartupStatusPermissionMode(scanner: *std.json.Scanner) !types.PermissionMode {
-    const token = try scanner.next();
-    switch (token) {
-        .string => |value| return parsePermissionMode(value) orelse error.InvalidPermissionMode,
-        else => return error.InvalidPermissionModeType,
-    }
-}
-
-fn readStartupStatusUsize(scanner: *std.json.Scanner) !usize {
-    const token = try scanner.next();
-    switch (token) {
-        .number => |raw| return std.fmt.parseUnsigned(usize, raw, 10) catch error.InvalidMaxAgentStepsValue,
-        else => return error.InvalidMaxAgentStepsType,
-    }
-}
-
-fn configJsonStringFromToken(token: std.json.Token) !JsonStringToken {
-    return switch (token) {
-        .string => |text| .{ .text = text },
-        .allocated_string => |text| .{ .text = text, .owned = text },
-        else => error.InvalidSettingsShape,
-    };
-}
-
-fn freeConfigJsonToken(alloc: Allocator, token: std.json.Token) void {
-    switch (token) {
-        .allocated_string => |text| alloc.free(text),
-        .allocated_number => |text| alloc.free(text),
-        else => {},
-    }
-}
-
-fn expectConfigJsonToken(token: std.json.Token, comptime expected: std.json.TokenType) !void {
-    const actual: std.json.TokenType = switch (token) {
-        .object_begin => .object_begin,
-        .object_end => .object_end,
-        .array_begin => .array_begin,
-        .array_end => .array_end,
-        .true => .true,
-        .false => .false,
-        .null => .null,
-        .number, .partial_number, .allocated_number => .number,
-        .string, .partial_string, .partial_string_escaped_1, .partial_string_escaped_2, .partial_string_escaped_3, .partial_string_escaped_4, .allocated_string => .string,
-        .end_of_document => .end_of_document,
-    };
-    if (actual != expected) return error.InvalidSettingsShape;
-}
 
 fn parseSettingsValueForLayer(
     alloc: Allocator,
@@ -1569,13 +1307,6 @@ fn parseProfileOnlyFields(
         if (value.integer < 0 or !compactor.isValidPercent(@intCast(value.integer))) return error.InvalidAutoCompactPercentValue;
         settings.auto_compact_percent = @intCast(value.integer);
     }
-    if (root.object.get("model")) |model_value| {
-        const value = model_value;
-        if (value != .string) return error.InvalidModelType;
-        settings_store.validateModel(value.string) catch return error.InvalidModelValue;
-        try settings.models.putCopy(alloc, .gateway, value.string);
-    }
-
     if (root.object.get("provider")) |provider_value| {
         if (provider_value != .string) return error.InvalidProviderType;
         settings.provider = model_provider.parse(provider_value.string) orelse
@@ -1610,12 +1341,6 @@ fn parseProfileOnlyFields(
         const value = permission_mode_value;
         if (value != .string) return error.InvalidPermissionModeType;
         settings.permission_mode = parsePermissionMode(value.string) orelse return error.InvalidPermissionMode;
-    }
-
-    if (root.object.get("credential_source")) |credential_source_value| {
-        if (credential_source_value != .string) return error.InvalidCredentialSourceType;
-        settings.credential_source = types.parseCredentialSource(credential_source_value.string) orelse
-            return error.InvalidCredentialSource;
     }
 
     if (root.object.get("yolo_acknowledged")) |acknowledged_value| {
@@ -1882,7 +1607,6 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     }
     if (incoming.provider) |value| target.provider = value;
     if (incoming.permission_mode) |value| target.permission_mode = value;
-    if (incoming.credential_source) |value| target.credential_source = value;
     if (incoming.yolo_acknowledged) |value| target.yolo_acknowledged = value;
     if (incoming.max_agent_steps) |value| target.max_agent_steps = value;
     if (incoming.max_tool_result_bytes) |value| target.max_tool_result_bytes = value;

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_provider = @import("../config/model_provider.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
@@ -16,7 +15,6 @@ const session_codec = @import("session_codec.zig");
 const catalog_cache = @import("session_catalog_cache.zig");
 const session_child_store = @import("session_child_store.zig");
 const relationship_index_codec = @import("session_relationship_index_codec.zig");
-const session_event = @import("session_event.zig");
 const session_json = @import("session_json.zig");
 const session_layout = @import("session_layout.zig");
 const session_log = @import("session_log.zig");
@@ -4246,144 +4244,6 @@ fn parseRememberedSessionId(bytes: []const u8) ![]const u8 {
     const id = bytes[0 .. bytes.len - 1];
     validateSessionId(id) catch return error.InvalidRememberedSession;
     return id;
-}
-
-fn makeSessionDir(alloc: Allocator, store: Store, id: []const u8) !void {
-    const dir = try sessionDirPath(alloc, store.sessions_dir, id);
-    defer alloc.free(dir);
-    try config_runtime.makeAbsolutePath(dir);
-}
-
-const schema_v3_test_generation: session_event.Identifier = @splat(1);
-const schema_v3_test_watermark = "commit.01010101010101010101010101010101.json";
-
-/// Shape of a test schema-v3 session. Its committed log holds two events:
-/// `session_started` in `projected_workspace`, then a move to `workspace` at
-/// `updated_at_ms`.
-pub const SchemaV3Fixture = struct {
-    projected_workspace: []const u8,
-    workspace: []const u8,
-    updated_at_ms: i64,
-    /// A stale manifest records only the first event, as when a crash lands
-    /// between a log append and the projection write.
-    stale_projection: bool = true,
-    /// The update time a stale manifest records.
-    projected_updated_at_ms: i64 = 10,
-    /// Records the child identity only in the first event, as a crash before
-    /// the owner marker is written leaves it.
-    subagent_child: bool = false,
-    /// JSON whitespace added inside the first event, lengthening its line
-    /// without changing what it decodes to.
-    first_event_padding: usize = 0,
-};
-
-/// Test-only: writes the schema-v3 session `fixture` describes.
-pub fn writeSchemaV3Fixture(
-    alloc: Allocator,
-    store: Store,
-    id: []const u8,
-    fixture: SchemaV3Fixture,
-) !void {
-    if (!builtin.is_test) @compileError("schema-v3 fixtures are test-only");
-    try makeSessionDir(alloc, store, id);
-    var dir = try store.openSessionDir(id);
-    defer dir.close();
-    try dir.dir.setPermissions(io_mod.getIo(), .fromMode(0o700));
-    const preferences = session_codec.DurableSessionPreferences{ .model = @constCast("test/model"), .effort = .auto, .fast_mode = false };
-    const started = try session_event.encodeLegacyFixtureFrame(alloc, .{
-        .log_generation = schema_v3_test_generation,
-        .seq = 1,
-        .event_id = @splat(2),
-        .timestamp_ms = 10,
-        .event = .{ .session_started = .{
-            .id = @constCast(id),
-            .created_at_ms = 10,
-            .origin_workspace_root = @constCast(fixture.projected_workspace),
-            .workspace_root = @constCast(fixture.projected_workspace),
-            .conversation_language = .literal("en"),
-            .preferences = preferences,
-            .subagent_child = fixture.subagent_child,
-        } },
-    });
-    defer alloc.free(started);
-    const padding = try alloc.alloc(u8, fixture.first_event_padding);
-    defer alloc.free(padding);
-    @memset(padding, ' ');
-    // The frame ends in "}\n"; the padding goes before the closing brace.
-    const first = try std.mem.concat(alloc, u8, &.{
-        started[0 .. started.len - 2],
-        padding,
-        started[started.len - 2 ..],
-    });
-    defer alloc.free(first);
-    const moves = !std.mem.eql(u8, fixture.projected_workspace, fixture.workspace);
-    const second = try session_event.encodeLegacyFixtureFrame(alloc, .{
-        .log_generation = schema_v3_test_generation,
-        .seq = 2,
-        .event_id = @splat(3),
-        .timestamp_ms = fixture.updated_at_ms,
-        .event = if (moves) .{ .workspace_rebound = .{
-            .previous_workspace_root = @constCast(fixture.projected_workspace),
-            .workspace_root = @constCast(fixture.workspace),
-        } } else .{ .preferences_changed = .{ .fast_mode = true } },
-    });
-    defer alloc.free(second);
-    const log_bytes = first.len + second.len;
-    {
-        var events = try dir.dir.createFile(io_mod.getIo(), "events.jsonl", .{ .permissions = .fromMode(0o600) });
-        defer events.close(io_mod.getIo());
-        try events.writeStreamingAll(io_mod.getIo(), first);
-        try events.writeStreamingAll(io_mod.getIo(), second);
-    }
-    const generation_hex = std.fmt.bytesToHex(schema_v3_test_generation, .lower);
-    const event_hex = std.fmt.bytesToHex(@as(session_event.Identifier, @splat(3)), .lower);
-    const watermark = try std.json.Stringify.valueAlloc(alloc, .{
-        .schema_version = @as(u32, 1),
-        .session_id = id,
-        .log_generation = @as([]const u8, &generation_hex),
-        .through_seq = @as(u64, 2),
-        .through_event_id = @as([]const u8, &event_hex),
-        .through_event_log_bytes = @as(u64, log_bytes),
-    }, .{});
-    defer alloc.free(watermark);
-    try io_mod.durableReplaceVerified(alloc, &dir, schema_v3_test_watermark, watermark);
-    const authority_id: session_event.Identifier = @splat(4);
-    const authority_hex = std.fmt.bytesToHex(authority_id, .lower);
-    const marker = try std.json.Stringify.valueAlloc(alloc, .{
-        .schema_version = @as(u32, 1),
-        .storage_format = "event_log_v1",
-        .session_id = id,
-        .authority_id = @as([]const u8, &authority_hex),
-        .source = "native_create",
-    }, .{});
-    defer alloc.free(marker);
-    try io_mod.durableReplaceVerified(alloc, &dir, "authority.json", marker);
-    const projected_bytes: u64 = if (fixture.stale_projection) first.len else log_bytes;
-    const manifest = try session_projection.encodeManifest(alloc, .{
-        .id = @constCast(id),
-        .authority_id = authority_id,
-        .log_generation = schema_v3_test_generation,
-        .created_at_ms = 10,
-        .updated_at_ms = if (fixture.stale_projection) fixture.projected_updated_at_ms else fixture.updated_at_ms,
-        .origin_workspace_root = @constCast(fixture.projected_workspace),
-        .workspace_root = @constCast(if (fixture.stale_projection) fixture.projected_workspace else fixture.workspace),
-        .conversation_language = .literal("en"),
-        .history_len = 0,
-        .total_input_tokens = 0,
-        .total_output_tokens = 0,
-        .last_event_seq = if (fixture.stale_projection) 1 else 2,
-        .event_log_bytes = projected_bytes,
-        // Staleness is decided by log size, so nothing reads this field; the
-        // schema-v3 import path writes zeros as well.
-        .event_log_stat_fingerprint = @splat(0),
-        .generation_base_seq = 1,
-        .generation_base_bytes = first.len,
-        .checkpoint_seq = null,
-        .checkpoint_sha256 = null,
-        .preferences = preferences,
-    });
-    defer alloc.free(manifest);
-    try io_mod.durableReplaceVerified(alloc, &dir, "session.json", manifest);
 }
 
 extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;

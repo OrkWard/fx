@@ -4,13 +4,11 @@ const model_capabilities = @import("../config/model_capabilities.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
 const generation_usage_provider = @import("../session/generation_usage_provider.zig");
 const gateway_provider = @import("gateway_provider.zig");
-const web_search_provider = @import("../tooling/web_search_provider.zig");
 const auto_classifier = @import("../permissions/auto_classifier.zig");
 const model_catalog = @import("model_catalog.zig");
 
 pub const Bundle = struct {
     pub const AuthStrategy = enum {
-        vercel,
         chatgpt,
         grok,
     };
@@ -32,8 +30,6 @@ pub const Bundle = struct {
     model_catalog: ?model_catalog.Provider = null,
     permission_reviewer: ?auto_classifier.Provider = null,
     deferred_usage: ?generation_usage_provider.Provider = null,
-    credits: ?gateway_provider.CreditsProvider = null,
-    fx_search: ?web_search_provider.Provider = null,
 
     pub fn agent_stream_or_unavailable(self: Bundle) stream_provider.Provider {
         return self.agent_stream orelse stream_provider.unavailable_provider;
@@ -49,7 +45,6 @@ fn emptyModelCapabilities(_: []const u8) model_capabilities.Capabilities {
 }
 
 pub const Set = struct {
-    gateway: Bundle,
     codex: Bundle,
     grok: Bundle,
     definitions: []const @import("../config/configured_provider.zig").Definition = &.{},
@@ -59,7 +54,6 @@ pub const Set = struct {
 
     pub fn select(self: Set, provider: model_provider.ProviderId) Bundle {
         return switch (provider) {
-            .gateway => self.gateway,
             .codex => self.codex,
             .grok => self.grok,
             .configured => blk: {
@@ -73,17 +67,8 @@ pub const Set = struct {
 
     pub fn deferredUsageProviders(self: Set) generation_usage_provider.Set {
         return .{
-            .gateway = self.gateway.deferred_usage,
             .codex = self.codex.deferred_usage,
             .grok = self.grok.deferred_usage,
         };
     }
 };
-
-pub fn gateway_only(gateway: Bundle) Set {
-    return .{
-        .gateway = gateway,
-        .codex = .{},
-        .grok = .{},
-    };
-}

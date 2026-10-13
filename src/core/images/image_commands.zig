@@ -1,9 +1,6 @@
 const std = @import("std");
 const image_attachments = @import("image_attachments.zig");
 const types = @import("../shared/types.zig");
-const entity_spans = @import("../shared/entity_spans.zig");
-const edit_contract = @import("../input/editor_state.zig");
-const registered_entities = @import("../input/registered_entities.zig");
 
 const InsertImageResult = enum { inserted, rejected, input_full };
 const ImageSourceLifetime = enum { retained, temporary };
@@ -175,55 +172,3 @@ pub fn Commands(comptime App: type) type {
         }
     };
 }
-
-const FakeInput = struct {
-    edit_state: edit_contract.State = .{},
-    entities: registered_entities.State = .{},
-    vertical_navigation: FakeVerticalNavigation = .{},
-    history_boundary_count: usize = 0,
-
-    pub fn historyBoundary(self: *FakeInput, _: std.mem.Allocator) void {
-        self.history_boundary_count += 1;
-    }
-
-    fn insertionState(self: *FakeInput) FakeInsertionState {
-        return .{ .input = self };
-    }
-};
-
-const FakeInsertionState = struct {
-    input: *FakeInput,
-
-    fn canInsert(
-        self: FakeInsertionState,
-        inserted_len: usize,
-        max_len: usize,
-    ) bool {
-        return edit_contract.canInsert(self.input.edit_state.input.items.len, inserted_len, max_len);
-    }
-
-    fn insertSliceAssumeCapacity(
-        self: FakeInsertionState,
-        _: std.mem.Allocator,
-        bytes: []const u8,
-    ) void {
-        if (bytes.len == 0) return;
-        const insert_start = self.input.edit_state.cursor;
-        self.input.edit_state.insertSliceAssumeCapacity(bytes);
-        for (self.input.entities.image_tokens.items) |*token| {
-            token.span = entity_spans.afterInsert(
-                token.span,
-                insert_start,
-                bytes.len,
-            ).?;
-        }
-    }
-};
-
-const FakeVerticalNavigation = struct {
-    reset_count: usize = 0,
-
-    fn reset(self: *FakeVerticalNavigation) void {
-        self.reset_count += 1;
-    }
-};

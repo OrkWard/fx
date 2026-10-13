@@ -119,35 +119,6 @@ pub fn decideAdmission(live_count: usize) Admission {
     return if (live_count < max_live_entries) .admit else .capacity_exhausted;
 }
 
-pub const Presentation = enum {
-    observe_initially,
-    return_running,
-};
-
-pub fn initialPresentation(yield_time_ms: u32) Presentation {
-    return if (yield_time_ms == 0) .return_running else .observe_initially;
-}
-
-pub const CancellationPoint = enum {
-    before_spawn,
-    after_spawn_before_publication,
-    published_wait,
-};
-
-pub const CancellationDecision = enum {
-    no_process_effect,
-    stop_and_join_unpublished,
-    detach_waiter,
-};
-
-pub fn cancellationDecision(point: CancellationPoint) CancellationDecision {
-    return switch (point) {
-        .before_spawn => .no_process_effect,
-        .after_spawn_before_publication => .stop_and_join_unpublished,
-        .published_wait => .detach_waiter,
-    };
-}
-
 pub const OutputRange = struct {
     start: u64,
     end: u64,
@@ -195,34 +166,3 @@ pub const DeliveryState = struct {
         return .{ .committed = self.committed };
     }
 };
-
-pub const Tombstone = struct {
-    terminal_state: TerminalState,
-    status: ?command_contract.CommandStatus,
-    delivered_output_end: u64,
-};
-
-pub fn toTombstone(
-    state: State,
-    delivery: DeliveryState,
-) error{ NotTerminal, DeliveryPending }!Tombstone {
-    if (delivery.reservation != null) return error.DeliveryPending;
-    return switch (state) {
-        .completed => |status| .{
-            .terminal_state = .completed,
-            .status = status,
-            .delivered_output_end = delivery.committed,
-        },
-        .stopped => |status| .{
-            .terminal_state = .stopped,
-            .status = status,
-            .delivered_output_end = delivery.committed,
-        },
-        .lost => .{
-            .terminal_state = .lost,
-            .status = null,
-            .delivered_output_end = delivery.committed,
-        },
-        .starting, .running, .stopping => error.NotTerminal,
-    };
-}

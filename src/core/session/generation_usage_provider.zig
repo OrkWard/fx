@@ -5,7 +5,6 @@ const Allocator = std.mem.Allocator;
 
 pub const LookupInput = struct {
     credential: ?[]const u8,
-    tenant: ?[]const u8,
     origin: []const u8,
     generation_id: []const u8,
     cancel_flag: *std.atomic.Value(bool),
@@ -82,17 +81,11 @@ pub const unavailable_provider = Provider{
 };
 
 pub const Set = struct {
-    gateway: ?Provider = null,
     codex: ?Provider = null,
     grok: ?Provider = null,
 
-    pub fn gatewayOnly(provider: Provider) Set {
-        return .{ .gateway = provider };
-    }
-
     pub fn select(self: Set, provider: model_provider.ProviderId) ?Provider {
         return switch (provider) {
-            .gateway => self.gateway,
             .codex => self.codex,
             .grok => self.grok,
             .configured => null,

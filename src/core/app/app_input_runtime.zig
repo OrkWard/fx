@@ -48,7 +48,6 @@ const input_full_transcript_runtime = @import("input_full_transcript_runtime.zig
 const input_selection_runtime = @import("input_selection_runtime.zig");
 const input_limit_feedback = @import("input_limit_feedback.zig");
 
-pub const file_picker_completion_cap = input_completion_runtime.file_picker_completion_cap;
 const ctrl_g_upgrade_byte: u8 = 7;
 
 fn classifyResumeFailure(err: anyerror) session_catalog.ResumeFailure {

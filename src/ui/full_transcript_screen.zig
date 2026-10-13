@@ -2097,27 +2097,6 @@ fn logStoredResultUnavailable(handle: []const u8, err: anyerror) void {
     );
 }
 
-pub fn renderProjectionViewportSourceInterruptible(
-    alloc: Allocator,
-    projection: *Projection,
-    capability: ?*session_child_store.SessionChildCapability,
-    cols: u16,
-    visible_rows: u16,
-    scroll_offset: u32,
-    checkpoint: ?*BuildCheckpoint,
-) ![]u8 {
-    return renderProjectionViewportSourceWithSelection(
-        alloc,
-        projection,
-        capability,
-        cols,
-        visible_rows,
-        .{ .fixed_offset = scroll_offset },
-        checkpoint,
-        std.math.maxInt(usize),
-    );
-}
-
 pub fn renderProjectionViewportSourceBoundedInterruptible(
     alloc: Allocator,
     projection: *Projection,

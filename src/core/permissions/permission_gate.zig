@@ -97,15 +97,6 @@ fn fallbackDecision(tool: anytype, input: anytype) Decision {
     };
 }
 
-/// Decides an ordinary typed-tool invocation without an operational error edge.
-pub fn decideOrdinary(tool: anytype, input: anytype, ctx: anytype) Decision {
-    comptime requireDecisionShape(@TypeOf(tool), @TypeOf(input), @TypeOf(ctx), Decision);
-
-    if (ctx.permission_mode == .yolo) return yoloDecision();
-    if (ctx.permission_decider) |decider| return decider(tool, input, ctx);
-    return fallbackDecision(tool, input);
-}
-
 /// Decides a run-dispatch invocation while preserving policy I/O failures.
 pub fn decide(tool: anytype, input: anytype, ctx: anytype) PermissionDecisionError!Decision {
     comptime requireDecisionShape(

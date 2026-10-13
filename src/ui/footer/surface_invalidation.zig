@@ -26,10 +26,6 @@ const GeometryError = error{
     InvalidFooterInvalidationGeometry,
 };
 
-const RecordError = GeometryError || error{
-    InvalidFrameInvalidationRange,
-};
-
 const FooterExtraChange = struct {
     update: FooterExtraUpdate,
     top: u16,
@@ -58,13 +54,6 @@ fn logFooterExtraChange(shell: *const TranscriptRuntime, change: FooterExtraChan
             if (change.update.show_picker) "true" else "false",
         },
     );
-}
-
-fn applyFooterExtraChange(shell: *TranscriptRuntime, force_redraw: *bool, change: FooterExtraChange) void {
-    shell.extra_input_rows = change.update.footer_extra;
-    shell.footer_reserved_base_rows = change.update.footer_reserved_base_rows;
-    shell.footer_viewport.invalidateAfterExternalClear();
-    force_redraw.* = true;
 }
 
 fn footerExtraInvalidationTop(shell: *const TranscriptRuntime) u16 {
@@ -130,18 +119,6 @@ fn appendVisibleFooterInvalidation(
     footer_paint_plan.appendFooterFrameInvalidation(&plan.invalidation, range);
 }
 
-fn recordVisibleExternalClearInvalidation(
-    shell: *TranscriptRuntime,
-    top: u16,
-    rows: u16,
-) RecordError!void {
-    const range = try visibleFooterInvalidation(.external_clear, top, rows) orelse {
-        logSkippedFooterInvalidation(.external_clear, top, rows);
-        return;
-    };
-    try shell.recordFrameInvalidation(range);
-}
-
 pub fn appendMeasuredFooterExtraInvalidation(
     shell: *TranscriptRuntime,
     plan: *PaintPlan,
@@ -160,43 +137,6 @@ pub fn appendMeasuredFooterExtraInvalidation(
     );
     plan.footer_clean_allowed = false;
     force_redraw.* = true;
-}
-
-pub fn applyReservationFooterExtraUpdate(
-    shell: *TranscriptRuntime,
-    force_redraw: *bool,
-    update: FooterExtraUpdate,
-) RecordError!bool {
-    const change = detectFooterExtraChange(shell, update) orelse return false;
-
-    logFooterExtraChange(shell, change);
-    try recordVisibleExternalClearInvalidation(shell, change.top, shell.layout.rows);
-    applyFooterExtraChange(shell, force_redraw, change);
-    return true;
-}
-
-pub fn frameFooterExtraInvalidation(
-    shell: *const TranscriptRuntime,
-    update: FooterExtraUpdate,
-) GeometryError!?paint_plan.FrameInvalidationRange {
-    const change = detectFooterExtraChange(shell, update) orelse return null;
-    return try visibleFooterInvalidation(
-        footerExtraInvalidationReason(shell, change.update),
-        change.top,
-        shell.layout.rows,
-    );
-}
-
-pub fn applyFrameFooterExtraUpdate(
-    shell: *TranscriptRuntime,
-    force_redraw: *bool,
-    update: FooterExtraUpdate,
-) bool {
-    const change = detectFooterExtraChange(shell, update) orelse return false;
-
-    logFooterExtraChange(shell, change);
-    applyFooterExtraChange(shell, force_redraw, change);
-    return true;
 }
 
 pub fn mergeAttemptInvalidations(invalidations: FrameInvalidationSet, plan: *PaintPlan) void {

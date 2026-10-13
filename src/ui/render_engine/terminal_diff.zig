@@ -1107,28 +1107,6 @@ fn writeDocumentAppendClear(
     );
 }
 
-pub fn prepareTerminalMovement(
-    alloc: Allocator,
-    authoritative: *const vt_emulator.Grid,
-    document_append: frame_scroll_plan.FrameDocumentAppend,
-    planned_scroll_rows: u16,
-    target_cols: u16,
-    target_rows: u16,
-) !PreparedTerminalMovement {
-    return prepareTerminalMovementForFrame(
-        alloc,
-        authoritative,
-        document_append,
-        planned_scroll_rows,
-        planned_scroll_rows,
-        target_cols,
-        target_rows,
-        0,
-        .none,
-        if (document_append.reset_replay) .clear else .none,
-    );
-}
-
 pub fn prepareTerminalMovementForFrame(
     alloc: Allocator,
     authoritative: *const vt_emulator.Grid,

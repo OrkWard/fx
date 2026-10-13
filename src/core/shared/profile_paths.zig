@@ -3,10 +3,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const root_dir_name = ".fx";
-pub const auth_file_name = "auth.json";
 pub const chatgpt_auth_file_name = "chatgpt-auth.json";
 pub const grok_auth_file_name = "grok-auth.json";
-pub const api_key_file_name = "api-key";
 pub const sessions_dir_name = "sessions";
 /// Older per-session side folders, one per session id.
 pub const session_files_dir_name = "session-files";
@@ -35,32 +33,12 @@ pub fn managedSkillsDir(alloc: Allocator, home: []const u8) ![]u8 {
     return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, managed_skills_dir_name });
 }
 
-pub fn authPath(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, auth_file_name });
-}
-
-pub fn chatgptAuthPath(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, chatgpt_auth_file_name });
-}
-
-pub fn apiKeyPath(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, api_key_file_name });
-}
-
 pub fn sessionsDir(alloc: Allocator, home: []const u8) ![]u8 {
     return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, sessions_dir_name });
 }
 
 pub fn promptHistoryPath(alloc: Allocator, home: []const u8) ![]u8 {
     return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, prompt_history_file_name });
-}
-
-pub fn backupsDir(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, backups_dir_name });
-}
-
-pub fn logsDir(alloc: Allocator, home: []const u8) ![]u8 {
-    return std.Io.Dir.path.join(alloc, &.{ home, root_dir_name, logs_dir_name });
 }
 
 pub fn traceLogPath(alloc: Allocator, home: []const u8) ![]u8 {

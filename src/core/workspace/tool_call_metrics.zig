@@ -181,7 +181,3 @@ pub fn reset() void {
     stored = 0;
     lifetime = .{};
 }
-
-pub fn resetForTest() void {
-    reset();
-}

@@ -9,7 +9,7 @@ pub const Runtime = struct {
     const Self = @This();
 
     alloc: Allocator,
-    active_provider: model_provider.ProviderId = .gateway,
+    active_provider: model_provider.ProviderId = .codex,
     model: std.ArrayList(u8) = .empty,
     definitions: @import("../config/configured_provider.zig").Registry = .{},
     model_requests_blocked: bool = false,

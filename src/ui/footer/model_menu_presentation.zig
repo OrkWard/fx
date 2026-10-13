@@ -406,23 +406,17 @@ fn loadedCatalogStatusText(state: model_cache_runtime.ModelMenuCatalogState) ?[]
     if (state.private_models_hidden) {
         const reason = state.public_only_reason orelse return "Using the public model catalog.";
         return switch (reason) {
-            .no_credential => "Using the public model catalog; sign in or use an API key for team-private models.",
-            .fx_login_team_required => "Choose a Vercel team to load its private models.",
-            .fx_login_refresh_required => "Vercel sign-in must refresh before team-private models can load.",
+            .no_credential => "Using the public model catalog.",
             .credential_refresh_required => "The selected sign-in must refresh before authenticated models can load.",
-            .credential_refresh_failed => "Vercel sign-in refresh failed; using the public model catalog.",
-            .authenticated_credential_rejected => "Your Gateway credential was rejected; using the public model catalog.",
+            .credential_refresh_failed => "Sign-in refresh failed; using the public model catalog.",
+            .authenticated_credential_rejected => "Your credential was rejected; using the public model catalog.",
             .chatgpt_subscription => "Codex models require an authenticated Codex catalog.",
             .grok_subscription => "Grok models require an authenticated Grok catalog.",
         };
     }
     if (state.access_level == .authenticated) {
-        const source = state.source orelse return "Using an authenticated AI Gateway catalog.";
+        const source = state.source orelse return "Using an authenticated catalog.";
         return switch (source) {
-            .fx_login => "Gateway catalog: authenticated with fx login.",
-            .ai_gateway_api_key => "Note: Gateway catalog is authenticated with an API key",
-            .vercel_oidc_token => "Gateway catalog: authenticated with the Vercel session.",
-            .stored_key => "Gateway catalog: authenticated with the stored API key.",
             .chatgpt_subscription => "Codex catalog: authenticated with a subscription.",
             .grok_subscription => "Grok catalog: authenticated with a subscription.",
             .host_managed => "Provider catalog: authentication is managed by the host.",
@@ -436,8 +430,8 @@ fn retryableFailureText(failure: ?model_cache_runtime.ModelMenuCatalogState.Fail
     const value = failure orelse return null;
     if (!value.retryable) return null;
     return switch (value.category) {
-        .rate_limited => "AI Gateway rate limited model discovery; retry /model.",
-        .transport, .gateway_unavailable => "Could not reach AI Gateway; retry /model.",
+        .rate_limited => "The provider rate limited model discovery; retry /model.",
+        .transport, .gateway_unavailable => "Could not reach the provider; retry /model.",
         else => "Could not refresh model catalog; retry /model.",
     };
 }

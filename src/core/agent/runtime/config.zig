@@ -26,12 +26,10 @@ pub const Config = struct {
     host_instructions: []const u8 = "",
     skill_catalog: skill_invocation.Catalog = .{ .skills = &.{} },
     skill_bindings: []const skill_invocation.ExplicitBinding = &.{},
-    gateway_retry_count: usize,
     max_provider_attempts: usize = model_response_recovery.default_max_provider_attempts,
     /// Interactive hosts may request a durable "try later" pause separately
     /// from cancellation. Headless hosts leave this null.
     recovery_pause_flag: ?*std.atomic.Value(bool) = null,
-    gateway_chat_url: []const u8,
     advertised_tool_names: []const []const u8 = &.{},
     advertised_functions: []const model_tool_schema.FunctionSchema = &.{},
     provider_capabilities: provider_set.Bundle.Capabilities = .{

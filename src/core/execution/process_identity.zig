@@ -89,36 +89,3 @@ pub const TokenMatch = enum {
     mismatched,
     unavailable,
 };
-
-pub var process_token_match_for_test: ?*const fn ([]const u8, ProcessInstanceToken) TokenMatch = null;
-pub var process_token_capture_for_test: ?*const fn (
-    std.mem.Allocator,
-    []const u8,
-) anyerror!ProcessInstanceToken = null;
-
-pub fn captureProcessInstanceToken(
-    alloc: std.mem.Allocator,
-    pid_text: []const u8,
-) !ProcessInstanceToken {
-    if (process_token_capture_for_test) |callback| {
-        return callback(alloc, pid_text);
-    }
-    return error.ProcessIdentityUnsupported;
-}
-
-pub fn matchProcessInstanceToken(
-    alloc: std.mem.Allocator,
-    pid_text: []const u8,
-    expected: ProcessInstanceToken,
-) TokenMatch {
-    if (process_token_match_for_test) |callback| {
-        return callback(pid_text, expected);
-    }
-    const actual = captureProcessInstanceToken(alloc, pid_text) catch |err| {
-        return switch (err) {
-            error.ProcessNotFound => .missing,
-            else => .unavailable,
-        };
-    };
-    return if (actual.eql(expected)) .matched else .mismatched;
-}

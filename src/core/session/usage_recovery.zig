@@ -1,6 +1,5 @@
 const std = @import("std");
 const debug_trace = @import("../shared/debug_trace.zig");
-const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const session_usage = @import("session_usage.zig");
 const usage_report = @import("usage_report.zig");

@@ -355,13 +355,6 @@ pub noinline fn ansiSequenceEnd(text: []const u8, index: usize) usize {
     return @min(index + 2, text.len);
 }
 
-pub noinline fn previousRuneStart(text: []const u8, end: usize) usize {
-    if (end == 0) return 0;
-    var i = end - 1;
-    while (i > 0 and (text[i] & 0b1100_0000) == 0b1000_0000) : (i -= 1) {}
-    return i;
-}
-
 pub noinline fn statusPrefixEnd(label: []const u8) usize {
     if (label.len == 0) return 0;
     const first = displayUnitAt(label, 0);

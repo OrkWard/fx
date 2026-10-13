@@ -1,4 +1,5 @@
 const std = @import("std");
+const oauth_transport = @import("../auth/oauth_transport.zig");
 const builtin = @import("builtin");
 const app_process_runtime = @import("app_process_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
@@ -7,7 +8,6 @@ const cli_surface = @import("../cli/cli_surface.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
 const process_provider = @import("../execution/process_provider.zig");
-const gateway_provider = @import("../gateway/gateway_provider.zig");
 const provider_set = @import("../gateway/provider_set.zig");
 const host = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
@@ -53,13 +53,10 @@ pub const Config = struct {
     default_model: []const u8,
     default_agent_step_limit: usize,
     models_path: []const u8,
-    gateway_retry_count: usize,
-    gateway_chat_url: []const u8,
-    gateway_provider: gateway_provider.Provider,
+    oauth_transport: oauth_transport.Provider,
     provider_set: provider_set.Set,
     process_provider: process_provider.Provider = process_provider.unavailable_provider,
     url_opener: host.UrlOpener,
-    secret_store: host.SecretStore,
     prompt_policy: prompt_policy.Policy,
     skill_root_policy: skill_contract.RootPolicy,
     ignored_list_entries: []const []const u8,
@@ -374,13 +371,10 @@ fn cliSurfaceConfig(cfg: Config) cli_surface.Config {
         .default_model = cfg.default_model,
         .default_agent_step_limit = cfg.default_agent_step_limit,
         .models_path = cfg.models_path,
-        .gateway_retry_count = cfg.gateway_retry_count,
-        .gateway_chat_url = cfg.gateway_chat_url,
-        .gateway_provider = cfg.gateway_provider,
+        .oauth_transport = cfg.oauth_transport,
         .provider_set = cfg.provider_set,
         .process_provider = cfg.process_provider,
         .url_opener = cfg.url_opener,
-        .secret_store = cfg.secret_store,
         .prompt_policy = cfg.prompt_policy,
         .skill_root_policy = cfg.skill_root_policy,
         .ignored_list_entries = cfg.ignored_list_entries,
@@ -450,145 +444,4 @@ fn tryWriteErrorMessage(deps: RunDeps, err: anyerror) void {
     writeStderr(deps, "fx: ");
     writeStderr(deps, config_runtime.modelNotSelectedMessage(err) orelse @errorName(err));
     writeStderr(deps, "\n");
-}
-
-var test_events: [16][]const u8 = undefined;
-var test_event_count: usize = 0;
-var active_capture: ?*TestCapture = null;
-
-fn resetTestEvents() void {
-    test_event_count = 0;
-}
-
-fn appendTestEvent(text: []const u8) void {
-    test_events[test_event_count] = text;
-    test_event_count += 1;
-}
-
-const TestCapture = struct {
-    run_result: cli_surface.RunResult,
-    cli_calls: usize = 0,
-    seen_config: ?cli_surface.Config = null,
-    stderr: std.Io.Writer.Allocating,
-    stdout: std.Io.Writer.Allocating,
-    bench_value: ?[]const u8 = null,
-    init_error: ?anyerror = null,
-    worker_error: ?anyerror = null,
-    run_error: ?anyerror = null,
-    stderr_error: ?anyerror = null,
-    stdout_error: ?anyerror = null,
-    stderr_calls: usize = 0,
-    stdout_calls: usize = 0,
-    record_stderr_event: bool = false,
-    record_stdout_event: bool = false,
-    resume_handoff_id: ?[]const u8 = null,
-    shutdown_failure: ?anyerror = null,
-    raise_sigint_during_deinit: bool = false,
-    upgrade_relaunch_path: ?[]const u8 = null,
-    upgrade_previous_revision: ?[]const u8 = null,
-    replace_error: std.process.ReplaceError = error.InvalidExe,
-    replace_calls: usize = 0,
-    replace_arg_count: usize = 0,
-    replace_arg_bufs: [5][128]u8 = undefined,
-    replace_arg_lens: [5]usize = .{ 0, 0, 0, 0, 0 },
-    fail_unexpected_format: bool = false,
-
-    fn init(run_result: cli_surface.RunResult) TestCapture {
-        resetTestEvents();
-        return .{
-            .run_result = run_result,
-            .stderr = .init(std.testing.allocator),
-            .stdout = .init(std.testing.allocator),
-        };
-    }
-
-    fn deinit(self: *TestCapture) void {
-        active_capture = null;
-        self.stderr.deinit();
-        self.stdout.deinit();
-    }
-
-    fn deps(self: *TestCapture) RunDeps {
-        active_capture = self;
-        return .{
-            .cli_ctx = self,
-            .run_if_requested = runIfRequestedForTest,
-            .env_ctx = self,
-            .getenv = getenvForTest,
-            .stderr_ctx = self,
-            .write_stderr = writeStderrForTest,
-            .stdout_ctx = self,
-            .write_stdout = writeStdoutForTest,
-            .format_unexpected_error = if (self.fail_unexpected_format)
-                failUnexpectedErrorFormatForTest
-            else
-                formatUnexpectedError,
-            .worker_ctx = self,
-            .start_worker_thread = startWorkerThreadForTest,
-            .replace_ctx = self,
-            .replace_process = replaceProcessForTest,
-        };
-    }
-
-    fn replaceArg(self: *const TestCapture, index: usize) []const u8 {
-        return self.replace_arg_bufs[index][0..self.replace_arg_lens[index]];
-    }
-};
-
-fn runIfRequestedForTest(ctx: ?*anyopaque, _: Allocator, _: []const [:0]const u8, cfg: cli_surface.Config) !cli_surface.RunResult {
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    capture.cli_calls += 1;
-    capture.seen_config = cfg;
-    return capture.run_result;
-}
-
-fn getenvForTest(ctx: ?*anyopaque, key: []const u8) ?[]const u8 {
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    if (std.mem.eql(u8, key, "FX_BENCH")) return capture.bench_value;
-    return null;
-}
-
-fn writeStderrForTest(ctx: ?*anyopaque, text: []const u8) !void {
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    capture.stderr_calls += 1;
-    if (capture.record_stderr_event) appendTestEvent("stderr-attempt");
-    if (capture.stderr_error) |err| return err;
-    try capture.stderr.writer.writeAll(text);
-}
-
-fn writeStdoutForTest(ctx: ?*anyopaque, text: []const u8) !void {
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    capture.stdout_calls += 1;
-    if (capture.record_stdout_event) appendTestEvent("stdout-attempt");
-    if (capture.stdout_error) |err| return err;
-    try capture.stdout.writer.writeAll(text);
-}
-
-fn replaceProcessForTest(
-    ctx: ?*anyopaque,
-    _: std.Io,
-    options: std.process.ReplaceOptions,
-) std.process.ReplaceError {
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    capture.replace_calls += 1;
-    capture.replace_arg_count = options.argv.len;
-    const count = @min(options.argv.len, capture.replace_arg_bufs.len);
-    for (options.argv[0..count], 0..) |arg, index| {
-        if (arg.len > capture.replace_arg_bufs[index].len) {
-            return error.SystemResources;
-        }
-        @memcpy(capture.replace_arg_bufs[index][0..arg.len], arg);
-        capture.replace_arg_lens[index] = arg.len;
-    }
-    return capture.replace_error;
-}
-
-fn failUnexpectedErrorFormatForTest(_: []u8, _: anyerror) ![]const u8 {
-    return error.TestUnexpectedErrorFormatFailed;
-}
-
-fn startWorkerThreadForTest(ctx: ?*anyopaque, _: *anyopaque) !void {
-    appendTestEvent("worker-thread");
-    const capture: *TestCapture = @ptrCast(@alignCast(ctx.?));
-    if (capture.worker_error) |err| return err;
 }

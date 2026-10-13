@@ -12,19 +12,6 @@ pub const ModelPickerStage = enum {
     fast,
 };
 
-/// Columns of the `/provider` picker, left to right. Each stage owns one
-/// whitespace-free token in the composer, so the next column anchors under the
-/// argument it belongs to.
-pub const ProviderPickerStage = enum {
-    provider,
-    method,
-    team,
-    /// Which detected key to use, or `new` to paste one.
-    key_source,
-    /// Not a list: the column is the masked API key field.
-    api_key,
-};
-
 pub const InlinePickerKind = enum {
     slash,
     model,
@@ -63,7 +50,6 @@ pub const ModelPickerQuery = struct {
 };
 
 pub const ProviderPickerQuery = struct {
-    stage: ProviderPickerStage,
     /// The `/provider ` or `/login ` the user typed, kept verbatim so rewriting
     /// the composer does not swap one alias for the other.
     prefix: []const u8,
@@ -102,17 +88,8 @@ pub const State = struct {
     model_picker_effort_window_start: usize = 0,
     model_picker_fast_index: usize = 0,
     model_picker_fast_window_start: usize = 0,
-    provider_picker_stage: ProviderPickerStage = .provider,
-    provider_picker_pending_provider: std.ArrayList(u8) = .empty,
-    provider_picker_pending_method: std.ArrayList(u8) = .empty,
     provider_column_index: usize = 0,
     provider_column_window_start: usize = 0,
-    method_column_index: usize = 0,
-    method_column_window_start: usize = 0,
-    team_column_index: usize = 0,
-    team_column_window_start: usize = 0,
-    key_source_column_index: usize = 0,
-    key_source_column_window_start: usize = 0,
     file_completion: file_completion_state.State = .{},
     // The ordinal is meaningful only within file_completion's presented rows.
     file_completion_index: usize = 0,
@@ -131,8 +108,6 @@ pub const State = struct {
     pub fn deinit(self: *State, alloc: Allocator) void {
         self.file_completion.deinit(alloc);
         self.model_picker_pending_model.deinit(alloc);
-        self.provider_picker_pending_provider.deinit(alloc);
-        self.provider_picker_pending_method.deinit(alloc);
         const state_info = @typeInfo(State).@"struct";
         inline for (state_info.field_names, state_info.field_types, state_info.field_attrs) |field_name, field_type, field_attrs| {
             // The child's owner already restored its defaults.
@@ -176,22 +151,10 @@ pub const State = struct {
     pub fn reconcileInlinePickerAfterEdit(self: *State, editor: *const editor_state.State) void {
         self.slash_completion_index = 0;
         self.slash_completion_window_start = 0;
-        self.reconcileProviderPickerAfterEdit(editor);
         self.inline_picker_suppression = suppressionAfterEdit(
             self.inline_picker_suppression,
             self.inlinePickerTriggerKind(editor),
         );
-    }
-
-    /// An edit that breaks the committed provider or method token orphans the
-    /// later columns: the text no longer names the choice they refine. Degrade
-    /// to the provider column so the picker follows the text instead of dying.
-    fn reconcileProviderPickerAfterEdit(self: *State, editor: *const editor_state.State) void {
-        if (self.provider_picker_stage == .provider) return;
-        if (self.rawProviderPickerQuery(editor) != null) return;
-        const trimmed = editor.input.items[leadingWhitespaceLen(editor.input.items)..];
-        if (providerPickerPrefixLen(trimmed) == null) return;
-        self.clearProviderPickerFlow();
     }
 
     pub fn resetFilePickerIndex(self: *State) void {
@@ -273,35 +236,15 @@ pub const State = struct {
         }
     }
 
-    fn rawProviderPickerQuery(self: *const State, editor: *const editor_state.State) ?ProviderPickerQuery {
+    fn rawProviderPickerQuery(_: *const State, editor: *const editor_state.State) ?ProviderPickerQuery {
         const items = editor.input.items;
         const trim_start = leadingWhitespaceLen(items);
         const trimmed = items[trim_start..];
         const prefix_len = providerPickerPrefixLen(trimmed) orelse return null;
-
-        const stage = self.provider_picker_stage;
-        if (stage == .provider) return .{
-            .stage = .provider,
+        return .{
             .prefix = trimmed[0..prefix_len],
             .query = trimmed[prefix_len..],
             .token_start = trim_start + prefix_len,
-        };
-
-        const method: ?[]const u8 = switch (stage) {
-            .team, .key_source, .api_key => self.provider_picker_pending_method.items,
-            .provider, .method => null,
-        };
-        const token_start = providerPickerTokenStart(
-            trimmed,
-            prefix_len,
-            self.provider_picker_pending_provider.items,
-            method,
-        ) orelse return null;
-        return .{
-            .stage = stage,
-            .prefix = trimmed[0..prefix_len],
-            .query = trimmed[token_start..],
-            .token_start = trim_start + token_start,
         };
     }
 
@@ -309,70 +252,12 @@ pub const State = struct {
     /// trustworthy highlighted row.
     pub fn resetActiveCompletionIndex(self: *State) void {
         self.resetActiveModelPickerIndex();
-        self.resetActiveProviderPickerIndex();
-    }
-
-    fn resetActiveProviderPickerIndex(self: *State) void {
-        switch (self.provider_picker_stage) {
-            .provider => {
-                self.provider_column_index = 0;
-                self.provider_column_window_start = 0;
-            },
-            .method => {
-                self.method_column_index = 0;
-                self.method_column_window_start = 0;
-            },
-            .team => {
-                self.team_column_index = 0;
-                self.team_column_window_start = 0;
-            },
-            .key_source => {
-                self.key_source_column_index = 0;
-                self.key_source_column_window_start = 0;
-            },
-            .api_key => {},
-        }
-    }
-
-    /// Records the tokens already committed to the composer so the later
-    /// columns can anchor under their own argument. Leaves prior state intact
-    /// when the copy fails.
-    pub fn beginProviderPickerFlow(
-        self: *State,
-        alloc: Allocator,
-        provider: []const u8,
-        method: []const u8,
-        stage: ProviderPickerStage,
-    ) Allocator.Error!void {
-        const stable_provider = try alloc.dupe(u8, provider);
-        defer alloc.free(stable_provider);
-        const stable_method = try alloc.dupe(u8, method);
-        defer alloc.free(stable_method);
-
-        try self.provider_picker_pending_provider.ensureTotalCapacity(alloc, stable_provider.len);
-        try self.provider_picker_pending_method.ensureTotalCapacity(alloc, stable_method.len);
-        self.provider_picker_pending_provider.clearRetainingCapacity();
-        self.provider_picker_pending_provider.appendSliceAssumeCapacity(stable_provider);
-        self.provider_picker_pending_method.clearRetainingCapacity();
-        self.provider_picker_pending_method.appendSliceAssumeCapacity(stable_method);
-        self.provider_picker_stage = stage;
-        // A column is entered with nothing typed, so a highlight left over from
-        // an earlier visit would point at an unrelated row.
-        self.resetActiveProviderPickerIndex();
+        self.clearProviderPickerFlow();
     }
 
     pub fn clearProviderPickerFlow(self: *State) void {
-        self.provider_picker_stage = .provider;
-        self.provider_picker_pending_provider.clearRetainingCapacity();
-        self.provider_picker_pending_method.clearRetainingCapacity();
         self.provider_column_index = 0;
         self.provider_column_window_start = 0;
-        self.method_column_index = 0;
-        self.method_column_window_start = 0;
-        self.team_column_index = 0;
-        self.team_column_window_start = 0;
-        self.key_source_column_index = 0;
-        self.key_source_column_window_start = 0;
     }
 
     pub fn isModelShapedInput(self: *const State, editor: *const editor_state.State) bool {
@@ -578,36 +463,6 @@ fn providerPickerPrefixLen(trimmed: []const u8) ?usize {
         if (std.ascii.eqlIgnoreCase(trimmed[0..prefix.len], prefix)) return prefix.len;
     }
     return null;
-}
-
-/// Walks past the tokens the picker already committed. Matching them verbatim
-/// rather than scanning for whitespace keeps the anchor correct even when an
-/// option label is not a single word.
-fn providerPickerTokenStart(
-    trimmed: []const u8,
-    prefix_len: usize,
-    provider: []const u8,
-    method: ?[]const u8,
-) ?usize {
-    if (provider.len == 0) return null;
-    const after_prefix = trimmed[prefix_len..];
-    if (!tokenMatchesAt(after_prefix, 0, provider)) return null;
-
-    const cursor = skipPickerSpaces(trimmed, prefix_len + provider.len);
-    const wanted_method = method orelse return cursor;
-    if (wanted_method.len == 0) return null;
-    if (!tokenMatchesAt(trimmed, cursor, wanted_method)) return null;
-    return skipPickerSpaces(trimmed, cursor + wanted_method.len);
-}
-
-/// True when `token` sits at `start` as a whole word. Without the boundary
-/// check a committed `vercel` would also claim `vercelfoo`, re-anchoring the
-/// picker mid-token in text that no longer names the choice.
-fn tokenMatchesAt(bytes: []const u8, start: usize, token: []const u8) bool {
-    if (bytes.len - start < token.len) return false;
-    if (!std.mem.eql(u8, bytes[start..][0..token.len], token)) return false;
-    const end = start + token.len;
-    return end == bytes.len or bytes[end] == ' ' or bytes[end] == '\t';
 }
 
 fn skipPickerSpaces(bytes: []const u8, start: usize) usize {

@@ -24,7 +24,7 @@ Requirements:
 
 * interactive terminal for manual shell testing
 
-* a model connection for model-backed flows. [Custom model connections](https://fx.sh/docs/configure-fx/custom-model-connections) support local and remote endpoints. Vercel OAuth via `fx login`, macOS Keychain API keys via `fx setup`, `AI_GATEWAY_API_KEY`, and `VERCEL_OIDC_TOKEN` are also supported
+* a model connection for model-backed flows. [Custom model connections](https://fx.sh/docs/configure-fx/custom-model-connections) support local and remote endpoints. Codex and Grok subscriptions via `fx login codex` and `fx login grok` are also supported
 
 Common commands:
 
@@ -87,7 +87,7 @@ If an AI coding agent writes any of your contribution's prose, including the PR 
 
 * `src/ui/`: terminal rendering, event loop, input, transcript
 
-* `src/gateway/`: AI Gateway client transport
+* `src/gateway/`: model provider transports
 
 * `.fx/skills/`: optional fx-native workspace-level skill root
 

@@ -15,16 +15,6 @@ pub const Entry = struct {
 
 pub const entries = [_]Entry{
     .{
-        .id = .gateway,
-        .slug = "vercel",
-        .aliases = &.{ "gateway", "ai-gateway" },
-        .name = "Vercel AI Gateway",
-        .route_name = "Vercel AI Gateway",
-        .description = "Vercel account or AI Gateway billing",
-        .subscription = false,
-        .login_source = .fx_login,
-    },
-    .{
         .id = .codex,
         .slug = "codex",
         .name = "Codex",

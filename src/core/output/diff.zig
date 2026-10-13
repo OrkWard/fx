@@ -14,8 +14,6 @@ pub const max_request_projection_bytes: usize = 32 * 1024;
 
 pub const LineOp = enum(u8) { equal, add, remove };
 
-pub const EditKind = enum(u8) { edited, added };
-
 pub const diff_block_start_prefix: []const u8 = "\x1b]9050;";
 pub const diff_block_end_prefix: []const u8 = "\x1b]9051;";
 const osc_bell: u8 = 0x07;
@@ -768,11 +766,6 @@ const BoundedPreviewError = error{
     ArithmeticOverflow,
 };
 
-pub const Stats = struct {
-    additions: u32 = 0,
-    deletions: u32 = 0,
-};
-
 pub const FormatStyles = struct {
     added_fg: []const u8 = "\x1b[38;5;252m",
     removed_fg: []const u8 = "\x1b[38;5;252m",
@@ -1081,20 +1074,6 @@ fn appendDiffRenderLine(
     try out.append(alloc, '\n');
 }
 
-fn appendDiffElisionLine(
-    alloc: Allocator,
-    out: *std.ArrayList(u8),
-    gutter_width: usize,
-    styles: FormatStyles,
-) !void {
-    try appendDiffRenderLine(alloc, out, .{
-        .op = .elision,
-        .line_number = null,
-        .gutter_width = gutter_width,
-        .text = "⋯",
-    }, styles);
-}
-
 fn previewLineStyle(op: PreviewOp, styles: FormatStyles) []const u8 {
     return switch (op) {
         .addition => styles.added_fg,
@@ -1141,93 +1120,7 @@ fn decimalDigits(value: u32) usize {
     return digits;
 }
 
-fn diffPreviewOp(op: LineOp) PreviewOp {
-    return switch (op) {
-        .equal => .context,
-        .add => .addition,
-        .remove => .deletion,
-    };
-}
-
-pub fn countStats(diff: []const DiffLine) Stats {
-    var stats: Stats = .{};
-    for (diff) |line| {
-        switch (line.op) {
-            .equal => {},
-            .add => stats.additions += 1,
-            .remove => stats.deletions += 1,
-        }
-    }
-    return stats;
-}
-
 pub const context_lines: usize = 2;
-const max_display_lines: usize = 6;
-
-pub fn formatUnified(
-    alloc: Allocator,
-    diff: []const DiffLine,
-    styles: FormatStyles,
-    path: ?[]const u8,
-    kind: EditKind,
-) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-
-    _ = kind;
-    _ = path;
-
-    const include = try alloc.alloc(bool, diff.len);
-    defer alloc.free(include);
-    @memset(include, false);
-
-    for (diff, 0..) |line, index| {
-        if (line.op == .equal) continue;
-        const start = if (index >= context_lines) index - context_lines else 0;
-        const end = @min(index + context_lines + 1, diff.len);
-        for (start..end) |include_index| {
-            include[include_index] = true;
-        }
-    }
-
-    var max_num: u32 = 1;
-    for (diff, 0..) |line, index| {
-        if (!include[index]) continue;
-        const line_num = line.new_num orelse line.old_num orelse 0;
-        if (line_num > max_num) max_num = line_num;
-    }
-    const gutter = decimalDigits(max_num);
-
-    var prev_included = false;
-    var emitted_any = false;
-    var emitted_lines: usize = 0;
-    for (diff, 0..) |line, index| {
-        if (!include[index]) {
-            prev_included = false;
-            continue;
-        }
-        if (emitted_lines >= max_display_lines) {
-            try appendDiffElisionLine(alloc, &out, gutter, styles);
-            break;
-        }
-        if (!prev_included and emitted_any) {
-            try appendDiffElisionLine(alloc, &out, gutter, styles);
-        }
-
-        try appendDiffRenderLine(alloc, &out, .{
-            .op = diffPreviewOp(line.op),
-            .line_number = line.new_num orelse line.old_num,
-            .gutter_width = gutter,
-            .text = line.text,
-        }, styles);
-
-        prev_included = true;
-        emitted_any = true;
-        emitted_lines += 1;
-    }
-
-    return out.toOwnedSlice(alloc);
-}
 
 const canonical_max_indexed_lines: usize = 16_384;
 const canonical_max_matrix_cells: usize = 1_000_000;

@@ -34,12 +34,6 @@ const OwnedCatalogAccess = struct {
                 const credential = try alloc.dupe(u8, authenticated.credential);
                 errdefer secret.zeroAndFree(alloc, credential);
 
-                const team_context = if (access.teamContext()) |team|
-                    try alloc.dupe(u8, team)
-                else
-                    null;
-                errdefer if (team_context) |team| alloc.free(team);
-
                 const account_id = if (access.accountId()) |account|
                     try alloc.dupe(u8, account)
                 else
@@ -51,7 +45,6 @@ const OwnedCatalogAccess = struct {
                         .authenticated = .{
                             .source = authenticated.source,
                             .credential = credential,
-                            .team_context = team_context,
                             .account_id = account_id,
                         },
                     },
@@ -65,7 +58,6 @@ const OwnedCatalogAccess = struct {
             .public_only, .host_managed => {},
             .authenticated => |access| {
                 secret.zeroAndFree(alloc, @constCast(access.credential));
-                if (access.team_context) |team| alloc.free(@constCast(team));
                 if (access.account_id) |account| alloc.free(@constCast(account));
             },
         }

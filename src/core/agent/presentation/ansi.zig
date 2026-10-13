@@ -17,10 +17,6 @@ pub const strike_close = "\x1b[29m";
 pub var inline_code_open: []const u8 = shared_theme.fx_dark.inline_code_open;
 pub var inline_code_close: []const u8 = "\x1b[39m";
 
-pub fn setInlineCodeTheme(light: bool) void {
-    applyTheme(shared_theme.builtin(light));
-}
-
 pub fn applyTheme(theme: shared_theme.Theme) void {
     inline_code_open = theme.inline_code_open;
     task_completed_open = theme.task_completed_open;

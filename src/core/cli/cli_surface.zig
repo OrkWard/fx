@@ -14,7 +14,6 @@ const credentials = @import("../auth/credentials.zig");
 const model_provider = @import("../config/model_provider.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const doctor_runtime = @import("doctor_runtime.zig");
-const gateway_provider = @import("../gateway/gateway_provider.zig");
 const model_catalog = @import("../gateway/model_catalog.zig");
 const model_catalog_metadata = @import("../gateway/model_catalog_metadata.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
@@ -23,10 +22,8 @@ const execution_process_provider = @import("../execution/process_provider.zig");
 const github_publish = @import("../github/github_publish.zig");
 const github_workflows = @import("../github/github_workflows.zig");
 const host = @import("../hosts/host.zig");
-const login_flow = @import("../auth/login_flow.zig");
 const oauth_transport = @import("../auth/oauth_transport.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
-const secret = @import("../auth/secret.zig");
 const output_contracts = @import("../output/output_contracts.zig");
 const prompt_policy = @import("../config/prompt_policy.zig");
 const session_codec = @import("../session/session_codec.zig");
@@ -56,18 +53,15 @@ pub const Command = union(enum) {
     issue: []const [:0]const u8,
     login: []const [:0]const u8,
     logout: []const [:0]const u8,
-    setup: []const [:0]const u8,
     status: []const [:0]const u8,
     permissions: []const [:0]const u8,
     slack: []const [:0]const u8,
     models: []const [:0]const u8,
     provider: []const [:0]const u8,
     doctor: []const [:0]const u8,
-    teams: []const [:0]const u8,
     session: []const [:0]const u8,
     sessions: []const [:0]const u8,
     resume_session: ResumeInvocation,
-    credits: []const [:0]const u8,
     usage: []const [:0]const u8,
     upgrade: []const [:0]const u8,
     replay: []const [:0]const u8,
@@ -197,13 +191,10 @@ pub const Config = struct {
     default_model: []const u8,
     default_agent_step_limit: usize,
     models_path: []const u8,
-    gateway_retry_count: usize,
-    gateway_chat_url: []const u8,
-    gateway_provider: gateway_provider.Provider,
+    oauth_transport: oauth_transport.Provider,
     provider_set: provider_set.Set,
     process_provider: execution_process_provider.Provider = execution_process_provider.unavailable_provider,
     url_opener: host.UrlOpener,
-    secret_store: host.SecretStore,
     prompt_policy: prompt_policy.Policy,
     skill_root_policy: skill_contract.RootPolicy,
     ignored_list_entries: []const []const u8,
@@ -318,21 +309,18 @@ const WorkflowOptions = struct {
 };
 
 const WriteFn = *const fn (?*anyopaque, []const u8) anyerror!void;
-const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize) anyerror!app_lifecycle.StartupState;
+const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, []const u8, usize) anyerror!app_lifecycle.StartupState;
 const LoadStartupStateWithoutCredentialsFn = *const fn (Allocator, []const u8, usize) anyerror!app_lifecycle.StartupState;
-const LoadStartupStatusFn = *const fn (Allocator, host.SecretStore, []const u8, usize) anyerror!app_lifecycle.StartupStatus;
-const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, credentials.AuthMode) anyerror!app_lifecycle.StartupState;
-const LoadCatalogStartupStateWithAuthModeFn = *const fn (Allocator, host.SecretStore, []const u8, usize, credentials.AuthMode, ?model_provider.ProviderId, ?[]const u8) anyerror!app_lifecycle.StartupState;
-const LoadStartupStatusWithAuthModeFn = *const fn (Allocator, host.SecretStore, []const u8, usize, credentials.AuthMode) anyerror!app_lifecycle.StartupStatus;
+const LoadStartupStatusFn = *const fn (Allocator, []const u8, usize) anyerror!app_lifecycle.StartupStatus;
+const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, []const u8, usize, credentials.AuthMode) anyerror!app_lifecycle.StartupState;
+const LoadCatalogStartupStateWithAuthModeFn = *const fn (Allocator, []const u8, usize, credentials.AuthMode, ?model_provider.ProviderId, ?[]const u8) anyerror!app_lifecycle.StartupState;
+const LoadStartupStatusWithAuthModeFn = *const fn (Allocator, []const u8, usize, credentials.AuthMode) anyerror!app_lifecycle.StartupStatus;
 const GetenvFn = *const fn (?*anyopaque, []const u8) ?[]const u8;
 const EnvironMapFn = *const fn (?*anyopaque) ?*const std.process.Environ.Map;
-const ReadMaskedKeyFn = *const fn (?*anyopaque, Allocator, WriteFn, ?*anyopaque) anyerror![]u8;
-const SetupTerminalAvailableFn = *const fn (?*anyopaque) bool;
 const RunDeps = struct {
     stdout_ctx: ?*anyopaque = null,
     stderr_ctx: ?*anyopaque = null,
     env_ctx: ?*anyopaque = null,
-    setup_ctx: ?*anyopaque = null,
     write_stdout: WriteFn = writeRealStdout,
     write_stderr: WriteFn = writeRealStderr,
     load_startup_state: LoadStartupStateFn = app_lifecycle.loadStartupState,
@@ -343,8 +331,6 @@ const RunDeps = struct {
     load_startup_status_with_auth_mode: LoadStartupStatusWithAuthModeFn = app_lifecycle.loadStartupStatusWithAuthMode,
     getenv: GetenvFn = getenvDefault,
     environ_map: EnvironMapFn = environMapDefault,
-    read_masked_key: ReadMaskedKeyFn = readMaskedKeyDefault,
-    setup_terminal_available: SetupTerminalAvailableFn = setupTerminalAvailableDefault,
 };
 
 const GlobalLaunchArgs = struct {
@@ -547,10 +533,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
         'a' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .ask)) return .{ .ask = args[1..] };
         },
-        'b' => if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] },
-        'c' => {
-            if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] };
-        },
         'd' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .doctor)) return .{ .doctor = args[1..] };
         },
@@ -574,7 +556,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
             if (command_specs.matchesTopLevel(command_catalog, command, .replay)) return .{ .replay = args[1..] };
         },
         's' => {
-            if (command_specs.matchesTopLevel(command_catalog, command, .setup)) return .{ .setup = args[1..] };
             if (command_specs.matchesTopLevel(command_catalog, command, .status)) return .{ .status = args[1..] };
             if (command_specs.matchesTopLevel(command_catalog, command, .sessions)) return .{ .sessions = args[1..] };
             if (command_specs.matchesTopLevel(command_catalog, command, .session)) {
@@ -584,9 +565,6 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
                 return .{ .session = args[1..] };
             }
             if (command_specs.matchesTopLevel(command_catalog, command, .slack)) return .{ .slack = args[1..] };
-        },
-        't' => {
-            if (command_specs.matchesTopLevel(command_catalog, command, .teams)) return .{ .teams = args[1..] };
         },
         'u' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .usage)) return .{ .usage = args[1..] };
@@ -703,34 +681,6 @@ const ProviderActivationCaller = enum {
     provider_login,
 };
 
-const CliTeamValidationContext = struct {
-    alloc: Allocator,
-    cfg: *const Config,
-};
-
-fn validateCliTeamCredential(
-    raw: ?*anyopaque,
-    candidate: credentials.Credential,
-) std.mem.Allocator.Error!login_flow.TeamValidationResult {
-    const context: *CliTeamValidationContext = @ptrCast(@alignCast(raw.?));
-    const access = credentials.catalogAccessAt(candidate, io_mod.milliTimestamp());
-    if (access.authorizationCredential() == null) return .rejected;
-    const provider = context.cfg.provider_set.gateway.model_catalog orelse return .rejected;
-    const fetched = try provider.fetch(context.alloc, .{
-        .access = access,
-        .endpoint = context.cfg.models_path,
-        .view = .picker,
-    });
-    return switch (fetched) {
-        .failure => .rejected,
-        .catalog => |catalog_value| result: {
-            var catalog = catalog_value;
-            defer model_catalog.freeModelCatalog(context.alloc, &catalog);
-            break :result if (catalog.items.len > 0) .accepted else .rejected;
-        },
-    };
-}
-
 fn writeProviderActivationError(
     alloc: Allocator,
     deps: RunDeps,
@@ -756,9 +706,8 @@ fn activateProviderSelection(
     deps: RunDeps,
     target: model_provider.ProviderId,
     caller: ProviderActivationCaller,
-    exact_source: ?credentials.Source,
 ) !bool {
-    return activateProviderSelectionFallible(alloc, cfg, deps, target, caller, exact_source) catch |err| {
+    return activateProviderSelectionFallible(alloc, cfg, deps, target, caller) catch |err| {
         switch (err) {
             error.CredentialStorageUnavailable,
             error.CredentialTemporarilyUnavailable,
@@ -776,9 +725,8 @@ fn activateProviderSelection(
 
 fn runProviderLogin(alloc: Allocator, cfg: Config, provider: model_provider.ProviderId) !void {
     switch (provider) {
-        .gateway => try login_flow.runLogin(alloc, cfg.gateway_provider.oauth_transport, cfg.url_opener),
-        .codex => try chatgpt_oauth.runLogin(alloc, cfg.gateway_provider.oauth_transport, cfg.url_opener),
-        .grok => try grok_oauth.runLogin(alloc, cfg.gateway_provider.oauth_transport, cfg.url_opener),
+        .codex => try chatgpt_oauth.runLogin(alloc, cfg.oauth_transport, cfg.url_opener),
+        .grok => try grok_oauth.runLogin(alloc, cfg.oauth_transport, cfg.url_opener),
         .configured => return error.ConfiguredProviderUsesEnvironmentAuth,
     }
 }
@@ -793,7 +741,6 @@ fn writeProviderLoginFailure(alloc: Allocator, deps: RunDeps, provider: model_pr
         return;
     }
     try writeProviderActivationError(alloc, deps, caller, switch (err) {
-        error.ClientIdMissing => "missing FX_OAUTH_CLIENT_ID; configure the fx Vercel App client id first",
         error.AccessDenied, error.ChatGptAuthorizationFailed, error.GrokAuthorizationFailed => "authorization denied",
         error.ExpiredToken, error.LoginTimedOut, error.ChatGptLoginTimedOut, error.GrokLoginTimedOut => "authorization expired; run fx login again",
         else => "failed to sign in",
@@ -806,7 +753,6 @@ fn activateProviderSelectionFallible(
     deps: RunDeps,
     target: model_provider.ProviderId,
     caller: ProviderActivationCaller,
-    exact_source: ?credentials.Source,
 ) !bool {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
     defer alloc.free(workspace_root);
@@ -837,20 +783,17 @@ fn activateProviderSelectionFallible(
         if (caller == .provider_command) try writeStdout(deps, message);
         return true;
     }
-    const preferred_source = exact_source orelse settings.credential_source;
     var prepared_credential = if (cfg.auth_mode == .host_managed)
         null
     else
         try auth_runtime.prepareCredential(
             alloc,
-            cfg.gateway_provider.oauth_transport,
-            cfg.secret_store,
+            cfg.oauth_transport,
             target,
-            preferred_source,
         );
     defer if (prepared_credential) |*credential| credential.deinit(alloc);
 
-    const already_selected = (settings.provider orelse @as(model_provider.ProviderId, .gateway)).eql(target);
+    const already_selected = (settings.provider orelse @as(model_provider.ProviderId, .codex)).eql(target);
     // A selected provider without a persisted model still needs one chosen
     // below; FX_MODEL only covers a single run, so it does not count here.
     const has_persisted_model = if (config_runtime.selectProviderModel(cfg.default_model, &settings, target, null)) |_| true else |_| false;
@@ -858,7 +801,6 @@ fn activateProviderSelectionFallible(
         (cfg.auth_mode == .host_managed or prepared_credential != null))
     {
         try writeStdout(deps, switch (target) {
-            .gateway => "Gateway is already selected.\n",
             .codex => "Codex is already selected.\n",
             .grok => "Grok is already selected.\n",
             .configured => "Configured provider is already selected.\n",
@@ -875,10 +817,8 @@ fn activateProviderSelectionFallible(
         performed_login = target;
         prepared_credential = try auth_runtime.prepareCredential(
             alloc,
-            cfg.gateway_provider.oauth_transport,
-            cfg.secret_store,
+            cfg.oauth_transport,
             target,
-            preferred_source,
         );
     }
 
@@ -894,7 +834,6 @@ fn activateProviderSelectionFallible(
             switch (target) {
                 .codex => "Codex credential is unavailable",
                 .grok => "Grok credential is unavailable",
-                .gateway => "configure a Gateway credential first",
                 .configured => "configure the provider auth environment variable first",
             },
         );
@@ -904,7 +843,6 @@ fn activateProviderSelectionFallible(
         try writeProviderActivationError(alloc, deps, caller, switch (target) {
             .codex => "Codex model catalog is unavailable",
             .grok => "Grok model catalog is unavailable",
-            .gateway => "Gateway model catalog is unavailable",
             .configured => "Configured model catalog is unavailable",
         });
         return false;
@@ -957,7 +895,6 @@ fn activateProviderSelectionFallible(
     var attempt = config_runtime.attemptUserPreferences(alloc, .{
         .provider = target,
         .model_preference = .{ .provider = target, .model = selected_model },
-        .credential_source = exact_source,
     });
     defer attempt.deinit(alloc);
     switch (attempt) {
@@ -971,11 +908,10 @@ fn activateProviderSelectionFallible(
     if (performed_login) |provider| switch (provider) {
         .codex => try writeStdout(deps, "Signed in with Codex.\n"),
         .grok => try writeStdout(deps, "Signed in with Grok.\n"),
-        .gateway, .configured => unreachable,
+        .configured => unreachable,
     };
     if (caller == .provider_command) {
         try writeStdout(deps, switch (target) {
-            .gateway => "Provider set to Gateway.\n",
             .codex => "Provider set to Codex.\n",
             .grok => "Provider set to Grok.\n",
             .configured => "Provider set to configured connection.\n",
@@ -1064,7 +1000,7 @@ fn runNonInteractiveWithDeps(
         .issue => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .issue),
         .login => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
-                try writeStderr(deps, "usage: fx login [vercel|codex|grok]\n");
+                try writeStderr(deps, "usage: fx login [codex|grok]\n");
                 return .handled_failure;
             };
             if (cfg.auth_mode == .host_managed) {
@@ -1072,7 +1008,7 @@ fn runNonInteractiveWithDeps(
                 return .handled_success;
             }
             // Preserve the original `fx login` behavior for scripts and users.
-            const login_provider = maybe_login_provider orelse .gateway;
+            const login_provider = maybe_login_provider orelse .codex;
             runProviderLogin(alloc, cfg, login_provider) catch |err| {
                 try writeProviderLoginFailure(alloc, deps, login_provider, .provider_login, err);
                 return .handled_failure;
@@ -1083,10 +1019,8 @@ fn runNonInteractiveWithDeps(
                 deps,
                 login_provider,
                 .provider_login,
-                if (login_provider == .gateway) .fx_login else null,
             )) return .handled_failure;
             try writeStdout(deps, switch (login_provider) {
-                .gateway => "Signed in to Vercel.\nAI Gateway access may still require billing or API setup for the selected account.\n",
                 .codex => "Signed in with Codex.\n",
                 .grok => "Signed in with Grok.\n",
                 .configured => "Configured providers use settings.json authentication.\n",
@@ -1095,7 +1029,7 @@ fn runNonInteractiveWithDeps(
         },
         .logout => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
-                try writeStderr(deps, "usage: fx logout [vercel|codex|grok]\n");
+                try writeStderr(deps, "usage: fx logout [codex|grok]\n");
                 return .handled_failure;
             };
             if (cfg.auth_mode == .host_managed) {
@@ -1103,7 +1037,7 @@ fn runNonInteractiveWithDeps(
                 return .handled_success;
             }
             // Preserve the original `fx logout` behavior for scripts and users.
-            const login_provider = maybe_login_provider orelse .gateway;
+            const login_provider = maybe_login_provider orelse .codex;
             if (login_provider == .codex) {
                 const outcome = chatgpt_oauth.logout() catch {
                     try writeStderr(deps, "fx logout: failed to durably remove saved Codex login\n");
@@ -1125,7 +1059,7 @@ fn runNonInteractiveWithDeps(
                 };
             }
             if (login_provider == .grok) {
-                const outcome = grok_oauth.logout(alloc, cfg.gateway_provider.oauth_transport) catch {
+                const outcome = grok_oauth.logout(alloc, cfg.oauth_transport) catch {
                     try writeStderr(deps, "fx logout: failed to durably remove saved Grok login\n");
                     return .handled_failure;
                 };
@@ -1147,84 +1081,8 @@ fn runNonInteractiveWithDeps(
                     },
                 };
             }
-            const result = login_flow.logout(alloc, cfg.gateway_provider.oauth_transport) catch |err| switch (err) {
-                error.SessionDeleteFailed => {
-                    try writeStderr(deps, "fx logout: failed to durably remove saved fx login\n");
-                    return .handled_failure;
-                },
-            };
-            if (!result.local_durability_failed) {
-                var preference = config_runtime.attemptUserPreferences(
-                    alloc,
-                    .{ .clear_credential_source = true },
-                );
-                defer preference.deinit(alloc);
-                switch (preference) {
-                    .outcome => {},
-                    .failure => |failure| {
-                        debug_trace.logf(
-                            "auth",
-                            "logout credential preference clear failed err={s}",
-                            .{@errorName(failure.err)},
-                        );
-                        try writeStderr(deps, "fx logout: signed out, but failed to clear the saved fx login selection\n");
-                        return .handled_failure;
-                    },
-                }
-            }
-            if (result.local_durability_failed) {
-                try writeStderr(deps, "fx logout: failed to durably remove saved fx login\n");
-            } else {
-                try writeStdout(
-                    deps,
-                    if (result.session_deleted) "Signed out of fx.\n" else "No fx login session found.\n",
-                );
-            }
-            if (result.remote_revocation_failed) {
-                try writeStderr(deps, login_flow.remote_revocation_warning);
-                try writeStderr(deps, "\n");
-            }
-            return if (result.local_durability_failed) .handled_failure else .handled_success;
-        },
-        .teams => |rest| {
-            if (rest.len != 0) {
-                try writeStderr(deps, "usage: fx teams\n");
-                return .handled_failure;
-            }
-            if (cfg.auth_mode == .host_managed) {
-                try writeHostManagedAuthResult(deps);
-                return .handled_success;
-            }
-            var validation_context = CliTeamValidationContext{ .alloc = alloc, .cfg = &cfg };
-            login_flow.runTeams(
-                alloc,
-                cfg.gateway_provider.oauth_transport,
-                .{
-                    .context = &validation_context,
-                    .validate_fn = validateCliTeamCredential,
-                },
-            ) catch |err| {
-                const message = switch (err) {
-                    error.NoSession => "fx teams: run fx login first\n",
-                    error.SessionChanged => "fx teams: authentication changed; try again\n",
-                    error.TeamRequestFailed => "fx teams: failed to list Vercel teams\n",
-                    error.InvalidTeamSelection => "fx teams: no team selected\n",
-                    error.AccessDenied => "fx teams: authorization denied\n",
-                    error.TeamValidationFailed => "fx teams: selected team could not access AI Gateway\n",
-                    else => "fx teams: failed to switch team\n",
-                };
-                try writeStderr(deps, message);
-                return .handled_failure;
-            };
-            if (!try activateProviderSelection(
-                alloc,
-                cfg,
-                deps,
-                .gateway,
-                .provider_login,
-                .fx_login,
-            )) return .handled_failure;
-            return .handled_success;
+            try writeStderr(deps, "fx logout: configured providers use environment authentication\n");
+            return .handled_failure;
         },
         .provider => |rest| {
             if (rest.len != 1) {
@@ -1232,24 +1090,13 @@ fn runNonInteractiveWithDeps(
                 return .handled_failure;
             }
             const target = model_provider.parse(rest[0]) orelse {
-                try writeStderr(deps, "fx provider: expected gateway, codex, grok, or a configured name\n");
+                try writeStderr(deps, "fx provider: expected codex, grok, or a configured name\n");
                 return .handled_failure;
             };
-            return if (try activateProviderSelection(alloc, cfg, deps, target, .provider_command, null))
+            return if (try activateProviderSelection(alloc, cfg, deps, target, .provider_command))
                 .handled_success
             else
                 .handled_failure;
-        },
-        .setup => |rest| {
-            if (rest.len != 0) {
-                try writeTopLevelUsage(cfg.command_catalog, deps, .setup);
-                return .handled_failure;
-            }
-            if (cfg.auth_mode == .host_managed) {
-                try writeHostManagedAuthResult(deps);
-                return .handled_success;
-            }
-            return if (try runPasteSetup(alloc, cfg.secret_store, deps)) .handled_success else .handled_failure;
         },
         .status => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
@@ -1259,7 +1106,6 @@ fn runNonInteractiveWithDeps(
             var startup = if (cfg.auth_mode == .host_managed)
                 try deps.load_startup_status_with_auth_mode(
                     alloc,
-                    cfg.secret_store,
                     cfg.default_model,
                     cfg.default_agent_step_limit,
                     cfg.auth_mode,
@@ -1267,7 +1113,6 @@ fn runNonInteractiveWithDeps(
             else
                 try deps.load_startup_status(
                     alloc,
-                    cfg.secret_store,
                     cfg.default_model,
                     cfg.default_agent_step_limit,
                 );
@@ -1326,7 +1171,7 @@ fn runNonInteractiveWithDeps(
             };
             var arena: std.heap.ArenaAllocator = .init(alloc);
             defer arena.deinit();
-            const snapshot = slack_install.run(arena.allocator(), opts.action, cfg.gateway_provider.oauth_transport, cfg.url_opener) catch |err| {
+            const snapshot = slack_install.run(arena.allocator(), opts.action, cfg.oauth_transport, cfg.url_opener) catch |err| {
                 try writeCommandFailure(alloc, deps, "slack", err, opts.format);
                 return .handled_failure;
             };
@@ -1344,7 +1189,6 @@ fn runNonInteractiveWithDeps(
             var startup = if (cfg.auth_mode == .host_managed)
                 try deps.load_catalog_startup_state_with_auth_mode(
                     alloc,
-                    cfg.secret_store,
                     cfg.default_model,
                     cfg.default_agent_step_limit,
                     cfg.auth_mode,
@@ -1354,8 +1198,7 @@ fn runNonInteractiveWithDeps(
             else
                 try deps.load_startup_state(
                     alloc,
-                    cfg.gateway_provider.oauth_transport,
-                    cfg.secret_store,
+                    cfg.oauth_transport,
                     cfg.default_model,
                     cfg.default_agent_step_limit,
                 );
@@ -1367,7 +1210,6 @@ fn runNonInteractiveWithDeps(
             available_providers.definitions = startup.configured_providers.definitions;
             const catalog_provider = available_providers.select(startup.provider).cli_model_catalog orelse {
                 try writeStderr(deps, switch (startup.provider) {
-                    .gateway => "fx models: Gateway model catalog is unavailable\n",
                     .codex => "fx models: Codex model catalog is unavailable\n",
                     .grok => "fx models: Grok model catalog is unavailable\n",
                     .configured => "fx models: Configured model catalog is unavailable\n",
@@ -1411,7 +1253,6 @@ fn runNonInteractiveWithDeps(
                 ids.items,
                 entries.items,
                 available_providers.select(startup.provider),
-                startup.provider,
             );
             defer alloc.free(details);
 
@@ -1434,7 +1275,6 @@ fn runNonInteractiveWithDeps(
 
             var snapshot = try doctor_runtime.collect(
                 alloc,
-                cfg.secret_store,
                 cfg.default_model,
                 cfg.default_agent_step_limit,
             );
@@ -1670,57 +1510,6 @@ fn runNonInteractiveWithDeps(
                 },
             }
         },
-        .credits => |rest| {
-            const opts = parseLocalSurfaceArgs(rest) catch |err| {
-                try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .credits, "credits", err, rest);
-                return .handled_failure;
-            };
-            var startup = if (cfg.auth_mode == .host_managed)
-                try deps.load_startup_state_with_auth_mode(
-                    alloc,
-                    cfg.gateway_provider.oauth_transport,
-                    cfg.secret_store,
-                    cfg.default_model,
-                    cfg.default_agent_step_limit,
-                    cfg.auth_mode,
-                )
-            else
-                try deps.load_startup_state(
-                    alloc,
-                    cfg.gateway_provider.oauth_transport,
-                    cfg.secret_store,
-                    cfg.default_model,
-                    cfg.default_agent_step_limit,
-                );
-            defer startup.deinit(alloc);
-            try writeConfigDiagnostics(alloc, deps, startup.config_diagnostics);
-
-            const credits = cfg.provider_set.select(startup.provider).credits orelse
-                gateway_provider.unavailable_credits_provider;
-            var snapshot = credits.fetch(alloc, .{
-                .credential = startup.apiKey(),
-                .credential_source = if (startup.auth_mode == .host_managed)
-                    .host_managed
-                else if (startup.credential) |credential|
-                    credential.source
-                else
-                    null,
-                .tenant = startup.gatewayTeam(),
-            });
-            defer snapshot.deinit(alloc);
-            const text = try snapshot.render(alloc, opts.format);
-            defer alloc.free(text);
-            if (snapshot.err_message != null) {
-                if (opts.format == .json) {
-                    try writeFormattedOutput(deps, text, opts.format);
-                } else {
-                    try writeStderr(deps, text);
-                }
-                return .handled_failure;
-            }
-            try writeFormattedOutput(deps, text, opts.format);
-            return .handled_success;
-        },
         .usage => |rest| {
             const opts = parseUsageArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .usage, "usage", err, rest);
@@ -1918,149 +1707,6 @@ fn writeStdout(deps: RunDeps, text: []const u8) !void {
 fn writeStderr(deps: RunDeps, text: []const u8) !void {
     try deps.write_stderr(deps.stderr_ctx, text);
 }
-
-fn runPasteSetup(
-    alloc: Allocator,
-    secret_store: host.SecretStore,
-    deps: RunDeps,
-) !bool {
-    if (secret_store.isDisabled()) {
-        try writeStderr(deps, "fx setup: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n");
-        return false;
-    }
-    if (!deps.setup_terminal_available(deps.setup_ctx)) {
-        try writeStderr(deps, "fx setup: an interactive terminal is required to paste an API key\n");
-        return false;
-    }
-
-    try writeStderr(deps, "Paste AI Gateway API key (input hidden): ");
-    const stored_interactively = secret_store.storeInteractive() catch {
-        try writeStderr(deps, "\nfx setup: API key was not saved\n");
-        return false;
-    };
-    if (!stored_interactively) {
-        const key = deps.read_masked_key(
-            deps.setup_ctx,
-            alloc,
-            deps.write_stderr,
-            deps.stderr_ctx,
-        ) catch {
-            try writeStderr(deps, "\nfx setup: API key was not saved\n");
-            return false;
-        };
-        defer secret.zeroAndFree(alloc, key);
-        try writeStderr(deps, "\n");
-        secret_store.store(alloc, key) catch {
-            try writeStderr(deps, "fx setup: API key was not saved\n");
-            return false;
-        };
-    }
-
-    const message = try alloc.print(
-        "Saved API key to {s}.\n",
-        .{secret_store.backend_label},
-    );
-    defer alloc.free(message);
-    try writeStdout(deps, message);
-    return true;
-}
-
-fn setupTerminalAvailableDefault(_: ?*anyopaque) bool {
-    return std.c.isatty(std.posix.STDIN_FILENO) != 0 and
-        std.c.isatty(std.posix.STDERR_FILENO) != 0;
-}
-
-fn readMaskedKeyDefault(
-    _: ?*anyopaque,
-    alloc: Allocator,
-    write_mask: WriteFn,
-    write_ctx: ?*anyopaque,
-) ![]u8 {
-    var raw = try MaskedKeyRawMode.enable();
-    defer raw.disable();
-
-    var input: std.ArrayList(u8) = .empty;
-    errdefer {
-        if (input.capacity > 0) secret.zeroAndFree(alloc, input.allocatedSlice());
-    }
-
-    while (input.items.len < 8 * 1024) {
-        var byte: [1]u8 = undefined;
-        if (try std.posix.read(std.posix.STDIN_FILENO, &byte) == 0) return error.SetupCancelled;
-        switch (byte[0]) {
-            '\r', '\n' => {
-                if (input.items.len == 0) continue;
-                // toOwnedSlice shrinks through realloc, which may move the buffer
-                // and free the original without zeroing it. Copy out and wipe the
-                // source so no unzeroed key is left behind in freed memory.
-                const owned = try alloc.dupe(u8, input.items);
-                secret.zeroAndFree(alloc, input.allocatedSlice());
-                input = .empty;
-                return owned;
-            },
-            3, 4, 0x1b => return error.SetupCancelled,
-            8, 127 => if (input.items.len > 0) {
-                _ = input.pop();
-                try write_mask(write_ctx, "\x08 \x08");
-            },
-            0x20...0x7e => {
-                try input.append(alloc, byte[0]);
-                try write_mask(write_ctx, "•");
-            },
-            else => {},
-        }
-    }
-    return error.SetupKeyTooLong;
-}
-
-const MaskedKeyRawMode = struct {
-    original: std.posix.termios = undefined,
-    active: bool = false,
-
-    fn enable() !MaskedKeyRawMode {
-        if (std.c.isatty(std.posix.STDIN_FILENO) == 0 or
-            std.c.isatty(std.posix.STDERR_FILENO) == 0)
-        {
-            return error.NotATerminal;
-        }
-
-        var self: MaskedKeyRawMode = .{};
-        self.original = try io_mod.tcgetattr(std.posix.STDIN_FILENO);
-        var raw = self.original;
-        raw.iflag.BRKINT = false;
-        raw.iflag.ICRNL = false;
-        raw.iflag.INPCK = false;
-        raw.iflag.ISTRIP = false;
-        raw.iflag.IXON = false;
-        raw.iflag.IXOFF = false;
-        raw.cflag.CSIZE = .CS8;
-        raw.lflag.ECHO = false;
-        raw.lflag.ICANON = false;
-        raw.lflag.IEXTEN = false;
-        raw.lflag.ISIG = false;
-        const vmin_idx = switch (builtin.target.os.tag) {
-            .linux => 6,
-            else => 16,
-        };
-        const vtime_idx = switch (builtin.target.os.tag) {
-            .linux => 5,
-            else => 17,
-        };
-        if (vmin_idx < raw.cc.len and vtime_idx < raw.cc.len) {
-            raw.cc[vmin_idx] = 1;
-            raw.cc[vtime_idx] = 0;
-        }
-        try io_mod.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, raw);
-        self.active = true;
-        return self;
-    }
-
-    fn disable(self: *MaskedKeyRawMode) void {
-        if (!self.active) return;
-        io_mod.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, self.original) catch {};
-        self.active = false;
-    }
-};
 
 fn writeConfigDiagnostics(
     alloc: Allocator,
@@ -2357,14 +2003,13 @@ fn permissionRulesForSnapshot(alloc: Allocator, active_rules: anytype) !types.Pe
 }
 
 /// One detail per id when the provider described its models, by the same capability merge a
-/// session uses for its effort and speed options; Ultrafast is a Gateway-only lane. Empty when
+/// session uses for its effort and speed options. Empty when
 /// there are no entries. Names borrow from `entries`. Caller frees the returned slice.
 fn modelDetails(
     alloc: Allocator,
     ids: []const []const u8,
     entries: []const model_catalog.ModelCatalogEntry,
     bundle: provider_set.Bundle,
-    provider: model_provider.ProviderId,
 ) ![]const output_contracts.ModelDetail {
     if (entries.len == 0) return &.{};
     const details = try alloc.alloc(output_contracts.ModelDetail, ids.len);
@@ -2380,7 +2025,7 @@ fn modelDetails(
             .name = if (entry) |found| found.name else null,
             .efforts = capabilities.reasoning_efforts,
             .fast = capabilities.supports_fast_mode,
-            .ultrafast = provider == .gateway and capabilities.supports_ultrafast_mode,
+            .ultrafast = false,
         };
     }
     return details;
@@ -2742,13 +2387,9 @@ fn workflowConfig(cfg: Config) @import("cli_ask.zig").Config {
         .command_usage = command_specs.topLevelUsage(cfg.command_catalog, .ask),
         .default_model = cfg.default_model,
         .default_agent_step_limit = cfg.default_agent_step_limit,
-        .gateway_retry_count = cfg.gateway_retry_count,
-        .gateway_chat_url = cfg.gateway_provider.chat_url.resolve(cfg.gateway_chat_url),
-        .gateway_models_path = cfg.models_path,
-        .gateway_provider = cfg.gateway_provider,
+        .oauth_transport = cfg.oauth_transport,
         .provider_set = cfg.provider_set,
         .process_provider = cfg.process_provider,
-        .secret_store = cfg.secret_store,
         .prompt_policy = cfg.prompt_policy,
         .skill_root_policy = cfg.skill_root_policy,
         .ignored_list_entries = cfg.ignored_list_entries,
@@ -3182,105 +2823,4 @@ fn joinArgs(alloc: Allocator, args: []const [:0]const u8) ![]u8 {
 
 fn isVersionFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
-}
-
-const CaptureOutput = struct {
-    stdout: std.Io.Writer.Allocating,
-    stderr: std.Io.Writer.Allocating,
-    setup_store_calls: usize = 0,
-    setup_read_calls: usize = 0,
-    setup_value_matched: bool = false,
-    setup_interactive_store: bool = false,
-    setup_store_disabled: bool = false,
-
-    fn init(alloc: Allocator) CaptureOutput {
-        return .{
-            .stdout = .init(alloc),
-            .stderr = .init(alloc),
-        };
-    }
-
-    fn deinit(self: *@This()) void {
-        self.stdout.deinit();
-        self.stderr.deinit();
-    }
-
-    fn deps(self: *@This()) RunDeps {
-        return .{
-            .stdout_ctx = self,
-            .stderr_ctx = self,
-            .setup_ctx = self,
-            .write_stdout = captureStdout,
-            .write_stderr = captureStderr,
-            .read_masked_key = captureReadMaskedKey,
-            .setup_terminal_available = captureSetupTerminalAvailable,
-        };
-    }
-
-    fn secretStore(self: *@This()) host.SecretStore {
-        return .{
-            .context = self,
-            .backend_label = "test credential store",
-            .is_disabled_fn = captureSecretStoreIsDisabled,
-            .load_fn = captureSecretStoreLoad,
-            .store_fn = captureSecretStoreWrite,
-            .store_interactive_fn = captureSecretStoreInteractiveWrite,
-        };
-    }
-};
-
-fn captureStdout(ctx: ?*anyopaque, text: []const u8) !void {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    try capture.stdout.writer.writeAll(text);
-}
-
-fn captureStderr(ctx: ?*anyopaque, text: []const u8) !void {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    try capture.stderr.writer.writeAll(text);
-}
-
-fn captureSetupTerminalAvailable(_: ?*anyopaque) bool {
-    return true;
-}
-
-fn captureReadMaskedKey(
-    ctx: ?*anyopaque,
-    alloc: Allocator,
-    _: WriteFn,
-    _: ?*anyopaque,
-) ![]u8 {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    capture.setup_read_calls += 1;
-    return alloc.dupe(u8, "paste-only-test-key");
-}
-
-fn captureSecretStoreIsDisabled(ctx: ?*anyopaque) bool {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    return capture.setup_store_disabled;
-}
-
-fn captureSecretStoreLoad(
-    _: ?*anyopaque,
-    _: Allocator,
-) host.SecretStoreLoadError!?[]u8 {
-    return null;
-}
-
-fn captureSecretStoreWrite(
-    ctx: ?*anyopaque,
-    _: Allocator,
-    value: []const u8,
-) host.SecretStoreWriteError!void {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    capture.setup_store_calls += 1;
-    capture.setup_value_matched = std.mem.eql(u8, value, "paste-only-test-key");
-}
-
-fn captureSecretStoreInteractiveWrite(
-    ctx: ?*anyopaque,
-) host.SecretStoreWriteError!bool {
-    const capture: *CaptureOutput = @ptrCast(@alignCast(ctx.?));
-    if (!capture.setup_interactive_store) return false;
-    capture.setup_store_calls += 1;
-    return true;
 }

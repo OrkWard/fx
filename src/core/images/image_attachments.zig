@@ -510,70 +510,6 @@ pub fn captureBoundImageAttachment(
     return attachment;
 }
 
-/// Captures caller-supplied image bytes into the immutable session snapshot
-/// contract. The caller owns the returned attachment and must release it with
-/// `types.freeImageAttachment` or `discardImageAttachment`.
-pub fn captureInlineImageBytes(
-    alloc: std.mem.Allocator,
-    image_id: usize,
-    declared_media_type: []const u8,
-    bytes: []const u8,
-    snapshot_dir: []const u8,
-) !types.ImageAttachment {
-    if (image_id == 0) return error.InvalidImageId;
-    if (bytes.len == 0 or declared_media_type.len == 0) return error.UnsupportedImageType;
-    if (bytes.len > max_image_bytes) return error.ImageTooLarge;
-    // The request checker, not capture, decides whether the original can be sent.
-    // Validate the declared type against the caller's bytes.
-    const detected = detectMediaTypeFromBytes(bytes) orelse return error.UnsupportedImageType;
-    if (!std.mem.eql(u8, detected, declared_media_type)) return error.ImageSnapshotMediaTypeMismatch;
-
-    var snapshot_dir_handle = try openOrCreateSnapshotDirectoryNoFollow(snapshot_dir);
-    defer snapshot_dir_handle.close(io_mod.getIo());
-    var random_suffix: u64 = undefined;
-    io_mod.getIo().random(std.mem.asBytes(&random_suffix));
-    const source_name = try alloc.print(
-        "image-{d}.inline-source.{x}",
-        .{ image_id, random_suffix },
-    );
-    defer alloc.free(source_name);
-    defer deleteSnapshotFile(snapshot_dir_handle, source_name, "capture_inline_source");
-
-    {
-        var source = try snapshot_dir_handle.createFile(
-            io_mod.getIo(),
-            source_name,
-            .{
-                .truncate = false,
-                .exclusive = true,
-                .permissions = std.Io.File.Permissions.fromMode(0o600),
-                .resolve_beneath = true,
-            },
-        );
-        defer source.close(io_mod.getIo());
-        try source.writeStreamingAll(io_mod.getIo(), bytes);
-        try source.sync(io_mod.getIo());
-    }
-
-    const source_path = try std.Io.Dir.path.join(alloc, &.{ snapshot_dir, source_name });
-    defer alloc.free(source_path);
-    var attachment = types.ImageAttachment{
-        .id = image_id,
-        .path = try alloc.dupe(u8, source_path),
-        .media_type = try alloc.dupe(u8, declared_media_type),
-    };
-    errdefer discardImageAttachment(alloc, attachment);
-    try captureImageSnapshot(alloc, &attachment, snapshot_dir);
-
-    const durable_path = try alloc.dupe(
-        u8,
-        attachment.snapshot_path orelse return error.MissingImageSnapshot,
-    );
-    alloc.free(attachment.path);
-    attachment.path = durable_path;
-    return attachment;
-}
-
 fn captureImageSnapshotFromOpenFileWithBudget(
     alloc: std.mem.Allocator,
     attachment: *types.ImageAttachment,
@@ -1282,8 +1218,6 @@ pub fn allocateImageId(counter: *usize) usize {
     return id;
 }
 
-pub const ImagePlaceholderSpan = struct { start: usize, end: usize, id: usize };
-
 const ImagePlaceholderMatch = struct { id: usize, length: usize };
 
 const image_placeholder_prefix = "[Image #";
@@ -1407,48 +1341,6 @@ pub fn calculate_next_image_id(
     return .{ .maximum_id = null, .next_id = 1 };
 }
 
-/// Returns the placeholder span at `cursor` — either enclosing the cursor or
-/// with its closing `]` at `cursor - 1`. Used by backspace to delete the whole
-/// `[Image #N]` token atomically.
-pub fn findEnclosingImagePlaceholder(text: []const u8, cursor: usize) ?ImagePlaceholderSpan {
-    var scan = cursor;
-    while (scan > 0) {
-        scan -= 1;
-        if (text[scan] != '[') continue;
-        const match = matchImagePlaceholder(text, scan) orelse continue;
-        const end = scan + match.length;
-        if (cursor > end) return null;
-        return .{ .start = scan, .end = end, .id = match.id };
-    }
-    return null;
-}
-
-/// Returns the placeholder span starting at `byte_offset`, or null if no
-/// placeholder begins there. Used by cursor-right to skip the whole token.
-pub fn imagePlaceholderSpanStartingAt(text: []const u8, byte_offset: usize) ?ImagePlaceholderSpan {
-    if (byte_offset >= text.len or text[byte_offset] != '[') return null;
-    const match = matchImagePlaceholder(text, byte_offset) orelse return null;
-    return .{ .start = byte_offset, .end = byte_offset + match.length, .id = match.id };
-}
-
-/// Returns the placeholder span ending exactly at `byte_offset`, or null if no
-/// placeholder ends there. Used by cursor-left to skip the whole token.
-pub fn imagePlaceholderSpanEndingAt(text: []const u8, byte_offset: usize) ?ImagePlaceholderSpan {
-    if (byte_offset == 0 or byte_offset > text.len) return null;
-    if (text[byte_offset - 1] != ']') return null;
-    var scan = byte_offset;
-    while (scan > 0) {
-        scan -= 1;
-        if (text[scan] != '[') continue;
-        const match = matchImagePlaceholder(text, scan) orelse continue;
-        if (scan + match.length == byte_offset) {
-            return .{ .start = scan, .end = byte_offset, .id = match.id };
-        }
-        return null;
-    }
-    return null;
-}
-
 pub const ExpandWithBadgesResult = struct { cursor_out: ?usize, expanded_any: bool };
 
 /// Replaces known image placeholders with path-free badges keyed by attachment ID.
@@ -1561,61 +1453,6 @@ fn isUriPathSafe(byte: u8) bool {
         byte == '_' or
         byte == '~' or
         byte == '/';
-}
-
-pub fn writeImageFilePartJson(
-    alloc: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    attachment: types.ImageAttachment,
-) !void {
-    return writeImageFilePartJsonWithBudget(alloc, writer, attachment, .{});
-}
-
-pub fn writeImageFilePartJsonWithBudget(
-    alloc: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    attachment: types.ImageAttachment,
-    budget: CaptureBudget,
-) !void {
-    var snapshot = try loadVerifiedSnapshot(alloc, attachment, budget);
-    defer snapshot.deinit(alloc);
-    try writeVerifiedImageFilePartJsonWithBudget(writer, snapshot, budget);
-}
-
-pub fn writeReviewImageFilePartJson(
-    alloc: std.mem.Allocator,
-    writer: *std.Io.Writer,
-    attachment: types.ImageAttachment,
-    deadline: std.Io.Clock.Timestamp,
-    cancel_flag: *std.atomic.Value(bool),
-) !void {
-    return writeImageFilePartJsonWithBudget(alloc, writer, attachment, .{
-        .deadline = deadline,
-        .cancel_flag = cancel_flag,
-    });
-}
-
-pub fn writeVerifiedImageFilePartJsonWithBudget(
-    writer: *std.Io.Writer,
-    snapshot: VerifiedSnapshot,
-    budget: CaptureBudget,
-) !void {
-    try budget.check();
-
-    try writer.writeAll("{\"type\":\"file\",\"mediaType\":\"");
-    try writer.writeAll(snapshot.media_type);
-    try writer.writeAll("\",\"data\":{\"type\":\"data\",\"data\":\"");
-
-    var offset: usize = 0;
-    while (offset < snapshot.bytes.len) {
-        try budget.check();
-        const end = @min(offset + 3 * 1024, snapshot.bytes.len);
-        try std.base64.standard.Encoder.encodeWriter(writer, snapshot.bytes[offset..end]);
-        offset = end;
-    }
-
-    try writer.writeAll("\"}}");
-    try budget.check();
 }
 
 pub fn extractInlineImageAttachments(

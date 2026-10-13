@@ -98,7 +98,6 @@ pub const Request = struct {
     api_key: []const u8,
     credential_source: ?types.CredentialSource = null,
     account_id: ?[]const u8 = null,
-    gateway_team: ?[]const u8 = null,
     session_id: ?[]const u8 = null,
     prompt_excerpt: []const u8,
     cancel_flag: *std.atomic.Value(bool),
@@ -153,7 +152,6 @@ pub fn run(alloc: Allocator, request: Request) !Outcome {
             .secret_bytes = request.api_key,
             .source = request.credential_source,
             .account_id = request.account_id,
-            .tenant_context = request.gateway_team,
         } };
     var delivery = stream_provider.DeliveryCertainty.init();
     var attempt_evidence: stream_provider.AttemptEvidence = .{};
@@ -231,7 +229,6 @@ pub const Task = struct {
     model: []u8,
     prompt_excerpt: []u8,
     api_key: ?[]u8 = null,
-    gateway_team: ?[]u8 = null,
     account_id: ?[]u8 = null,
     credential_source: ?types.CredentialSource = null,
     stream_provider: stream_provider.Provider,
@@ -249,7 +246,6 @@ pub const Task = struct {
         model: []const u8,
         prompt_excerpt: []const u8,
         api_key: ?[]const u8 = null,
-        gateway_team: ?[]const u8 = null,
         account_id: ?[]const u8 = null,
         credential_source: ?types.CredentialSource = null,
         stream_provider: stream_provider.Provider,
@@ -267,8 +263,6 @@ pub const Task = struct {
         errdefer alloc.free(prompt_excerpt);
         const api_key: ?[]u8 = if (init.api_key) |value| try alloc.dupe(u8, value) else null;
         errdefer if (api_key) |value| alloc.free(value);
-        const gateway_team: ?[]u8 = if (init.gateway_team) |value| try alloc.dupe(u8, value) else null;
-        errdefer if (gateway_team) |value| alloc.free(value);
         const account_id: ?[]u8 = if (init.account_id) |value| try alloc.dupe(u8, value) else null;
         errdefer if (account_id) |value| alloc.free(value);
 
@@ -278,7 +272,6 @@ pub const Task = struct {
             .model = model,
             .prompt_excerpt = prompt_excerpt,
             .api_key = api_key,
-            .gateway_team = gateway_team,
             .account_id = account_id,
             .credential_source = init.credential_source,
             .stream_provider = init.stream_provider,
@@ -320,7 +313,6 @@ pub const Task = struct {
             std.crypto.secureZero(u8, key);
             alloc.free(key);
         }
-        if (self.gateway_team) |team| alloc.free(team);
         if (self.account_id) |id| alloc.free(id);
         if (self.title) |title| alloc.free(title);
         alloc.destroy(self);
@@ -342,7 +334,6 @@ pub const Task = struct {
             .api_key = self.api_key orelse "",
             .credential_source = self.credential_source,
             .account_id = self.account_id,
-            .gateway_team = self.gateway_team,
             .session_id = self.session_id,
             .prompt_excerpt = self.prompt_excerpt,
             .cancel_flag = &self.cancel_requested,

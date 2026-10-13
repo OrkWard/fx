@@ -267,7 +267,7 @@ pub const ModelAggregate = struct {
 pub const PendingGeneration = struct {
     id: []u8,
     sequence: u64,
-    provider: model_provider.ProviderId = .gateway,
+    provider: model_provider.ProviderId = .codex,
     origin: []u8,
     team: ?[]u8,
     credential_source: ?types.CredentialSource = null,
@@ -409,12 +409,6 @@ pub const Usage = struct {
             .reasoning_tokens = 0,
             .request_count = 0,
         };
-    }
-
-    pub fn initFreshWithProvider(provider: generation_usage.Provider) Usage {
-        var usage = initFresh();
-        usage.generation_usage_providers = generation_usage.Set.gatewayOnly(provider);
-        return usage;
     }
 
     pub fn initFreshWithProviders(providers: generation_usage.Set) Usage {
@@ -903,7 +897,6 @@ pub const Usage = struct {
         if (!self.finishInvocationUnlocked(sequence, duration_ms, outcome)) return false;
         try validateGenerationId(reference.generation_id);
         try validateOrigin(reference.scope);
-        if (reference.tenant) |value| try validateTeam(value);
         if (reference.account_id) |value| try validateIdentifier(value);
         self.observeGenerationAuthorityUnlocked(alloc, sequence, reference) catch |err| {
             self.billing = .incomplete;
@@ -962,7 +955,7 @@ pub const Usage = struct {
             alloc,
             sequence,
             id,
-            .gateway,
+            .codex,
             origin,
             team,
             null,
@@ -983,7 +976,7 @@ pub const Usage = struct {
             reference.generation_id,
             reference.provider,
             reference.scope,
-            reference.tenant,
+            null,
             reference.credential_source,
             reference.credential_identity,
             reference.account_id,
@@ -1857,7 +1850,7 @@ pub const Usage = struct {
         self.startReconciliationWithCredential(
             alloc,
             api_key,
-            .{ .provider = .gateway, .credential_identity = null },
+            .{ .provider = .codex, .credential_identity = null },
             false,
             null,
         );
@@ -1907,7 +1900,7 @@ pub const Usage = struct {
         self.startReconciliationWithCredential(
             alloc,
             api_key,
-            self.reconciliation_authority orelse .{ .provider = .gateway, .credential_identity = null },
+            self.reconciliation_authority orelse .{ .provider = .codex, .credential_identity = null },
             true,
             null,
         );
@@ -1982,7 +1975,7 @@ pub const Usage = struct {
         self.startReconciliationWithCredential(
             alloc,
             refreshed_api_key,
-            self.reconciliation_authority orelse .{ .provider = .gateway, .credential_identity = null },
+            self.reconciliation_authority orelse .{ .provider = .codex, .credential_identity = null },
             true,
             expected_api_key,
         );
@@ -2576,98 +2569,6 @@ pub fn appendIncidentOwned(
     snapshot.incidents = next;
 }
 
-/// Returns whether two snapshots have the same rollback-readable usage shape.
-pub fn rollbackProjectionEql(first: Snapshot, second: Snapshot) bool {
-    return billingProjectionEql(first, second) and
-        first.api_duration_complete == second.api_duration_complete and
-        first.wall_duration_complete == second.wall_duration_complete and
-        first.code_complete == second.code_complete and
-        first.api_duration_ms == second.api_duration_ms and
-        first.wall_duration_ms == second.wall_duration_ms and
-        first.lines_added == second.lines_added and
-        first.lines_removed == second.lines_removed;
-}
-
-/// Returns whether two current-schema snapshots contain the same usage state.
-pub fn snapshotEql(first: Snapshot, second: Snapshot) bool {
-    if (!rollbackProjectionEql(first, second) or
-        first.reasoning_tokens != second.reasoning_tokens or
-        first.request_count != second.request_count or
-        first.publication_backlog.len != second.publication_backlog.len or
-        first.incidents.len != second.incidents.len)
-    {
-        return false;
-    }
-    for (first.models, second.models) |left, right| {
-        if (left.reasoning_tokens != right.reasoning_tokens or
-            left.request_count != right.request_count)
-        {
-            return false;
-        }
-    }
-    for (first.pending, second.pending) |left, right| {
-        if (left.observed_at_ms != right.observed_at_ms) return false;
-    }
-    for (first.publication_backlog, second.publication_backlog) |left, right| {
-        if (!usage_report.GenerationFact.eql(left, right)) return false;
-    }
-    for (first.incidents, second.incidents) |left, right| {
-        if (left.occurred_at_ms != right.occurred_at_ms or
-            left.completeness != right.completeness)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// Returns whether two snapshots have the same billing-relevant projection.
-pub fn billingProjectionEql(first: Snapshot, second: Snapshot) bool {
-    if (first.billing != second.billing or
-        first.next_sequence != second.next_sequence or
-        first.settled_through_sequence != second.settled_through_sequence or
-        first.total_cost != second.total_cost or
-        first.input_tokens != second.input_tokens or
-        first.output_tokens != second.output_tokens or
-        first.cache_read_tokens != second.cache_read_tokens or
-        first.cache_write_tokens != second.cache_write_tokens or
-        first.billable_web_search_calls !=
-            second.billable_web_search_calls or
-        first.models.len != second.models.len or
-        first.pending.len != second.pending.len)
-    {
-        return false;
-    }
-    for (first.models, second.models) |left, right| {
-        if (!std.mem.eql(u8, left.model, right.model) or
-            left.first_sequence != right.first_sequence or
-            left.total_cost != right.total_cost or
-            left.input_tokens != right.input_tokens or
-            left.output_tokens != right.output_tokens or
-            left.cache_read_tokens != right.cache_read_tokens or
-            left.cache_write_tokens != right.cache_write_tokens or
-            left.billable_web_search_calls !=
-                right.billable_web_search_calls)
-        {
-            return false;
-        }
-    }
-    for (first.pending, second.pending) |left, right| {
-        if (!std.mem.eql(u8, left.id, right.id) or
-            left.sequence != right.sequence or
-            !std.mem.eql(u8, left.origin, right.origin) or
-            !optionalStringsEqual(left.team, right.team) or
-            !left.provider.same_authority(right.provider) or
-            left.credential_source != right.credential_source or
-            !optionalCredentialIdentitiesEqual(left.credential_identity, right.credential_identity) or
-            !optionalStringsEqual(left.account_id, right.account_id))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 pub fn writeSnapshot(writer: *std.Io.Writer, snapshot: Snapshot) !void {
     try validateSnapshot(snapshot);
     // Keep the durable session payload in the exact pre-usage-dashboard
@@ -3119,7 +3020,7 @@ fn parsePendingGenerations(
             const field = pending_entry.object.get("provider") orelse return error.InvalidUsageSnapshot;
             if (field != .string) return error.InvalidUsageSnapshot;
             break :provider model_provider.parse(field.string) orelse return error.InvalidUsageSnapshot;
-        } else .gateway;
+        } else .codex;
         const credential_source = if (provider_scoped)
             try parseCredentialSourceOptional(pending_entry.object.get("credential_source"))
         else
@@ -3346,7 +3247,6 @@ fn reconcilePendingBlocking(
             };
             var outcome = provider.lookup(alloc, .{
                 .credential = credential,
-                .tenant = pending.team,
                 .origin = pending.origin,
                 .generation_id = pending.id,
                 .cancel_flag = cancel_flag,
@@ -3569,10 +3469,6 @@ fn canonicalExactGenerationId(
     external_id: []const u8,
     buffer: *[30]u8,
 ) ![]const u8 {
-    if (provider == .gateway) {
-        try validateGenerationId(external_id);
-        return external_id;
-    }
     try validateExternalGenerationId(external_id);
     var digest: [Sha256.digest_length]u8 = undefined;
     var hash = Sha256.init(.{});
@@ -3589,7 +3485,6 @@ fn canonicalExactGenerationId(
 
 fn exactUsageOrigin(provider: model_provider.ProviderId) []const u8 {
     return switch (provider) {
-        .gateway => "exact/gateway",
         .codex => "exact/codex",
         .grok => "exact/grok",
         .configured => "exact/configured",

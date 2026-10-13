@@ -3,51 +3,10 @@ const types = @import("../shared/types.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Opaque provider-owned identity borrowed for the policy and runtime lifetime.
-pub const SearchBackendId = struct {
-    value: []const u8,
-
-    pub fn eql(self: SearchBackendId, other: SearchBackendId) bool {
-        return std.mem.eql(u8, self.value, other.value);
-    }
-};
-
-pub const BackendFeatureMode = enum {
-    unsupported,
-    best_effort,
-    pass_through,
-    post_filter,
-};
-
-pub const BackendCapabilities = struct {
-    max_uses: BackendFeatureMode = .unsupported,
-    allowed_domains: BackendFeatureMode = .unsupported,
-    blocked_domains: BackendFeatureMode = .unsupported,
-    ordered_sources: bool = false,
-    usage: bool = false,
-    terminal_incomplete: bool = false,
-    timeout: bool = false,
-    cancellation: bool = false,
-    result_bounds: BackendFeatureMode = .unsupported,
-};
-
 pub const Request = struct {
     query: []const u8,
     allowed_domains: ?[]const []const u8 = null,
     blocked_domains: ?[]const []const u8 = null,
-};
-
-pub const ProviderRequest = struct {
-    backend: SearchBackendId,
-    query: []const u8,
-    allowed_domains: ?[]const []const u8 = null,
-    blocked_domains: ?[]const []const u8 = null,
-    max_uses: u8 = 8,
-    max_results: u8 = 10,
-    max_output_tokens: u32 = 4096,
-    max_output_chars: usize = 100_000,
-    timeout_ms: u32 = 30_000,
-    cancel_flag: *const std.atomic.Value(bool),
 };
 
 pub const Progress = union(enum) {
@@ -57,8 +16,6 @@ pub const Progress = union(enum) {
         result_count: usize,
     },
 };
-
-pub const ProgressFn = *const fn (*anyopaque, Progress) void;
 
 pub const Source = struct {
     title: []const u8,
@@ -104,25 +61,6 @@ pub const ResultItem = union(enum) {
             .error_text => |text| alloc.free(text),
             .terminal_incomplete => |incomplete| incomplete.deinit(alloc),
         }
-    }
-};
-
-/// Provider output whose content and stop reason are owned by the caller.
-pub const ProviderResponse = struct {
-    content: []const ResultItem = &.{},
-    stop_reason: ?[]const u8 = null,
-    usage: ?types.ToolUsage = null,
-
-    pub fn takeContent(self: *ProviderResponse) []const ResultItem {
-        const content = self.content;
-        self.content = &.{};
-        return content;
-    }
-
-    pub fn deinit(self: *ProviderResponse, alloc: Allocator) void {
-        deinitItems(alloc, self.content);
-        if (self.stop_reason) |reason| alloc.free(reason);
-        self.* = .{};
     }
 };
 

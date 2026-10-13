@@ -39,8 +39,6 @@ pub fn terminalInputOwner(
     return .fx_input;
 }
 
-pub const shortcutFromControlByte = shortcuts.fromControlByte;
-
 pub fn approvalActionFromByte(byte: u8) ?approval_decision.Action {
     return switch (byte) {
         3 => .deny,
@@ -418,13 +416,11 @@ pub fn scanInputCursorRows(
     }, direction, row_count, input.vertical_navigation.preferredColumn());
 }
 
-pub const MouseReportDiscardResult = escape_parser.MouseReportDiscardResult;
 pub const isLegacyX10PayloadStage = escape_parser.isLegacyX10PayloadStage;
 pub const isMouseReportPayloadStage = escape_parser.isMouseReportPayloadStage;
 pub const isMouseReportDiscardStage = escape_parser.isMouseReportDiscardStage;
 pub const isControlSequenceDiscardStage = escape_parser.isControlSequenceDiscardStage;
 pub const beginMouseReportDiscard = escape_parser.beginMouseReportDiscard;
 pub const consumeMouseReportDiscardByte = escape_parser.consumeMouseReportDiscardByte;
-pub const consumeInputEscapeByte = escape_parser.consumeInputEscapeByte;
 pub const consumeInputEscapeByteWithMouse = escape_parser.consumeInputEscapeByteWithMouse;
 pub const controlByteFeatureAction = escape_parser.controlByteFeatureAction;

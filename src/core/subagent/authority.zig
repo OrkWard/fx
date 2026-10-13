@@ -8,27 +8,6 @@ const types = @import("../shared/types.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const PermissionAdmissionError = error{PermissionEscalation};
-
-fn permissionRank(mode: types.PermissionMode) u2 {
-    return switch (mode) {
-        .ask => 0,
-        .auto => 1,
-        .yolo => 2,
-    };
-}
-
-pub fn admitChildPermission(
-    parent: types.PermissionMode,
-    requested: ?types.PermissionMode,
-) PermissionAdmissionError!types.PermissionMode {
-    const child = requested orelse parent;
-    if (permissionRank(child) > permissionRank(parent)) {
-        return error.PermissionEscalation;
-    }
-    return child;
-}
-
 pub const Error = error{
     OutOfMemory,
     ChildNotAttached,

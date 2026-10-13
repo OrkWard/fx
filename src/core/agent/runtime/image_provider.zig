@@ -15,7 +15,6 @@ pub const Request = struct {
     stream_provider: agent_stream_provider.Provider,
     api_key: []const u8,
     credential_source: ?types.CredentialSource = null,
-    gateway_team: ?[]const u8,
     session_id: ?[]const u8 = null,
     retry_count: usize,
     cancel_flag: *std.atomic.Value(bool),
@@ -62,8 +61,7 @@ pub fn inspect(
             else
                 .{ .direct = .{
                     .secret_bytes = request.api_key,
-                    .source = request.credential_source orelse .ai_gateway_api_key,
-                    .tenant_context = request.gateway_team,
+                    .source = request.credential_source orelse .configured,
                 } },
             .session_id = request.session_id,
             .model = model,

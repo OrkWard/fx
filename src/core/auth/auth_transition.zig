@@ -45,32 +45,20 @@ pub fn decideLogoutProvider(facts: LogoutFacts) model_provider.ProviderId {
     if (facts.requested) |provider| return provider;
     if (facts.selected == .grok or facts.active_source == .grok_subscription) return .grok;
     if (facts.selected == .codex or facts.active_source == .chatgpt_subscription) return .codex;
-    if (facts.active_source == .fx_login) return .gateway;
-
     const only_grok_login = facts.available_sources.contains(.grok_subscription) and
-        !facts.available_sources.contains(.fx_login) and
         !facts.available_sources.contains(.chatgpt_subscription);
-    if (only_grok_login) return .grok;
-    const only_codex_login = facts.available_sources.contains(.chatgpt_subscription) and
-        !facts.available_sources.contains(.fx_login) and
-        !facts.available_sources.contains(.grok_subscription);
-    if (only_codex_login) return .codex;
-    return .gateway;
+    return if (only_grok_login) .grok else .codex;
 }
 
 pub fn logoutFallbackProviders(facts: LogoutFacts) [2]?model_provider.ProviderId {
     var candidates: [2]?model_provider.ProviderId = .{ null, null };
     const removed = decideLogoutProvider(facts);
-    if (!removed.eql(facts.selected) or removed == .gateway) return candidates;
+    if (!removed.eql(facts.selected)) return candidates;
 
     var count: usize = 0;
-    for ([_]model_provider.ProviderId{ .gateway, .codex, .grok }) |provider| {
+    for ([_]model_provider.ProviderId{ .codex, .grok }) |provider| {
         if (provider.eql(removed)) continue;
         const available = switch (provider) {
-            .gateway => facts.available_sources.contains(.vercel_oidc_token) or
-                facts.available_sources.contains(.ai_gateway_api_key) or
-                facts.available_sources.contains(.fx_login) or
-                facts.available_sources.contains(.stored_key),
             .codex => facts.available_sources.contains(.chatgpt_subscription),
             .grok => facts.available_sources.contains(.grok_subscription),
             .configured => false,
@@ -83,7 +71,6 @@ pub fn logoutFallbackProviders(facts: LogoutFacts) [2]?model_provider.ProviderId
 }
 
 pub const SignInCompletionAction = union(enum) {
-    vercel,
     switch_provider: model_provider.ProviderId,
     activate_source: credentials.Source,
 };
@@ -93,7 +80,6 @@ pub fn signInCompletion(
     provider_routing_supported: bool,
 ) SignInCompletionAction {
     return switch (provider) {
-        .gateway => .vercel,
         .configured => .{ .switch_provider = provider },
         .codex => if (provider_routing_supported)
             .{ .switch_provider = .codex }
@@ -110,7 +96,6 @@ pub const CredentialAuthorityFacts = struct {
     provider: model_provider.ProviderId,
     source: credentials.Source,
     account_id: ?[]const u8,
-    team: ?[]const u8,
 };
 
 pub const CredentialChange = enum {
@@ -126,8 +111,7 @@ pub fn decideCredentialChange(
 ) CredentialChange {
     if (!current.provider.same_authority(candidate.provider) or
         current.source != candidate.source or
-        !optionalBytesEqual(current.account_id, candidate.account_id) or
-        !optionalBytesEqual(current.team, candidate.team))
+        !optionalBytesEqual(current.account_id, candidate.account_id))
     {
         return .authority;
     }

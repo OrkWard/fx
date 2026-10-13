@@ -111,11 +111,6 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasField(App, "approval_prompt")) {
                 if (app.approval_prompt.isActive()) return "upgrade is unavailable while an approval is open";
             }
-            if (comptime @hasField(App, "auth") and
-                @hasDecl(@TypeOf(app.auth), "apiKeyEntryActive"))
-            {
-                if (app.auth.apiKeyEntryActive()) return "upgrade is unavailable during API key entry";
-            }
             if (comptime @hasField(App, "subagents")) {
                 if (app.subagents.isViewActive()) return "close the subagent view before upgrading";
             }
@@ -165,29 +160,4 @@ fn currentExecutablePathDefault(
     executable_buf: []u8,
 ) upgrade_helpers.ExecutablePathError![]const u8 {
     return upgrade_helpers.currentExecutablePath(executable_buf);
-}
-
-const TestDepsState = struct {
-    path_count: usize = 0,
-    path_error: ?upgrade_helpers.ExecutablePathError = null,
-
-    fn deps(self: *TestDepsState) Deps {
-        return .{
-            .ctx = self,
-            .current_executable_path = currentExecutablePathForTest,
-        };
-    }
-};
-
-fn currentExecutablePathForTest(
-    ctx: ?*anyopaque,
-    executable_buf: []u8,
-) upgrade_helpers.ExecutablePathError![]const u8 {
-    const state: *TestDepsState = @ptrCast(@alignCast(ctx.?));
-    state.path_count += 1;
-    if (state.path_error) |err| return err;
-    const executable_path = "/tmp/fx-upgraded";
-    if (executable_path.len > executable_buf.len) return error.PathTooLong;
-    @memcpy(executable_buf[0..executable_path.len], executable_path);
-    return executable_buf[0..executable_path.len];
 }

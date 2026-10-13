@@ -10,7 +10,6 @@ const main = @import("../main.zig");
 const theme_detection = @import("terminal/theme_detection.zig");
 const theme_protocol = @import("terminal/theme_protocol.zig");
 const shared_theme = @import("../core/shared/theme.zig");
-const visual_layout = @import("input/visual_layout.zig");
 const update_target = @import("../core/upgrade/update_target.zig");
 
 pub const TerminalRgb = user_message_card.Rgb;
@@ -119,39 +118,6 @@ pub const explicitThemeName = theme_detection.explicitThemeName;
 pub const detectTheme = theme_detection.detectTheme;
 pub const parseOsc11Response = theme_protocol.parseOsc11Response;
 pub const truecolorSupportedForValues = theme_protocol.truecolorSupportedForValues;
-
-pub const InputLineView = struct {
-    line: []const u8,
-    cursor_col: u16,
-};
-
-pub const MultilineInfo = struct {
-    total_lines: u16,
-    cursor_line: u16,
-};
-
-pub fn countMultilineInfo(input: []const u8, cursor: usize, width: u16) MultilineInfo {
-    const summary = visual_layout.summarize(.{ .input = input, .cursor = cursor, .terminal_cols = width }, null);
-    return .{
-        .total_lines = @intCast(@min(summary.total_rows, std.math.maxInt(u16))),
-        .cursor_line = @intCast(@min(summary.cursor.row_index, std.math.maxInt(u16))),
-    };
-}
-
-pub fn buildInputLineForRow(input: []const u8, cursor: usize, line_index: usize, total_lines: usize, width: u16, out: []u8) InputLineView {
-    if (width == 0 or out.len == 0) return .{ .line = "", .cursor_col = 1 };
-
-    const source = visual_layout.Source{ .input = input, .cursor = cursor, .terminal_cols = width };
-    const summary = visual_layout.summarize(source, null);
-    const visible_rows = @max(total_lines, 1);
-    const window = visual_layout.visibleWindow(summary.cursor.row_index, summary.total_rows, visible_rows);
-    const actual_row = window.first_row + line_index;
-    const line = copyVisualRowToBuffer(source, actual_row, out);
-    return .{
-        .line = line,
-        .cursor_col = if (summary.cursor.row_index == actual_row) visual_layout.terminalColumn(summary.cursor, width) else 0,
-    };
-}
 
 const build_channel = update_target.Channel.parse(build_options.update_channel) orelse .stable;
 const welcome_build_label_bytes: usize = 96;
@@ -465,107 +431,6 @@ pub fn buildHintLine(
     const width_usize: usize = width;
     if (width_usize == 0) return "";
     return display_width.prefixByWidthIgnoringAnsi(out[0..end], width_usize);
-}
-
-pub fn buildInputLine(input: []const u8, cursor: usize, width: u16, out: []u8) InputLineView {
-    const ml = countMultilineInfo(input, cursor, width);
-    return buildInputLineForRow(input, cursor, ml.cursor_line, ml.total_lines, width, out);
-}
-
-pub fn inputColumnForIndex(input: []const u8, cursor: usize, target: usize, width: u16) u16 {
-    const summary = visual_layout.summarize(.{ .input = input, .cursor = cursor, .terminal_cols = width }, target);
-    return visual_layout.projectedAnchorColumn(summary, width);
-}
-
-fn copyVisualRowToBuffer(source: visual_layout.Source, target_row: usize, out: []u8) []const u8 {
-    if (source.terminal_cols == 0 or out.len == 0) return "";
-
-    var len: usize = 0;
-    var row_started = false;
-    var remaining_cells: usize = 0;
-    var omitted_positive_unit = false;
-    var it = visual_layout.iterator(source);
-    while (it.next()) |event| switch (event) {
-        .unit => |unit| {
-            if (unit.row_index < target_row) continue;
-            if (unit.row_index > target_row) break;
-            startVisualRow(source.terminal_cols, target_row, out, &len, &row_started, &remaining_cells);
-            if (remaining_cells == 0) continue;
-            switch (unit.kind) {
-                .text => {
-                    if (unit.cell_width == 0) {
-                        if (!omitted_positive_unit) appendBytesToBuffer(out, &len, source.input[unit.raw_start..unit.raw_end]);
-                    } else if (unit.cell_width <= remaining_cells) {
-                        appendBytesToBuffer(out, &len, source.input[unit.raw_start..unit.raw_end]);
-                        remaining_cells -= unit.cell_width;
-                        omitted_positive_unit = false;
-                    } else {
-                        omitted_positive_unit = true;
-                    }
-                },
-                .paste_placeholder => {
-                    const visible = display_width.prefixByWidth(
-                        source.input[unit.raw_start..unit.raw_end],
-                        remaining_cells,
-                    );
-                    appendBytesToBuffer(out, &len, visible);
-                    const emitted_width = display_width.visibleWidth(visible);
-                    remaining_cells -= emitted_width;
-                    omitted_positive_unit = emitted_width < unit.cell_width;
-                },
-                .tab => {
-                    if (unit.cell_width > 0 and unit.cell_width <= remaining_cells) {
-                        appendSpacesToBuffer(out, &len, unit.cell_width);
-                        remaining_cells -= unit.cell_width;
-                        omitted_positive_unit = false;
-                    } else if (unit.cell_width > 0) {
-                        omitted_positive_unit = true;
-                    }
-                },
-                .skill_token => |token_index| {
-                    const token = source.skill_tokens[token_index];
-                    if (unit.cell_width <= remaining_cells) {
-                        appendBytesToBuffer(out, &len, token.name);
-                        remaining_cells -= unit.cell_width;
-                        omitted_positive_unit = false;
-                    } else {
-                        omitted_positive_unit = true;
-                    }
-                },
-                .image_badge => {},
-            }
-        },
-        .row_end => |row| {
-            if (row.index < target_row) continue;
-            if (row.index == target_row) startVisualRow(source.terminal_cols, target_row, out, &len, &row_started, &remaining_cells);
-            break;
-        },
-    };
-    return out[0..len];
-}
-
-fn startVisualRow(width: u16, row_index: usize, out: []u8, len: *usize, started: *bool, remaining_cells: *usize) void {
-    if (started.*) return;
-    started.* = true;
-    const prefix = visual_layout.inputPrefix(row_index);
-    const clipped = display_width.prefixByWidth(prefix.bytes, width);
-    appendBytesToBuffer(out, len, clipped);
-    const width_usize: usize = width;
-    remaining_cells.* = if (width_usize > prefix.cell_width) width_usize - prefix.cell_width else 0;
-}
-
-fn appendBytesToBuffer(out: []u8, len: *usize, bytes: []const u8) void {
-    if (bytes.len > out.len - len.*) return;
-    @memcpy(out[len.* .. len.* + bytes.len], bytes);
-    len.* += bytes.len;
-}
-
-fn appendSpacesToBuffer(out: []u8, len: *usize, count: usize) void {
-    var i: usize = 0;
-    while (i < count and len.* < out.len) : (i += 1) {
-        out[len.*] = ' ';
-        len.* += 1;
-    }
 }
 
 /// Writes the title to the same file the transcript renders to, so a host

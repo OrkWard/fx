@@ -4,7 +4,6 @@ const types = @import("../shared/types.zig");
 const configured_provider = @import("configured_provider.zig");
 
 pub const ProviderId = union(enum) {
-    gateway,
     codex,
     grok,
     configured: struct {
@@ -16,7 +15,6 @@ pub const ProviderId = union(enum) {
     /// Borrows the inline name; built-in names have static storage.
     pub fn label(self: *const ProviderId) []const u8 {
         return switch (self.*) {
-            .gateway => "gateway",
             .codex => "codex",
             .grok => "grok",
             .configured => |*value| value.bytes[0..value.len],
@@ -104,7 +102,6 @@ pub const ProviderSelection = struct {
 };
 
 pub fn parse(value: []const u8) ?ProviderId {
-    if (std.ascii.eqlIgnoreCase(value, "gateway")) return .gateway;
     if (std.ascii.eqlIgnoreCase(value, "codex")) return .codex;
     if (std.ascii.eqlIgnoreCase(value, "grok")) return .grok;
     configured_provider.validate_id(value) catch return null;
@@ -135,7 +132,6 @@ pub fn authorizesCredential(provider: ProviderId, source: ?types.CredentialSourc
     const selected = source orelse return false;
     if (selected == .host_managed) return true;
     return switch (provider) {
-        .gateway => selected != .chatgpt_subscription and selected != .grok_subscription and selected != .configured,
         .configured => selected == .configured,
         .codex => selected == .chatgpt_subscription,
         .grok => selected == .grok_subscription,

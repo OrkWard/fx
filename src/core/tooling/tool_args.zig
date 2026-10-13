@@ -55,9 +55,3 @@ pub fn optionalBoolArg(args: std.json.ObjectMap, key: []const u8) ?bool {
     if (value != .bool) return null;
     return value.bool;
 }
-
-pub fn optionalIntArg(args: std.json.ObjectMap, key: []const u8) ?i64 {
-    const value = args.get(key) orelse return null;
-    if (value != .integer) return null;
-    return value.integer;
-}

@@ -8,7 +8,6 @@ pub const version = "0.0.13";
 const app_lifecycle = @import("core/app/app_lifecycle.zig");
 const provider_runtime = @import("core/app/provider_runtime.zig");
 const auth_runtime = @import("core/auth/auth_runtime.zig");
-const api_key_validator = @import("core/auth/api_key_validator.zig");
 const credentials = @import("core/auth/credentials.zig");
 const secret = @import("core/auth/secret.zig");
 const model_cache_runtime = @import("core/app/model_cache_runtime.zig");
@@ -45,9 +44,7 @@ const prompt_policy = @import("core/config/prompt_policy.zig");
 const builtin_commands = @import("builtins/commands.zig");
 const command_specs = @import("core/slash_commands/command_specs.zig");
 const builtin_context = @import("builtins/context.zig");
-const builtin_gateway = @import("builtins/gateway.zig");
 const builtin_providers = @import("builtins/providers.zig");
-const gateway_provider = @import("core/gateway/gateway_provider.zig");
 const provider_set = @import("core/gateway/provider_set.zig");
 const model_catalog = @import("core/gateway/model_catalog.zig");
 const agent_stream_provider = @import("core/agent/stream_provider.zig");
@@ -93,10 +90,8 @@ const tool_dispatch = @import("core/tooling/tool_dispatch.zig");
 const tool_set_contract = @import("core/tooling/tool_set.zig");
 const tool_runtime = @import("core/tooling/tool_runtime.zig");
 const web_fetch_runtime = @import("core/tooling/web_fetch_runtime.zig");
-const web_search_runtime = @import("core/tooling/web_search_runtime.zig");
 const worker_runtime = @import("core/agent/worker_runtime.zig");
 const question_prompt = @import("core/agent/question_prompt.zig");
-const gateway_client = @import("gateway/client.zig");
 const url_opener = @import("core/hosts/url_opener.zig");
 const event_loop = @import("ui/event_loop.zig");
 const footer_runtime = @import("ui/footer/runtime.zig");
@@ -145,7 +140,6 @@ const focused_ui_worker_poll_timeout_ms: i32 = 1;
 const resize_debounce_ms: i64 = 100;
 const max_transcript_bytes: usize = 256 * 1024;
 const default_max_agent_steps: usize = agent_steps.default_max_agent_steps;
-const native_gateway_provider = builtin_gateway.provider;
 const max_history_turns: usize = 8;
 const max_list_entries: usize = 100;
 const max_read_file_bytes: usize = 50 * 1024;
@@ -301,9 +295,7 @@ fn promptCardSkillTokensFromDisplaySpans(
 
 var resize_interlock = shell_runtime.ResizeApprovalInterlock{};
 const default_context_registry = context_contract.Registry{ .default_provider = builtin_context.provider };
-const app_api_key_validator = builtin_gateway.api_key_validator;
-const app_oauth_transport = builtin_gateway.oauth_transport_provider;
-const app_secret_store = native_host.secret_store;
+const app_oauth_transport = @import("builtins/oauth_transport.zig").provider;
 fn currentBuild() update_target.CurrentBuild {
     return .{
         .channel = compiled_update_channel,
@@ -355,12 +347,6 @@ const App = struct {
         return url_opener.native_opener;
     }
 
-    pub fn creditsProvider(self: *const Self) gateway_provider.CreditsProvider {
-        return self.providerSet()
-            .select(self.provider_selection.selection().provider)
-            .credits orelse gateway_provider.unavailable_credits_provider;
-    }
-
     pub fn agentStreamProvider(self: *const Self) agent_stream_provider.Provider {
         return self.providerSet()
             .select(self.provider_selection.selection().provider)
@@ -379,10 +365,6 @@ const App = struct {
         return self.providerSet().select(provider).model_catalog;
     }
 
-    pub fn secretStore(self: *const Self) host.SecretStore {
-        return self.auth.secret_store;
-    }
-
     pub fn clipboard(_: *const Self) host.Clipboard {
         return native_host.clipboard;
     }
@@ -398,13 +380,9 @@ const App = struct {
     alloc: Allocator,
     terminal: TerminalState = .{},
 
-    auth: auth_runtime.Runtime = auth_runtime.Runtime.init(
-        app_api_key_validator,
-        app_oauth_transport,
-        app_secret_store,
-    ),
+    auth: auth_runtime.Runtime = auth_runtime.Runtime.init(app_oauth_transport, .local),
     provider_selection: provider_runtime.Runtime = provider_runtime.Runtime.init(std.heap.c_allocator),
-    model_cache: model_cache_runtime.Runtime = model_cache_runtime.Runtime.init(std.heap.c_allocator, builtin_gateway.models_path),
+    model_cache: model_cache_runtime.Runtime = model_cache_runtime.Runtime.init(std.heap.c_allocator, ""),
     usage_dashboard: usage_dashboard_runtime.Runtime = usage_dashboard_runtime.Runtime.init(std.heap.c_allocator),
     workspace_root: []u8 = &.{},
     workspace_identity: statusline_identity.Runtime = .{},
@@ -413,10 +391,6 @@ const App = struct {
     permission_state: app_permission_runtime.State = .{},
     agent_step_limit: usize = default_max_agent_steps,
     web_fetch_runtime: web_fetch_runtime.Runtime = web_fetch_runtime.Runtime.init(.{}),
-    web_search_runtime: web_search_runtime.Runtime = web_search_runtime.Runtime.init(.{
-        .provider = builtin_providers.native.gateway.fx_search,
-    }),
-    web_search_models_path: []const u8 = builtin_gateway.models_path,
     lifecycle_runtime: hooks.Runtime = hooks.Runtime.init(std.heap.c_allocator),
     lifecycle_view: hooks.RuntimeView = hooks.RuntimeView.empty(),
     notifications: builtin_hooks.notifications.State = .{},
@@ -496,13 +470,7 @@ const App = struct {
             .terminal_client = terminal_client_runtime.Runtime.init(shell_process_provider.provider),
             .legacy_process_provider = shell_process_provider.provider,
         };
-        auth_runtime.Runtime.initIntoWithMode(
-            &app.auth,
-            app_api_key_validator,
-            app_oauth_transport,
-            app_secret_store,
-            auth_mode,
-        );
+        app.auth = auth_runtime.Runtime.init(app_oauth_transport, auth_mode);
         usage_dashboard_runtime.Runtime.initInto(&app.usage_dashboard, std.heap.c_allocator);
         app_session_runtime.Persistence.initInto(&app.session_persistence);
         InputRuntime.initInto(&app.input_runtime);
@@ -520,7 +488,7 @@ const App = struct {
         try BootstrapAppRuntime.bootstrap(
             &app,
             footer_rows,
-            builtin_gateway.default_model,
+            "",
             default_max_agent_steps,
             handle_sigwinch,
             .{
@@ -543,14 +511,6 @@ const App = struct {
             launch.modifiers.additional_directories,
             launch.modifiers.saved_directories_suppressed,
         );
-        {
-            app.provider_selection.ensureGatewayHttpPool();
-            if (app.provider_selection.selection().provider == .gateway) {
-                if (app.provider_selection.gateway_http_pool) |pool| {
-                    pool.warmAsync(gateway_client.resolveChatUrlForWarmup(builtin_gateway.agentChatUrl()));
-                }
-            }
-        }
         app.context_limits.applyCommandLine(launch.modifiers.context_limit_overrides);
         {
             if (app.requested_resume != null) {
@@ -797,7 +757,6 @@ const App = struct {
         shutdown_trace.mark("persistence_finalized");
         self.worker.deinit(std.heap.c_allocator);
         self.web_fetch_runtime.deinit(self.alloc);
-        self.web_search_runtime.deinit();
         self.prompt_history.deinit(self.alloc);
         self.clearPendingImages();
         self.pending_images.deinit(self.alloc);
@@ -1308,18 +1267,13 @@ const App = struct {
         const model_copy = try std.heap.c_allocator.dupe(u8, self.provider_selection.selection().model);
         errdefer std.heap.c_allocator.free(model_copy);
 
-        const gateway_credential = self.auth.gatewayCredential() orelse return error.MissingApiKey;
-        const api_key_copy = if (gateway_credential.api_key) |api_key|
+        if (self.auth.credentialSource() == null) return error.MissingApiKey;
+        const api_key_copy = if (self.auth.apiKey()) |api_key|
             try std.heap.c_allocator.dupe(u8, api_key)
         else
             @constCast(&[_]u8{});
         errdefer secret.zeroAndFree(std.heap.c_allocator, api_key_copy);
 
-        const gateway_team_copy = if (gateway_credential.gateway_team) |team|
-            try std.heap.c_allocator.dupe(u8, team)
-        else
-            null;
-        errdefer if (gateway_team_copy) |team| std.heap.c_allocator.free(team);
         const account_id_copy = if (self.auth.accountId()) |account_id|
             try std.heap.c_allocator.dupe(u8, account_id)
         else
@@ -1382,8 +1336,7 @@ const App = struct {
             .model = model_copy,
             .provider = self.provider_selection.selection().provider,
             .api_key = api_key_copy,
-            .gateway_team = gateway_team_copy,
-            .credential_source = gateway_credential.source,
+            .credential_source = self.auth.credentialSource(),
             .account_id = account_id_copy,
             .permission_mode = self.permission_engine.mode,
             .history = history_copy,
@@ -1408,17 +1361,12 @@ const App = struct {
         const selection = self.provider_selection.selection();
         const model = try std.heap.c_allocator.dupe(u8, selection.model);
         errdefer std.heap.c_allocator.free(model);
-        const credential = self.auth.gatewayCredential() orelse return error.MissingApiKey;
-        const api_key = if (credential.api_key) |value|
+        if (self.auth.credentialSource() == null) return error.MissingApiKey;
+        const api_key = if (self.auth.apiKey()) |value|
             try std.heap.c_allocator.dupe(u8, value)
         else
             @constCast(&[_]u8{});
         errdefer secret.zeroAndFree(std.heap.c_allocator, api_key);
-        const gateway_team = if (credential.gateway_team) |team|
-            try std.heap.c_allocator.dupe(u8, team)
-        else
-            null;
-        errdefer if (gateway_team) |team| std.heap.c_allocator.free(team);
         const account_id = if (self.auth.accountId()) |id|
             try std.heap.c_allocator.dupe(u8, id)
         else
@@ -1432,8 +1380,7 @@ const App = struct {
             .model = model,
             .provider = selection.provider,
             .api_key = api_key,
-            .gateway_team = gateway_team,
-            .credential_source = credential.source,
+            .credential_source = self.auth.credentialSource(),
             .account_id = account_id,
             .history = history,
             .unversioned_history_count = self.session.unversionedHistoryEnd(),
@@ -1502,7 +1449,7 @@ const App = struct {
         self: *App,
         admission: subagent_domain.AdmissionSnapshot,
     ) tool_runtime.Context {
-        return AgentAppRuntime.toolContextForSubagent(self, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl(), admission);
+        return AgentAppRuntime.toolContextForSubagent(self, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, admission);
     }
 
     pub fn runSubagentChild(
@@ -1570,27 +1517,18 @@ const App = struct {
     }
 
     pub fn providerSet(self: *const App) provider_set.Set {
-        if (self.provider_selection.model_requests_blocked) return .{ .gateway = .{}, .codex = .{}, .grok = .{} };
+        if (self.provider_selection.model_requests_blocked) return .{ .codex = .{}, .grok = .{} };
         var providers = builtin_providers.native;
         providers.definitions = self.provider_selection.definitions.definitions;
-        if (self.provider_selection.gateway_http_pool) |pool| {
-            // Rebind the gateway stream provider to the process-long pooled
-            // client so chat requests reuse warm keep-alive connections.
-            if (providers.gateway.agent_stream) |stream| {
-                var stamped = stream;
-                stamped.context = pool;
-                providers.gateway.agent_stream = stamped;
-            }
-        }
         return providers;
     }
 
     pub fn describeToolAction(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
-        return AgentAppRuntime.describeToolAction(self, arena, call, display_target, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.describeToolAction(self, arena, call, display_target, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn resolveToolActionDisplayTarget(self: *App, arena: Allocator, call: ToolCall) !?[]const u8 {
-        return AgentAppRuntime.resolveToolActionDisplayTarget(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.resolveToolActionDisplayTarget(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn describeToolActionWithAdvertised(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
@@ -1598,7 +1536,7 @@ const App = struct {
     }
 
     pub fn describeToolActionCompleted(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
-        return AgentAppRuntime.describeToolActionCompleted(self, arena, call, display_target, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.describeToolActionCompleted(self, arena, call, display_target, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn describeToolActionCompletedWithAdvertised(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8) ![]const u8 {
@@ -1606,7 +1544,7 @@ const App = struct {
     }
 
     pub fn describeToolActionDenied(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8, label: []const u8) ![]const u8 {
-        return AgentAppRuntime.describeToolActionDenied(self, arena, call, display_target, label, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.describeToolActionDenied(self, arena, call, display_target, label, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn describeToolActionDeniedWithAdvertised(self: *App, arena: Allocator, call: ToolCall, display_target: ?[]const u8, label: []const u8) ![]const u8 {
@@ -1614,7 +1552,7 @@ const App = struct {
     }
 
     pub fn requestToolPermissionSync(self: *App, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority, revalidation: ?agent_runtime.LivePermissionRevalidation) !command_admission.PermissionOutcome {
-        return AgentAppRuntime.requestToolPermissionSync(self, arena, call, review_turn, permission_mode, local_grants, live_authority, revalidation, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.requestToolPermissionSync(self, arena, call, review_turn, permission_mode, local_grants, live_authority, revalidation, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn requestToolPermissionSyncWithAdvertised(self: *App, arena: Allocator, call: ToolCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority, revalidation: ?agent_runtime.LivePermissionRevalidation) !command_admission.PermissionOutcome {
@@ -1622,19 +1560,19 @@ const App = struct {
     }
 
     pub fn requestPreparedFileMutationPermissionSyncWithAdvertised(self: *App, arena: Allocator, call: ToolCall, prepared: *tool_admission.PreparedFileMutationCall, review_turn: permission_auto_classifier.ReviewTurnContext, permission_mode: PermissionMode, local_grants: []const PermissionGrant, live_authority: ?agent_runtime.LiveToolAuthority) !command_admission.PermissionOutcome {
-        return AgentAppRuntime.requestPreparedFileMutationPermissionSync(self, arena, call, prepared, review_turn, permission_mode, local_grants, live_authority, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.requestPreparedFileMutationPermissionSync(self, arena, call, prepared, review_turn, permission_mode, local_grants, live_authority, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn validateToolCall(self: *App, arena: Allocator, call: ToolCall) !agent_runtime.ToolCallValidationResult {
-        return AgentAppRuntime.validateToolCall(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.validateToolCall(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn checkToolAvailability(self: *App, arena: Allocator, call: ToolCall) !?[]const u8 {
-        return AgentAppRuntime.checkToolAvailability(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.checkToolAvailability(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn permissionTargetForCall(self: *App, arena: Allocator, call: ToolCall) ![]const u8 {
-        return AgentAppRuntime.permissionTargetForCall(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.permissionTargetForCall(self, arena, call, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn permissionTargetForCallWithAdvertised(self: *App, arena: Allocator, call: ToolCall) ![]const u8 {
@@ -1654,8 +1592,6 @@ const App = struct {
             max_read_file_lines,
             max_read_file_line_len,
             max_command_output_bytes,
-            builtin_gateway.retry_count,
-            builtin_gateway.defaultChatUrl(),
         );
         return tool_admission.preparePermissionStateAction(
             ctx.admissionInput(),
@@ -1668,18 +1604,12 @@ const App = struct {
         return AgentAppRuntime.fetchModelIds(
             self,
             self.providerSet().select(self.provider_selection.selection().provider).model_catalog orelse return error.ModelCatalogUnavailable,
-            builtin_gateway.models_path,
+            "",
         );
     }
 
     pub fn startModelCacheWarmup(self: *App) void {
         {
-            // Warming without the launch credential would fetch the catalog
-            // twice; the credential's arrival starts the warmup instead.
-            if (AuthAppRuntime.startupCredentialPending(self)) {
-                debug_trace.logf("auth", "model_cache_warmup_deferred reason=startup_credential_pending", .{});
-                return;
-            }
             self.model_cache.startWarmup(
                 self.providerSet().select(self.provider_selection.selection().provider).model_catalog orelse return,
                 self.auth.modelCatalogAccess(),
@@ -1692,8 +1622,7 @@ const App = struct {
     }
 
     pub fn isModelCacheLoading(self: *App) bool {
-        // The catalog load waits for a deferred launch credential.
-        return self.model_cache.isLoading() or AuthAppRuntime.startupCredentialPending(self);
+        return self.model_cache.isLoading();
     }
 
     pub fn isModelCacheFailed(self: *App) bool {
@@ -1831,14 +1760,11 @@ const App = struct {
             .prompt => |job| AgentAppRuntime.processQueuedPrompt(
                 self,
                 job,
-                builtin_gateway.retry_count,
-                builtin_gateway.defaultChatUrl(),
                 failure_provenance,
             ),
             .compact_context => |task| AgentAppRuntime.processContextCompaction(
                 self,
                 task,
-                builtin_gateway.retry_count,
                 failure_provenance,
             ),
         };
@@ -1849,7 +1775,7 @@ const App = struct {
     }
 
     pub fn executeToolCall(self: *App, request: agent_runtime.ToolExecutionRequest) !ToolExecutionResult {
-        return AgentAppRuntime.executeToolCall(self, request, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        return AgentAppRuntime.executeToolCall(self, request, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn executeToolCallWithAdvertised(self: *App, request: agent_runtime.ToolExecutionRequest) !ToolExecutionResult {
@@ -1866,8 +1792,6 @@ const App = struct {
             max_read_file_lines,
             max_read_file_line_len,
             max_command_output_bytes,
-            builtin_gateway.retry_count,
-            builtin_gateway.defaultChatUrl(),
         );
     }
 
@@ -1877,11 +1801,11 @@ const App = struct {
     }
 
     pub fn appendRuntimeContextMessage(self: *App, arena: Allocator, messages: *std.ArrayList(ChatMessage)) !void {
-        try AgentAppRuntime.appendTransientRuntimeContextMessage(self, arena, messages, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        try AgentAppRuntime.appendTransientRuntimeContextMessage(self, arena, messages, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn appendStaticContextMessage(self: *App, arena: Allocator, project_context: ?[]const u8, messages: *std.ArrayList(ChatMessage)) !void {
-        try AgentAppRuntime.appendStaticContextMessage(self, arena, project_context, messages, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes, builtin_gateway.retry_count, builtin_gateway.defaultChatUrl());
+        try AgentAppRuntime.appendStaticContextMessage(self, arena, project_context, messages, &ignored_list_entries, max_list_entries, max_read_file_bytes, max_read_file_lines, max_read_file_line_len, max_command_output_bytes);
     }
 
     pub fn writeTranscript(self: *App, text: []const u8, record: bool) !void {
@@ -2243,7 +2167,6 @@ const App = struct {
             self.terminal_input_runtime.hasPendingTerminalAction() or
             self.question_prompt.isActive() or
             self.approval_prompt.isActive() or
-            self.auth.apiKeyEntryActive() or
             !self.shell.has_committed_frame or
             !self.shell.footer_viewport.has_frame or
             self.shell.footer_viewport.cursor.row == 0 or
@@ -2255,33 +2178,6 @@ const App = struct {
             return false;
         }
         return true;
-    }
-
-    pub fn prepareApiKeyInputBoundary(self: *App) void {
-        if (self.terminal_input_runtime.native_clear_probe.active()) {
-            const discarded = self.terminal_input_runtime.native_clear_probe.settle().len;
-            self.terminal_input_runtime.native_clear_probe.clearSettledInput();
-            debug_trace.logf(
-                "auth",
-                "api key stage discarded native-clear probe input bytes={d}",
-                .{discarded},
-            );
-        }
-
-        self.terminal_input_runtime.terminal_cursor_probe.cancel();
-        var discarded: usize = 0;
-        while (self.terminal_input_runtime.terminal_cursor_probe.takeDeferredByte()) |byte| {
-            _ = byte;
-            std.debug.assert(self.terminal_input_runtime.terminal_cursor_probe.consumeDeferredInputDispatch());
-            discarded += 1;
-        }
-        if (discarded > 0) {
-            debug_trace.logf(
-                "auth",
-                "api key stage discarded cursor-probe input bytes={d}",
-                .{discarded},
-            );
-        }
     }
 
     fn replayNativeClearProbeInput(self: *App) !void {
@@ -2486,8 +2382,6 @@ const App = struct {
             try app_commands.Handlers(App).collectSkillsRefreshFacts(self);
         }
         {
-            // Settle a deferred launch credential before admitting prompts.
-            try AuthAppRuntime.collectStartupCredentialFacts(self);
             AuthAppRuntime.collectDeferredStartupInventory(self);
         }
         InputSubmitRuntime.collectPendingSubmissionFacts(self);
@@ -2515,9 +2409,6 @@ const App = struct {
             try AuthAppRuntime.collectSourceInventoryFacts(self);
             try AuthAppRuntime.collectSignInFacts(self);
         }
-        {
-            try AuthAppRuntime.collectApiKeySaveFacts(self);
-        }
 
         const cols_before_resize = self.shell.layout.cols;
         if (self.terminal_input_runtime.native_clear_probe.active() or
@@ -2533,7 +2424,7 @@ const App = struct {
                 &resize_interlock,
                 footer_rows,
                 resize_debounce_ms,
-                !InputAppRuntime.terminalPasteActive(self) and !self.auth.apiKeyEntryActive(),
+                !InputAppRuntime.terminalPasteActive(self),
             ) catch |err| {
                 if (err != error.TerminalTooSmall and err != error.UnableToReadTerminalSize) {
                     return err;
@@ -2605,7 +2496,7 @@ const App = struct {
         try self.routeTerminalInputIngress(terminal_input);
         try WorkerAppRuntime.tick(self, app_callbacks.Bindings(App).workerEventHandlers(self));
         const now_ns = io_mod.nanoTimestamp();
-        if (!self.approval_prompt.isActive() and !self.question_prompt.isActive() and !self.auth.apiKeyEntryActive()) {
+        if (!self.approval_prompt.isActive() and !self.question_prompt.isActive()) {
             try self.pacer.tick(self.alloc, now_ns, self.pacerCallbacks());
         } else {
             self.pacer.pause(now_ns);
@@ -3099,15 +2990,12 @@ fn needsEarlyThreadedIo(args: []const [:0]const u8) bool {
     return std.mem.eql(u8, command, "slack") or
         std.mem.eql(u8, command, "login") or
         std.mem.eql(u8, command, "logout") or
-        std.mem.eql(u8, command, "teams") or
         std.mem.eql(u8, command, "provider") or
-        std.mem.eql(u8, command, "setup") or
         std.mem.eql(u8, command, "upgrade") or
         // Resolve a stored credential, which reads the platform key store out of process.
         std.mem.eql(u8, command, "status") or
         std.mem.eql(u8, command, "doctor") or
-        std.mem.eql(u8, command, "models") or
-        std.mem.eql(u8, command, "credits");
+        std.mem.eql(u8, command, "models");
 }
 
 fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
@@ -3117,16 +3005,13 @@ fn fullEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .build_channel = compiled_update_channel,
         .auth_mode = auth_mode,
         .command_catalog = builtin_commands.top_level_registry,
-        .default_model = builtin_gateway.default_model,
+        .default_model = "",
         .default_agent_step_limit = default_max_agent_steps,
-        .models_path = builtin_gateway.models_path,
-        .gateway_retry_count = builtin_gateway.retry_count,
-        .gateway_chat_url = builtin_gateway.default_chat_url,
-        .gateway_provider = native_gateway_provider,
+        .models_path = "",
+        .oauth_transport = app_oauth_transport,
         .provider_set = builtin_providers.native,
         .process_provider = shell_process_provider.provider,
         .url_opener = url_opener.native_opener,
-        .secret_store = native_host.secret_store,
         .prompt_policy = builtin_context.prompt_policy,
         .skill_root_policy = builtin_skills.root_policy,
         .ignored_list_entries = &ignored_list_entries,
@@ -3150,16 +3035,13 @@ fn localEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .build_channel = compiled_update_channel,
         .auth_mode = auth_mode,
         .command_catalog = builtin_commands.top_level_registry,
-        .default_model = builtin_gateway.default_model,
+        .default_model = "",
         .default_agent_step_limit = default_max_agent_steps,
-        .models_path = builtin_gateway.models_path,
-        .gateway_retry_count = builtin_gateway.retry_count,
-        .gateway_chat_url = builtin_gateway.default_chat_url,
-        .gateway_provider = native_gateway_provider,
+        .models_path = "",
+        .oauth_transport = app_oauth_transport,
         .provider_set = builtin_providers.native,
         .process_provider = shell_process_provider.provider,
         .url_opener = url_opener.native_opener,
-        .secret_store = native_host.secret_store,
         .prompt_policy = .{ .system_prompt = "" },
         .skill_root_policy = builtin_skills.root_policy,
         .ignored_list_entries = &.{},
@@ -3186,13 +3068,10 @@ fn emptyEntryConfig(auth_mode: credentials.AuthMode) app_entry_runtime.Config {
         .default_model = "",
         .default_agent_step_limit = 0,
         .models_path = "",
-        .gateway_retry_count = 0,
-        .gateway_chat_url = "",
-        .gateway_provider = native_gateway_provider,
+        .oauth_transport = app_oauth_transport,
         .provider_set = builtin_providers.native,
         .process_provider = shell_process_provider.provider,
         .url_opener = url_opener.native_opener,
-        .secret_store = native_host.secret_store,
         .prompt_policy = .{ .system_prompt = "" },
         .skill_root_policy = builtin_skills.root_policy,
         .ignored_list_entries = &.{},

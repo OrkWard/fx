@@ -91,20 +91,14 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .login,
         .token = "login",
-        .usage = "login [vercel|codex|grok]",
-        .summary = "Sign in to Vercel or a selected provider",
+        .usage = "login [codex|grok]",
+        .summary = "Sign in to a model provider",
     },
     .{
         .kind = .logout,
         .token = "logout",
-        .usage = "logout [vercel|codex|grok]",
-        .summary = "Sign out of Vercel or a selected provider session",
-    },
-    .{
-        .kind = .setup,
-        .token = "setup",
-        .usage = "setup",
-        .summary = "Configure an AI Gateway API key",
+        .usage = "logout [codex|grok]",
+        .summary = "Sign out of a model provider",
     },
     .{
         .kind = .status,
@@ -150,12 +144,6 @@ pub const top_level_specs = [_]TopLevelSpec{
         .options = &.{json_option},
     },
     .{
-        .kind = .teams,
-        .token = "teams",
-        .usage = "teams",
-        .summary = "Choose the Vercel team used by AI Gateway",
-    },
-    .{
         .kind = .session,
         .token = "session",
         .usage = "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session resume --id <id> | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
@@ -195,14 +183,6 @@ pub const top_level_specs = [_]TopLevelSpec{
             .{ .flag = "<id>", .description = "Resume a session by id" },
             .{ .flag = "--id <id>", .description = "Resume a session by exact id" },
         },
-    },
-    .{
-        .kind = .credits,
-        .token = "credits",
-        .aliases = &.{"balance"},
-        .usage = "credits [--json]",
-        .summary = "Show the AI Gateway credit balance",
-        .options = &.{json_option},
     },
     .{
         .kind = .usage,
@@ -279,15 +259,10 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .usage = "session recover <id>", .summary = "Copy a recoverable corrupt session" },
     } },
     .{ .entries = &.{
-        .{ .kind = .login, .usage = "login [vercel|codex|grok]", .summary = "Sign in to a model provider" },
-        .{ .kind = .logout, .usage = "logout [vercel|codex|grok]", .summary = "Sign out of a model provider" },
+        .{ .kind = .login, .usage = "login [codex|grok]", .summary = "Sign in to a model provider" },
+        .{ .kind = .logout, .usage = "logout [codex|grok]", .summary = "Sign out of a model provider" },
         .{ .kind = .provider, .usage = "provider <name>", .summary = "Choose the active model provider" },
         .{ .kind = .models, .usage = "models" },
-    } },
-    .{ .entries = &.{
-        .{ .kind = .setup, .usage = "setup", .summary = "Configure a Vercel AI Gateway API key" },
-        .{ .kind = .teams, .usage = "teams", .summary = "Choose a Vercel AI Gateway team" },
-        .{ .kind = .credits, .usage = "credits|balance", .summary = "Show Vercel AI Gateway credits" },
     } },
     .{ .entries = &.{
         .{ .kind = .usage, .usage = "usage [--period <24h|7d|30d>]", .summary = "Show locally recorded token usage and spend" },
@@ -427,7 +402,7 @@ pub const slash_specs = [_]SlashSpec{
 
     .{ .kind = .rename_session, .command = "/rename", .help_entry = "/rename <title>", .completion_description = "rename the current session", .presentation_category = .session, .has_args = true, .accepts_payload = true },
     .{ .kind = .login, .command = "/login", .help_entry = "/login", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
-    .{ .kind = .logout, .command = "/logout", .help_entry = "/logout [vercel|codex|grok]", .completion_description = "sign out of a provider session", .presentation_category = .account, .has_args = true, .accepts_payload = true },
+    .{ .kind = .logout, .command = "/logout", .help_entry = "/logout [codex|grok]", .completion_description = "sign out of a provider session", .presentation_category = .account, .has_args = true, .accepts_payload = true },
     .{ .kind = .provider, .command = "/provider", .aliases = &.{"/setup"}, .help_entry = "/provider (/setup)", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
     .{ .kind = .stats, .command = "/stats", .help_entry = "/stats", .completion_description = "show token and turn statistics", .presentation_category = .account },
     .{ .kind = .usage, .command = "/usage", .aliases = &.{"/cost"}, .help_entry = "/usage (/cost)", .completion_description = "show local fx tokens, models, and spend", .presentation_category = .account },
@@ -445,7 +420,6 @@ pub const slash_specs = [_]SlashSpec{
     .{ .kind = .compact, .command = "/compact", .help_entry = "/compact", .completion_description = "summarize context into a fresh window", .presentation_category = .session },
     .{ .kind = .settings, .command = "/settings", .help_entry = "/settings [startup-scrollback [on|off]]", .completion_description = "browse and update settings", .presentation_category = .appearance, .has_args = true, .accepts_payload = true },
     .{ .kind = .alias, .command = "/alias", .aliases = &.{}, .help_entry = "/alias [name] [command]", .completion_description = "show alias availability", .presentation_category = .extensions, .has_args = true, .accepts_payload = true },
-    .{ .kind = .credits, .command = "/credits", .aliases = &.{"/balance"}, .help_entry = "/credits (/balance)", .completion_description = "show gateway credits balance", .presentation_category = .account, .requires_prompt_credential = true },
     .{ .kind = .paste, .command = "/paste", .help_entry = "/paste", .completion_description = "attach an image from the clipboard when supported", .presentation_category = .media },
     .{ .kind = .fast, .command = "/fast", .help_entry = "/fast", .completion_description = "toggle Fast mode when supported", .presentation_category = .model },
     .{ .kind = .ultrafast, .command = "/ultrafast", .help_entry = "/ultrafast [on|off|status]", .completion_description = "request Ultra mode when supported", .presentation_category = .model, .has_args = true, .accepts_payload = true },
@@ -463,16 +437,8 @@ pub fn matchesSlashExact(cmd: []const u8, kind: SlashKind) bool {
     return command_specs.matchesSlashExact(slash_registry, cmd, kind);
 }
 
-pub fn isExactSlashCommand(cmd: []const u8) bool {
-    return slash_registry.matchExact(cmd) != null;
-}
-
 pub fn matchedSlashPrefix(cmd: []const u8, kind: SlashKind) ?[]const u8 {
     return command_specs.matchedSlashPrefix(slash_registry, cmd, kind);
-}
-
-pub fn renderSlashHelp(alloc: Allocator) ![]u8 {
-    return command_specs.renderSlashHelp(alloc, slash_registry);
 }
 
 pub fn firstSlashCompletion(prefix: []const u8) ?[]const u8 {

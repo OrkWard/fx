@@ -11,8 +11,8 @@ pub const Identity = struct {
     }
 };
 
-/// Derives a persistable, non-secret identity. Gateway sources use the selected
-/// credential slot; provider subscriptions require a stable account ID.
+/// Derives a persistable, non-secret identity. Provider subscriptions require
+/// a stable account ID.
 pub fn derive(
     source: types.CredentialSource,
     account_id: ?[]const u8,
@@ -21,13 +21,7 @@ pub fn derive(
     hash.update("fx-credential-authority-v1\x00");
     hash.update(@tagName(source));
     switch (source) {
-        .vercel_oidc_token,
-        .ai_gateway_api_key,
-        .fx_login,
-        .stored_key,
-        .host_managed,
-        .configured,
-        => hash.update("\x00slot\x00"),
+        .host_managed, .configured => hash.update("\x00slot\x00"),
         .chatgpt_subscription,
         .grok_subscription,
         => {

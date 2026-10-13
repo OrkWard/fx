@@ -134,44 +134,6 @@ const ParallelWorkerSlot = struct {
     observed: bool = false,
 };
 
-pub fn runSequentialCalls(
-    alloc: Allocator,
-    calls: []const ToolCall,
-    options: ParallelRunOptions,
-) Allocator.Error!ParallelRunResult {
-    const attempts = try alloc.alloc(ParallelToolAttempt, calls.len);
-    var initialized: usize = 0;
-    errdefer {
-        for (attempts[0..initialized]) |attempt| freeParallelToolAttempt(alloc, attempt);
-        alloc.free(attempts);
-    }
-
-    var first_cancelled_index: ?usize = null;
-    for (calls, 0..) |call, index| {
-        const attempt: ParallelToolAttempt = if (cancelRequested(options.cancel_flag)) cancelled: {
-            if (first_cancelled_index == null) first_cancelled_index = index;
-            break :cancelled .cancelled;
-        } else completed: {
-            const execution = options.execute(options.exec_ctx, alloc, call, index) catch |err| blk: {
-                const output = options.format_error(options.format_ctx, alloc, call.name, err) catch
-                    try alloc.print("Tool execution failed: {s}", .{@errorName(err)});
-                defer alloc.free(output);
-                break :blk ToolExecutionResult{
-                    .status = .failure,
-                    .model_output = output,
-                };
-            };
-            break :completed .{
-                .completed = try duplicateParallelToolResult(alloc, call, execution),
-            };
-        };
-        attempts[index] = attempt;
-        initialized += 1;
-        observeParallelAttempt(options, alloc, call, attempt, index);
-    }
-    return .{ .attempts = attempts, .first_cancelled_index = first_cancelled_index };
-}
-
 pub fn runParallelCalls(
     alloc: Allocator,
     calls: []const ToolCall,

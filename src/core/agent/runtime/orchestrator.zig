@@ -486,25 +486,6 @@ fn free_projected_tool_replay(alloc: Allocator, source: ChatMessage, projected: 
     alloc.free(@constCast(replay.parts_json));
 }
 
-fn free_terminal_request_projection(
-    alloc: Allocator,
-    source: []const ChatMessage,
-    projected: []const ChatMessage,
-) void {
-    if (source.ptr == projected.ptr) return;
-    for (projected, 0..) |message, index| {
-        free_projected_tool_replay(alloc, source[index], message);
-        if (message.content) |content| alloc.free(@constCast(content));
-        for (message.tool_calls) |call| {
-            alloc.free(@constCast(call.arguments_json));
-        }
-        if (message.tool_calls.len != 0) {
-            alloc.free(@constCast(message.tool_calls));
-        }
-    }
-    alloc.free(@constCast(projected));
-}
-
 const LegacyTerminalCall = struct {
     assistant_index: usize,
     id: []const u8,
@@ -3613,10 +3594,6 @@ fn processQueuedPromptInner(
         try arena.dupe(u8, account_id)
     else
         null;
-    job.gateway_team = if (borrowed_job.gateway_team) |gateway_team|
-        try arena.dupe(u8, gateway_team)
-    else
-        null;
 
     var summary_accumulator = runtime_telemetry.TurnSummaryAccumulator.init(
         io_mod.milliTimestamp(),
@@ -4054,7 +4031,6 @@ fn activeCredentialLease(
         .secret_bytes = secret_value,
         .source = job.credential_source,
         .account_id = job.account_id,
-        .tenant_context = job.gateway_team,
     } };
 }
 
@@ -4943,7 +4919,7 @@ fn processQueuedPromptLoop(
                 try deps.push_text(deps.ctx, .{ .operational = "\n" });
             }
             last_gateway_message_count = gateway_instructions.items.len + request_messages.len;
-            var provider_opts = try model_capabilities.resolveUltrafastProviderOptions(request_capabilities, job.provider, gateway_model, config.effort, route_fast_mode, config.ultrafast_mode);
+            var provider_opts = try model_capabilities.resolveUltrafastProviderOptions(request_capabilities, config.effort, route_fast_mode, config.ultrafast_mode);
             provider_opts.prompt_caching = config.provider_capabilities.gateway_prompt_caching;
             provider_opts.provider_order = config.provider_order;
             provider_opts.provider_strict = config.provider_strict;
@@ -5086,9 +5062,8 @@ fn processQueuedPromptLoop(
                         .api_key = active_api_key,
                         .credential_source = job.credential_source,
                         .account_id = job.account_id,
-                        .gateway_team = job.gateway_team,
                         .session_id = lifecycle.scope.session_id,
-                        .retry_count = config.gateway_retry_count,
+                        .retry_count = 3,
                         .provider_options = request_data.provider_options,
                         .max_output_tokens = request_data.max_output_tokens,
                         .capabilities_context = deps.ctx,
@@ -5202,29 +5177,6 @@ fn processQueuedPromptLoop(
             runtime_assistant_stream.pushTokenProgressUpdate(&stream_ctx, .changed) catch |progress_err| {
                 debug_trace.logf("agent", "token progress publication failed source=gateway_prepare err={s}", .{@errorName(progress_err)});
             };
-            if (job.provider == .gateway) {
-                try persistRecoveryCheckpoint(
-                    deps,
-                    finalization,
-                    job,
-                    within_turn_suffix.items,
-                    stream_ctx.interruption_source_or(""),
-                    gateway_model,
-                    selected_fast_mode,
-                    route_fast_mode,
-                    semantic_limit,
-                    semantic_attempt,
-                    true,
-                    recovery_cause,
-                    recovery_strategy,
-                    effectiveRecoveryToolEvidence(
-                        preserved_tool_evidence,
-                        null,
-                        &stream_ctx,
-                    ),
-                    step_ctx,
-                );
-            }
 
             const gateway_wait_started_ms = io_mod.milliTimestamp();
             var gateway_delivery = runtime_gateway_step.DeliveryCertainty.init();
@@ -5244,13 +5196,12 @@ fn processQueuedPromptLoop(
                 else
                     .{ .direct = .{
                         .secret_bytes = active_api_key,
-                        .source = job.credential_source orelse .ai_gateway_api_key,
+                        .source = job.credential_source orelse .configured,
                         .account_id = job.account_id,
-                        .tenant_context = job.gateway_team,
                     } },
                 .session_id = lifecycle.scope.session_id,
                 .model = gateway_model,
-                .retry_count = config.gateway_retry_count,
+                .retry_count = 3,
                 .instructions = request_data.instructions,
                 .messages = request_data.messages,
                 .tools = request_data.tools,
@@ -5880,9 +5831,7 @@ fn processQueuedPromptLoop(
                 );
             }
             const settled_attempts = semantic_attempt + 1;
-            if (job.provider == .gateway or
-                response_failure == null or response_failure.?.kind != .unauthorized)
-            {
+            if (response_failure == null or response_failure.?.kind != .unauthorized) {
                 try persistRecoveryCheckpoint(
                     deps,
                     finalization,
@@ -7219,7 +7168,7 @@ fn processQueuedPromptLoop(
                             .tool_name = "vision",
                             .message = runtime_vision_contracts.native_route_unavailable_message,
                             .suggestion = if (request_capabilities.image_input_support == .native or
-                                (request_capabilities.image_input_support == .unknown and job.provider != .gateway))
+                                request_capabilities.image_input_support == .unknown)
                                 "Continue using the model's native image input without Vision."
                             else
                                 "Continue without Vision.",

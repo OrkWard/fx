@@ -26,7 +26,6 @@ const render_engine = @import("../render_engine.zig");
 const render_request = @import("../render_request.zig");
 const transcript_runtime = @import("../transcript/runtime.zig");
 
-const activity_overlay = render_engine.activity_overlay;
 const StreamState = types.StreamState;
 const ActivityProjection = activity_runtime.ActivityProjection;
 const InputRuntime = core_input_runtime.Runtime;
@@ -316,7 +315,6 @@ pub const RenderContext = struct {
     model_completion_window_start: usize = 0,
     model_completion_anchor: usize = 0,
     provider_query_active: bool = false,
-    provider_picker_stage: picker_state.ProviderPickerStage = .provider,
     provider_picker_completions: []const []const u8 = &.{},
     /// Parallel to `provider_picker_completions`; an empty entry renders no annotation.
     provider_picker_annotations: []const []const u8 = &.{},
@@ -480,53 +478,6 @@ pub fn steeringBannerRows(ctx: RenderContext, width: u16) u16 {
 pub fn transientActivityGapRows(shell: *const TranscriptRuntime, tool_before_activity: bool) u16 {
     if (tool_before_activity) return 0;
     return shell.transientAssistantGapRows();
-}
-
-pub fn activityOverlayInput(
-    shell: *TranscriptRuntime,
-    projection: ActivityProjection,
-    place_mid_line_active: bool,
-    cursor_row: u16,
-    cursor_col: u16,
-    footer_top_for_extra: u16,
-) activity_overlay.Input {
-    const entry_bound_active = switch (projection) {
-        .tool_slot => true,
-        .none, .turn_thinking => false,
-    };
-    const active_label_present = switch (projection) {
-        .turn_thinking => true,
-        .tool_slot => |slot| slot.thinking_label != null,
-        .none => false,
-    };
-    const tool_before_activity = switch (projection) {
-        .tool_slot => |slot| slot.thinking_label != null,
-        .none, .turn_thinking => false,
-    };
-    const stream_active = switch (projection) {
-        .tool_slot => |slot| slot.active,
-        .none, .turn_thinking => false,
-    };
-    const placement_cursor_col = if (entry_bound_active and stream_active and cursor_col == 1)
-        2
-    else
-        cursor_col;
-    return .{
-        .active_label_present = active_label_present,
-        .activity_rows = activityProjectionRows(projection, shell.layout.cols),
-        .tool_before_activity = tool_before_activity,
-        .cursor_row = cursor_row,
-        .cursor_col = placement_cursor_col,
-        .transient_gap_rows = transientActivityGapRows(shell, tool_before_activity),
-        .place_mid_line_active = place_mid_line_active,
-        .entry_bound_active = entry_bound_active,
-        .stream_active = stream_active,
-        .footer_top_for_extra = footer_top_for_extra,
-        .footer_clearance_rows = if (active_label_present)
-            render_engine.transcript_blocks.footerBoundaryGapRowsForTail(.turn_summary)
-        else
-            0,
-    };
 }
 
 pub fn activityProjectionRows(projection: ActivityProjection, cols: u16) u16 {

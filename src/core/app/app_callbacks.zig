@@ -24,7 +24,6 @@ const tool_presentation = @import("../tooling/tool_presentation.zig");
 const gateway_error_format = @import("../shared/gateway_error_format.zig");
 const io_mod = @import("../shared/io.zig");
 const session_codec = @import("../session/session_codec.zig");
-const subagent_tool_host = @import("../subagent/tool_host.zig");
 const subagent_model_contract = @import("../subagent/model_contract.zig");
 const result_store = @import("../session/result_store.zig");
 const tool_result_limits = @import("../tooling/tool_result_limits.zig");
@@ -246,13 +245,6 @@ pub fn Bindings(comptime App: type) type {
             return .{
                 .ctx = @ptrCast(app),
                 .resolve_fn = agentResolveModelCapabilities,
-            };
-        }
-
-        pub fn modelOverrideResolver(app: *App) subagent_tool_host.ModelOverrideResolver {
-            return .{
-                .context = @ptrCast(app),
-                .resolve_fn = resolveSubagentModelOverride,
             };
         }
 
@@ -1106,10 +1098,8 @@ pub fn Bindings(comptime App: type) type {
                     .{
                         message,
                         switch (failure.source) {
-                            .fx_login => "Run /login to repair this source.",
                             .chatgpt_subscription => "Reconnect Codex through /login to repair this source.",
                             .grok_subscription => "Reconnect Grok through /login to repair this source.",
-                            .vercel_oidc_token, .ai_gateway_api_key, .stored_key => "Run /provider to repair this source.",
                             .host_managed => credentials.host_managed_auth_message,
                             .configured => "Check the configured provider auth environment variable.",
                         },

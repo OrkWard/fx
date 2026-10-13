@@ -231,7 +231,3 @@ pub fn reset() void {
     turn_rollups = @as([turn_rollup_capacity]TurnRollup, @splat(.{}));
     turn_rollup_count = 0;
 }
-
-pub fn resetForTest() void {
-    reset();
-}

@@ -318,7 +318,6 @@ pub const ProviderInput = struct {
     credential: []const u8 = "",
     credential_source: ?types.CredentialSource = null,
     account_id: ?[]const u8 = null,
-    tenant: ?[]const u8 = null,
     endpoint: []const u8 = "",
     /// Resolved review-model override (`review_model` setting or
     /// FX_REVIEW_MODEL). Empty means the provider's compiled default.

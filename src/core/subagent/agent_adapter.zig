@@ -130,9 +130,7 @@ pub fn run(
         routed_credential = auth_runtime.prepareCredential(
             turn.alloc,
             config.tool_context.oauth_transport,
-            config.tool_context.secret_store,
             admission.provider,
-            config.tool_context.credential_source,
         ) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             turn.setFailureDiagnostic("model_credential_resolution_failed", @errorName(err));
@@ -143,7 +141,6 @@ pub fn run(
             return error.ProviderFailed;
         };
         routed_config.tool_context.api_key = credential.token;
-        routed_config.tool_context.gateway_team = credential.gatewayTeam();
         routed_config.tool_context.credential_source = credential.source;
         routed_config.tool_context.account_id = credential.accountId();
     }
@@ -195,10 +192,6 @@ pub fn run(
         .model = arena.dupe(u8, admission.model) catch return error.OutOfMemory,
         .provider = admission.provider,
         .api_key = arena.dupe(u8, routed_config.tool_context.api_key) catch return error.OutOfMemory,
-        .gateway_team = if (routed_config.tool_context.gateway_team) |team|
-            arena.dupe(u8, team) catch return error.OutOfMemory
-        else
-            null,
         .credential_source = routed_config.tool_context.credential_source,
         .account_id = if (routed_config.tool_context.account_id) |account_id|
             arena.dupe(u8, account_id) catch return error.OutOfMemory
@@ -219,8 +212,6 @@ pub fn run(
             .fast_mode = config.tool_context.fast_mode,
             .ultrafast_mode = ultrafast_mode,
             .effort = admission.effort,
-            .provider_order = if (admission.provider == .gateway) config.tool_context.provider_order else &.{},
-            .provider_strict = admission.provider == .gateway and config.tool_context.provider_strict,
         },
         .recovery_checkpoint = recovery_checkpoint,
         .recovery_source_already_presented = recovery_checkpoint != null,
@@ -270,8 +261,6 @@ pub fn run(
             .system_prompt = child_system_prompt,
             .model_prompt_overlay = config.model_prompt_overlay,
             .skill_catalog = config.skill_catalog,
-            .gateway_retry_count = config.tool_context.gateway_retry_count,
-            .gateway_chat_url = config.tool_context.gateway_chat_url,
             .advertised_tool_names = child_tool_names,
             .advertised_functions = child_functions,
             .provider_capabilities = config.provider_set.select(admission.provider).capabilities,
@@ -283,8 +272,6 @@ pub fn run(
             .fast_mode = config.tool_context.fast_mode,
             .ultrafast_mode = ultrafast_mode,
             .effort = admission.effort,
-            .provider_order = if (admission.provider == .gateway) config.tool_context.provider_order else &.{},
-            .provider_strict = admission.provider == .gateway and config.tool_context.provider_strict,
             .first_call_tool_choice = config.tool_context.first_call_tool_choice,
             .workspace_root = config.tool_context.workspace_root,
             .access_scope = config.tool_context.access_scope,
@@ -468,10 +455,6 @@ fn refreshGatewayCredential(
         !optionalCredentialFieldEqual(
             context.config.tool_context.account_id,
             refreshed.accountId(),
-        ) or
-        !optionalCredentialFieldEqual(
-            context.config.tool_context.gateway_team,
-            refreshed.gatewayTeam(),
         ))
     {
         return error.CredentialAuthorityChanged;
@@ -483,13 +466,10 @@ fn refreshGatewayCredential(
     context.refreshed_credential = refreshed;
     refreshed.token = &.{};
     refreshed.account_id = null;
-    refreshed.team_id = null;
-    refreshed.team_slug = null;
     const current = &context.refreshed_credential.?;
     context.config.tool_context.api_key = current.token;
     context.config.tool_context.credential_source = current.source;
     context.config.tool_context.account_id = current.accountId();
-    context.config.tool_context.gateway_team = current.gatewayTeam();
     return worker_token;
 }
 

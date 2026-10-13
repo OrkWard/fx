@@ -2777,27 +2777,6 @@ pub fn seedPreparedPresentationBoundary(
     prepared.projection_resume_pending_wrap = boundary.pending_wrap;
 }
 
-/// Returns allocator-owned terminal-wire bytes when boundary state or LF is
-/// present. An empty slice means the raw source slice is LF-free and wire-safe.
-pub fn prepareTranscriptDocumentAppendBytes(
-    alloc: Allocator,
-    bytes: []const u8,
-    cols: u16,
-    raw_start: usize,
-    raw_end: usize,
-    close_endpoint: bool,
-) ![]u8 {
-    if (raw_start > raw_end or raw_end > bytes.len) {
-        return error.InvalidTranscriptTransition;
-    }
-
-    var append = try prepareTranscriptDocumentAppend(alloc, bytes, cols, raw_start, raw_end, close_endpoint);
-    defer append.deinit(alloc);
-    const result = append.bytes;
-    append.bytes = &.{};
-    return result;
-}
-
 /// Owns wire bytes and the source boundary needed for a cursor-addressed append.
 pub fn prepareTranscriptDocumentAppend(
     alloc: Allocator,
@@ -3175,29 +3154,6 @@ pub fn paintPreparedTranscriptIntoSurface(
         };
     }
     return result;
-}
-
-pub fn paintTranscriptIntoSurface(
-    self: anytype,
-    alloc: Allocator,
-    surface: *frame_surface.FrameSurface,
-    batch: VisibleTranscriptBatch,
-    line_visual_rows: []const u16,
-    total_lines: usize,
-    transcript_ends_with_newline: bool,
-) !paint_plan.TranscriptPaintResult {
-    return paintTranscriptIntoSurfaceWithLimit(
-        self,
-        alloc,
-        surface,
-        batch,
-        line_visual_rows,
-        total_lines,
-        transcript_ends_with_newline,
-        null,
-        &.{},
-        null,
-    );
 }
 
 fn paintTranscriptIntoSurfaceWithLimit(

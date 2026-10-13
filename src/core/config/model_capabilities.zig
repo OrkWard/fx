@@ -162,11 +162,6 @@ pub fn reasoningEffortAtIndex(capabilities: Capabilities, index: usize) types.Re
     return capabilities.reasoning_efforts.values[(index - 1) % capabilities.reasoning_efforts.len];
 }
 
-pub fn reasoningEffortLabelAtIndex(capabilities: *const Capabilities, index: usize) []const u8 {
-    if (index == 0 or capabilities.reasoning_efforts.len == 0) return "default";
-    return capabilities.reasoning_efforts.values[(index - 1) % capabilities.reasoning_efforts.len].displayLabel();
-}
-
 pub fn reasoningEffortOptionCount(capabilities: Capabilities) usize {
     return if (capabilities.reasoning_efforts.len == 0) 0 else capabilities.reasoning_efforts.len + 1;
 }
@@ -186,22 +181,13 @@ pub fn resolveProviderOptionsForCapabilities(
     return resolved;
 }
 
-/// Ultrafast is an explicit, catalog-verified OpenAI Gateway opt-in. Unlike Fast,
-/// unsupported or unknown capabilities must not silently downgrade before sending.
+/// Ultrafast was a Vercel Gateway lane; no remaining provider offers it.
 pub fn resolveUltrafastProviderOptions(
     capabilities: Capabilities,
-    provider: model_provider.ProviderId,
-    model: []const u8,
     effort: types.ReasoningEffort,
     fast_mode: bool,
     ultrafast_mode: bool,
 ) error{UltrafastUnavailable}!ResolvedProviderOptions {
-    var options = resolveProviderOptionsForCapabilities(capabilities, effort, fast_mode);
-    if (!ultrafast_mode) return options;
-    if (provider != .gateway or !std.mem.startsWith(u8, model, "openai/") or !capabilities.supports_ultrafast_mode) {
-        return error.UltrafastUnavailable;
-    }
-    options.fast = false;
-    options.ultrafast = true;
-    return options;
+    if (ultrafast_mode) return error.UltrafastUnavailable;
+    return resolveProviderOptionsForCapabilities(capabilities, effort, fast_mode);
 }

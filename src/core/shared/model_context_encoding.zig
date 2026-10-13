@@ -32,16 +32,3 @@ pub fn writeScalar(writer: *std.Io.Writer, value: []const u8) std.Io.Writer.Erro
         index += 1;
     }
 }
-
-pub fn scalarAlloc(alloc: std.mem.Allocator, value: []const u8) ![]u8 {
-    var encoded: std.Io.Writer.Allocating = .init(alloc);
-    defer encoded.deinit();
-    try writeScalar(&encoded.writer, value);
-    return try encoded.toOwnedSlice();
-}
-
-pub fn writeJsonScalar(alloc: std.mem.Allocator, writer: *std.Io.Writer, value: []const u8) !void {
-    const encoded = try scalarAlloc(alloc, value);
-    defer alloc.free(encoded);
-    try std.json.Stringify.value(encoded, .{}, writer);
-}

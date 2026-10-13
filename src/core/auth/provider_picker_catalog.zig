@@ -1,112 +1,12 @@
 //! Column contents for the `/provider` picker.
 //!
-//! List columns hold whitespace-free tokens that are also the labels shown to
+//! The column holds whitespace-free tokens that are also the labels shown to
 //! the user, so what the picker writes into the composer is exactly what the
-//! row displays. The one exception is the API key column, whose single row is
-//! a masked entry field and never reaches the composer.
+//! row displays.
 
-const std = @import("std");
-const model_provider = @import("../config/model_provider.zig");
 const provider_catalog = @import("provider_catalog.zig");
-const types = @import("../shared/types.zig");
-
-/// How a provider is authenticated. Subscription providers expose no methods;
-/// choosing one acts directly instead of opening the method column.
-pub const Method = enum {
-    /// Browser sign-in that yields an fx login session.
-    oauth,
-    /// A pasted AI Gateway key held in the keychain or profile.
-    api_key,
-};
 
 pub const max_provider_options = provider_catalog.entries.len;
-const max_method_options = 2;
-/// The team column lists at most this many teams; accounts beyond it see the
-/// first 128 and can still change teams through the sign-in flow.
-pub const max_team_options = 128;
-pub const max_column_options = @max(max_team_options, @max(max_provider_options, max_method_options));
-
-/// The API key column shows a cursor bar and one bullet per typed byte, or a
-/// placeholder while the field is empty.
-pub const key_field_prefix = "\u{2503} ";
-pub const key_field_placeholder = "Paste or type a key";
-const key_field_bullet = "\u{2022}";
-pub const max_key_mask_glyphs: usize = 32;
-pub const max_key_field_bytes =
-    key_field_prefix.len + @max(key_field_placeholder.len, max_key_mask_glyphs * key_field_bullet.len);
-
-pub fn writeKeyField(out: *[max_key_field_bytes]u8, mask_count: usize) []const u8 {
-    @memcpy(out[0..key_field_prefix.len], key_field_prefix);
-    var end = key_field_prefix.len;
-    if (mask_count == 0) {
-        @memcpy(out[end..][0..key_field_placeholder.len], key_field_placeholder);
-        return out[0 .. end + key_field_placeholder.len];
-    }
-    for (0..@min(mask_count, max_key_mask_glyphs)) |_| {
-        @memcpy(out[end..][0..key_field_bullet.len], key_field_bullet);
-        end += key_field_bullet.len;
-    }
-    return out[0..end];
-}
-
-/// The key-source column: detected keys to switch to, or `new` to paste one.
-/// The distinction is who supplies the key, not where the secret sleeps: an
-/// `env` key may well live in a password manager the user's shell reads.
-pub const KeySource = enum {
-    /// AI_GATEWAY_API_KEY handed to fx through the environment.
-    env,
-    /// The key fx saved itself when one was pasted.
-    saved,
-    /// Paste a key fx does not have yet.
-    new,
-};
-
-pub fn keySourceSlug(source: KeySource) []const u8 {
-    return switch (source) {
-        .env => "env",
-        .saved => "saved",
-        .new => "new",
-    };
-}
-
-/// Row annotation: where the key comes from, with `current` appended when it
-/// is the active credential.
-pub fn keySourceAnnotation(source: KeySource, current: bool) []const u8 {
-    return switch (source) {
-        .env => if (current) "AI_GATEWAY_API_KEY · current" else "AI_GATEWAY_API_KEY",
-        .saved => if (current) "saved by fx · current" else "saved by fx",
-        .new => "paste a key",
-    };
-}
-
-pub fn parseKeySource(value: []const u8) ?KeySource {
-    inline for (@typeInfo(KeySource).@"enum".field_names) |field_name| {
-        const source = @field(KeySource, field_name);
-        if (std.ascii.eqlIgnoreCase(value, keySourceSlug(source))) return source;
-    }
-    return null;
-}
-
-pub fn keySourceCredential(source: KeySource) ?types.CredentialSource {
-    return switch (source) {
-        .env => .ai_gateway_api_key,
-        .saved => .stored_key,
-        .new => null,
-    };
-}
-
-pub fn methodSlug(method: Method) []const u8 {
-    return switch (method) {
-        .oauth => "oauth",
-        .api_key => "api-key",
-    };
-}
-
-pub fn parseMethod(value: []const u8) ?Method {
-    if (std.ascii.eqlIgnoreCase(value, methodSlug(.oauth))) return .oauth;
-    if (std.ascii.eqlIgnoreCase(value, methodSlug(.api_key))) return .api_key;
-    return null;
-}
 
 /// Writes the visible provider slugs into `out` and returns how many landed.
 pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
@@ -116,20 +16,4 @@ pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
         count += 1;
     }
     return count;
-}
-
-pub fn providerMethods(id: model_provider.ProviderId) []const Method {
-    return switch (id) {
-        .gateway => &.{ .oauth, .api_key },
-        .codex, .grok, .configured => &.{},
-    };
-}
-
-/// True when `source` is one of the ways `method` can be satisfied. The API key
-/// method covers every gateway key origin, not just the environment variable.
-pub fn methodMatchesSource(method: Method, source: types.CredentialSource) bool {
-    return switch (method) {
-        .oauth => source == .fx_login or source == .vercel_oidc_token,
-        .api_key => source == .ai_gateway_api_key or source == .stored_key,
-    };
 }

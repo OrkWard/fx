@@ -7,8 +7,6 @@ const app_render_runtime = @import("app_render_runtime.zig");
 const app_runtime_setup = @import("app_runtime_setup.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const app_auth_runtime = @import("app_auth_runtime.zig");
-const credentials = @import("../auth/credentials.zig");
-const oauth_transport = @import("../auth/oauth_transport.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_provider = @import("../config/model_provider.zig");
 const host = @import("../hosts/host.zig");
@@ -264,31 +262,6 @@ pub fn Runtime(comptime App: type) type {
             try writeCollapsedStartupNotice(app, "skills", skills_summary, skills_body);
         }
 
-        /// Hands a Keychain-backed launch credential to an auth worker so the
-        /// first frame does not wait for it. Resumed sessions, and launches
-        /// whose worker cannot start, resolve it inline as before. Returns
-        /// whether the credential is still pending.
-        fn beginDeferredCredential(app: *App, startup: *app_lifecycle.StartupState) !bool {
-            const request = startup.deferred_credential orelse return false;
-            startup.deferred_credential = null;
-            if (comptime @hasDecl(@TypeOf(app.auth), "beginStartupCredentialLoad")) {
-                if (app.requested_resume == null and app.auth.beginStartupCredentialLoad(request)) return true;
-            }
-            const resolution = try credentials.resolveForProvider(
-                app.alloc,
-                oauth_transport.unavailable_provider,
-                if (comptime @hasDecl(App, "secretStore")) app.secretStore() else host.unavailable_secret_store,
-                .stored,
-                request.provider,
-                request.preferred,
-            );
-            startup.credential = resolution.credential;
-            startup.credential_load_failure = resolution.failure;
-            startup.stored_key_status = resolution.stored_key_status;
-            startup.fx_login_status = resolution.fx_login_status;
-            return false;
-        }
-
         /// Writes one full-only record describing what this session assembled:
         /// provider/model/effort, system prompt size, advertised tools, skill
         /// catalog size. Live-session only; resume does
@@ -345,10 +318,6 @@ pub fn Runtime(comptime App: type) type {
                 .startup_min_body_rows = ui_render.welcome_message_reserved_rows,
                 .default_model = default_model,
                 .default_agent_step_limit = default_agent_step_limit,
-                .secret_store = if (comptime @hasDecl(App, "secretStore"))
-                    app.secretStore()
-                else
-                    host.unavailable_secret_store,
                 .auth_mode = if (comptime @hasDecl(@TypeOf(app.auth), "authMode"))
                     app.auth.authMode()
                 else
@@ -368,31 +337,25 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasDecl(App, "adoptWorkspaceAccess")) {
                 app.adoptWorkspaceAccess(startup.takeWorkspaceAccess());
             }
-            const credential_deferred = try beginDeferredCredential(app, &startup);
             if (startup.takeCredential()) |credential_value| {
                 var credential = credential_value;
                 defer credential.deinit(app.alloc);
                 _ = app.auth.adoptCredential(app.alloc, &credential);
             }
             app.auth.recordStartupStatus(
-                startup.stored_key_status,
-                startup.fx_login_status,
                 startup.credential_load_failure,
                 startup.credential_onboarding_skipped,
             );
-            // A deferred credential runs the inventory and onboarding steps
-            // when it arrives, so the first frame does not wait for them. An
-            // active credential needs no onboarding, so a fresh launch probes
+            // An active credential needs no onboarding, so a fresh launch probes
             // the other sources after its first frame.
             const can_defer_inventory = comptime @hasDecl(@TypeOf(app.auth), "deferStartupSourceInventory");
             const inventory_deferred = can_defer_inventory and
-                !credential_deferred and
                 app.requested_resume == null and
                 app.auth.view().active_source != null;
             if (comptime can_defer_inventory) {
                 if (inventory_deferred) app.auth.deferStartupSourceInventory();
             }
-            if (!credential_deferred and !inventory_deferred) {
+            if (!inventory_deferred) {
                 if (comptime @hasDecl(@TypeOf(app.auth), "refreshSourceInventory")) {
                     app.auth.refreshSourceInventory(app.alloc) catch |err| {
                         debug_trace.logf("auth", "startup source inventory refresh failed err={s}", .{@errorName(err)});
@@ -556,9 +519,7 @@ pub fn Runtime(comptime App: type) type {
             // A deferred catalog reports its discovery issues when it lands.
             if (!skills_deferred) try writeSkillDiagnosticsNotice(app);
             if (comptime @hasField(App, "auth")) {
-                if (!credential_deferred) {
-                    try app_auth_runtime.Runtime(App).writeStartupCredentialFailure(app, startup.provider, startup.credential_load_failure);
-                }
+                try app_auth_runtime.Runtime(App).writeStartupCredentialFailure(app, startup.provider, startup.credential_load_failure);
             }
             var recording = try record_tape.captureStatus(app.alloc);
             defer recording.deinit(app.alloc);

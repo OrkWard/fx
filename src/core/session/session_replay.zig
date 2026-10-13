@@ -2,7 +2,6 @@ const std = @import("std");
 const io_mod = @import("../shared/io.zig");
 const session_codec = @import("session_codec.zig");
 const session_event = @import("session_event.zig");
-const session_projection = @import("session_projection.zig");
 
 const Allocator = std.mem.Allocator;
 const Identifier = session_event.Identifier;
@@ -12,11 +11,6 @@ pub const CommitPosition = struct {
     through_seq: u64,
     through_event_id: Identifier,
     through_event_log_bytes: u64,
-};
-
-pub const RecoveryValidation = enum {
-    valid,
-    invalid,
 };
 
 pub const LineRead = struct {
@@ -76,16 +70,6 @@ pub fn readLineAt(
     max_end: u64,
 ) !?LineRead {
     return readLineAtWithCancellation(alloc, file, offset, max_end, null);
-}
-
-pub fn readLineAtCancellable(
-    alloc: Allocator,
-    file: std.Io.File,
-    offset: u64,
-    max_end: u64,
-    cancelled: *const std.atomic.Value(bool),
-) !?LineRead {
-    return readLineAtWithCancellation(alloc, file, offset, max_end, cancelled);
 }
 
 fn readLineAtWithCancellation(
@@ -192,42 +176,6 @@ fn decodeSessionStarted(alloc: Allocator, bytes: []const u8) !session_event.Enve
     return envelope;
 }
 
-pub fn scanCommitPosition(
-    alloc: Allocator,
-    file: std.Io.File,
-    position: CommitPosition,
-) !session_projection.EventBoundary {
-    var state = try replayBoundary(alloc, file, position);
-    state.deinit(alloc);
-    return eventBoundary(position);
-}
-
-pub fn validateCommitPositionForRecovery(
-    alloc: Allocator,
-    file: std.Io.File,
-    position: CommitPosition,
-) !RecoveryValidation {
-    var state = replayBoundaryRaw(alloc, file, position) catch |err| switch (err) {
-        error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
-        error.OutOfMemory, error.ReadFailed => return err,
-        else => return .invalid,
-    };
-    state.deinit(alloc);
-    return .valid;
-}
-
-pub fn replayBoundary(
-    alloc: Allocator,
-    file: std.Io.File,
-    position: CommitPosition,
-) !session_codec.DurableSessionState {
-    return replayBoundaryRaw(alloc, file, position) catch |err| switch (err) {
-        error.OutOfMemory, error.ReadFailed => return err,
-        error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
-        else => return error.InvalidSessionFormat,
-    };
-}
-
 /// Owns `state`; callers must call `deinit` or transfer it with `takeState`.
 pub const ExactReplay = struct {
     state: session_codec.DurableSessionState,
@@ -251,23 +199,6 @@ inline fn failExactReplay(err: anytype) @TypeOf(err)!ExactReplay {
 
 noinline fn failExactReplayDynamic(err: anyerror) anyerror!ExactReplay {
     return err;
-}
-
-pub fn replayExactPosition(
-    alloc: Allocator,
-    file: std.Io.File,
-    expected_generation: Identifier,
-    expected_seq: u64,
-    expected_bytes: u64,
-) !ExactReplay {
-    return replayPosition(
-        alloc,
-        file,
-        expected_generation,
-        expected_seq,
-        expected_bytes,
-        true,
-    );
 }
 
 /// Replays an explicitly committed prefix while ignoring later bytes. This is
@@ -340,133 +271,5 @@ fn replayPosition(
             .through_event_id = through.event_id,
             .through_event_log_bytes = through.byte_offset,
         },
-    };
-}
-
-pub fn replayFromCheckpoint(
-    alloc: Allocator,
-    file: std.Io.File,
-    checkpoint: CommitPosition,
-    state: session_codec.DurableSessionState,
-    position: CommitPosition,
-) !session_codec.DurableSessionState {
-    return replayRangeRaw(
-        alloc,
-        file,
-        checkpoint,
-        state,
-        position,
-    ) catch |err| switch (err) {
-        error.OutOfMemory, error.ReadFailed => return err,
-        error.UnsupportedEventSchema => return error.UnsupportedSessionSchema,
-        else => return error.InvalidSessionFormat,
-    };
-}
-
-fn replayBoundaryRaw(
-    alloc: Allocator,
-    file: std.Io.File,
-    position: CommitPosition,
-) !session_codec.DurableSessionState {
-    return replayRangeRaw(alloc, file, null, null, position);
-}
-
-fn replayRangeRaw(
-    alloc: Allocator,
-    file: std.Io.File,
-    checkpoint: ?CommitPosition,
-    initial: ?session_codec.DurableSessionState,
-    position: CommitPosition,
-) !session_codec.DurableSessionState {
-    var owned_initial = initial;
-    errdefer if (owned_initial) |*state| state.deinit(alloc);
-    if ((checkpoint == null) != (owned_initial == null) or
-        position.through_event_log_bytes == 0)
-    {
-        return error.InvalidSessionFormat;
-    }
-    const start_bytes: u64 = if (checkpoint) |start| start.through_event_log_bytes else 0;
-    if (checkpoint) |start| {
-        if (!std.mem.eql(u8, &start.log_generation, &position.log_generation) or
-            start.through_seq > position.through_seq or
-            start.through_event_log_bytes > position.through_event_log_bytes)
-        {
-            return error.InvalidSessionFormat;
-        }
-        if (start.through_seq == position.through_seq) {
-            if (start.through_event_log_bytes != position.through_event_log_bytes or
-                !std.mem.eql(u8, &start.through_event_id, &position.through_event_id))
-            {
-                return error.InvalidSessionFormat;
-            }
-            const state = owned_initial.?;
-            owned_initial = null;
-            return state;
-        }
-    }
-    const length = try file.length(io_mod.getIo());
-    if (length < position.through_event_log_bytes) return error.InvalidSessionFormat;
-
-    var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(io_mod.getIo(), &file_buffer);
-    if (start_bytes > 0) try file_reader.seekTo(start_bytes);
-    var limit_buffer: [4096]u8 = undefined;
-    var limited = file_reader.interface.limited(
-        .limited64(position.through_event_log_bytes - start_bytes),
-        &limit_buffer,
-    );
-    const start = if (checkpoint) |boundary|
-        session_event.ReductionStart{
-            .generation = boundary.log_generation,
-            .next_seq = std.math.add(u64, boundary.through_seq, 1) catch
-                return error.InvalidSessionFormat,
-        }
-    else
-        session_event.ReductionStart{};
-    const moved_initial = owned_initial;
-    owned_initial = null;
-    var reduction = try session_event.reduceJsonlFrom(
-        alloc,
-        &limited.interface,
-        moved_initial,
-        start,
-    );
-    errdefer reduction.deinit(alloc);
-    if (reduction.truncate_from != null or
-        reduction.bytes_consumed != position.through_event_log_bytes - start_bytes)
-    {
-        return error.InvalidSessionFormat;
-    }
-    const through = if (reduction.through) |boundary|
-        session_projection.EventBoundary{
-            .log_generation = boundary.log_generation,
-            .seq = boundary.seq,
-            .event_id = boundary.event_id,
-            .event_log_bytes = start_bytes + boundary.byte_offset,
-            .semantic = true,
-        }
-    else if (checkpoint) |boundary|
-        eventBoundary(boundary)
-    else
-        return error.InvalidSessionFormat;
-    if (through.seq != position.through_seq or
-        through.event_log_bytes != position.through_event_log_bytes or
-        !std.mem.eql(u8, &through.log_generation, &position.log_generation) or
-        !std.mem.eql(u8, &through.event_id, &position.through_event_id))
-    {
-        return error.InvalidSessionFormat;
-    }
-    const state = reduction.state;
-    reduction.state = undefined;
-    return state;
-}
-
-fn eventBoundary(position: CommitPosition) session_projection.EventBoundary {
-    return .{
-        .log_generation = position.log_generation,
-        .seq = position.through_seq,
-        .event_id = position.through_event_id,
-        .event_log_bytes = position.through_event_log_bytes,
-        .semantic = true,
     };
 }

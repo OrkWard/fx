@@ -90,10 +90,6 @@ pub const UserSettingsPatch = struct {
     model_preference: ?ModelPreferencePatch = null,
     provider: ?model_provider.ProviderId = null,
     permission_mode: ?types.PermissionMode = null,
-    credential_source: ?types.CredentialSource = null,
-    /// Removes the key entirely so resolution returns to plain precedence.
-    /// Distinct from a null `credential_source`, which means "leave unchanged".
-    clear_credential_source: bool = false,
     yolo_acknowledged: ?bool = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
@@ -113,8 +109,6 @@ pub const UserSettingsPatch = struct {
         return self.model_preference == null and
             self.provider == null and
             self.permission_mode == null and
-            self.credential_source == null and
-            !self.clear_credential_source and
             self.yolo_acknowledged == null and
             self.effort == null and
             self.fast_mode == null and
@@ -923,11 +917,6 @@ fn applyUserPatchToRoot(
     }
     if (patch.provider) |value| application.changed = try putString(arena, &root.object, "provider", value.label()) or application.changed;
     if (patch.permission_mode) |value| application.changed = try putString(arena, &root.object, "permission_mode", @tagName(value)) or application.changed;
-    if (patch.credential_source) |value| application.changed = try putString(arena, &root.object, "credential_source", @tagName(value)) or application.changed;
-    if (patch.clear_credential_source and root.object.contains("credential_source")) {
-        _ = root.object.orderedRemove("credential_source");
-        application.changed = true;
-    }
     if (patch.yolo_acknowledged) |value| application.changed = try putBool(arena, &root.object, "yolo_acknowledged", value) or application.changed;
     if (patch.effort) |value| application.changed = try putString(arena, &root.object, "effort", value.label()) or application.changed;
     if (patch.fast_mode) |value| application.changed = try putBool(arena, &root.object, "fast_mode", value) or application.changed;
@@ -1035,7 +1024,7 @@ fn cleanupLegacyWorkspacePreferences(
             &entry.value_ptr.object,
             "model",
             .model,
-            patch.model_preference != null and patch.model_preference.?.provider == .gateway,
+            false,
             application,
         );
         removeLegacyLeaf(
@@ -1436,7 +1425,6 @@ fn putModelPreference(
     const provider_key = if (preference.provider == .configured) try arena.dupe(u8, preference.provider.label()) else preference.provider.label();
     changed = try putString(arena, models, provider_key, preference.model) or changed;
     const legacy_key = switch (preference.provider) {
-        .gateway => "model",
         .codex => "codex_model",
         .grok => "grok_model",
         .configured => return changed,
@@ -1697,11 +1685,6 @@ fn validateKnownSettingsObject(
     }
     if (object.get("theme")) |value| {
         if (value != .string) return error.InvalidSettingsFormat;
-    }
-    if (object.get("credential_source")) |value| {
-        if (value != .string or types.parseCredentialSource(value.string) == null) {
-            return error.InvalidSettingsFormat;
-        }
     }
     if (object.get("max_agent_steps")) |value| {
         if (value != .integer or value.integer < 0) return error.InvalidSettingsFormat;

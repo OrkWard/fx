@@ -11,7 +11,6 @@ const block_render = @import("presentation/block_render.zig");
 /// Prevents OSC 8 hyperlinks from coalescing across wrapped terminal rows.
 var link_id_counter: u32 = 1;
 
-pub const setInlineCodeTheme = ansi.setInlineCodeTheme;
 pub const applyTheme = ansi.applyTheme;
 pub const writeHorizontalRule = ansi.writeHorizontalRule;
 
@@ -77,10 +76,6 @@ pub const Event = union(enum) {
 pub const renderCodeBlockPayload = block_render.renderCodeBlockPayload;
 pub const renderTablePayload = block_render.renderTablePayload;
 pub const writeTableHeaderCell = block_render.writeTableHeaderCell;
-
-pub fn parseTablePayload(alloc: Allocator, buf: []const u8) !payload.TablePayload {
-    return block_render.parseTablePayload(alloc, buf, &link_id_counter);
-}
 
 const isPipeLine = bp.isPipeLine;
 

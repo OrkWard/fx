@@ -15,18 +15,6 @@ pub fn addDirectoryIdentityAlloc(
     return canonicalExistingDirectory(alloc, primary_directory, input_path);
 }
 
-/// Returns an owned identity for a stored directory. Existing directories use
-/// their real path; unavailable directories use their normalized absolute path.
-/// The caller frees it with the allocator passed here.
-pub fn storedDirectoryIdentityAlloc(
-    alloc: Allocator,
-    primary_directory: []const u8,
-    input_path: []const u8,
-) Error![]u8 {
-    const resolved = try resolveSavedDirectory(alloc, primary_directory, input_path);
-    return resolved.path;
-}
-
 pub const Error = Allocator.Error || error{
     InvalidPath,
     PathNotFound,

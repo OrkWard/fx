@@ -406,25 +406,6 @@ pub fn prefixStructuralRows(alloc: Allocator, bytes: []const u8, gutter: u16) ![
     return out.toOwnedSlice(alloc);
 }
 
-pub fn wrapTranscriptAssistantTextInterruptible(
-    alloc: Allocator,
-    text: []const u8,
-    cols: u16,
-    checkpoint: ?*build_checkpoint.BuildCheckpoint,
-) ![]u8 {
-    return wrapAssistantTextWithBaseGutter(
-        alloc,
-        text,
-        cols,
-        gutterWidth(cols),
-        true,
-        false,
-        checkpoint,
-        null,
-        null,
-    );
-}
-
 /// `bytes` is owned by the caller. `finalized_prefix_bytes` ends after the
 /// last source hard newline and excludes soft wraps from the unfinished line.
 pub const TranscriptAssistantWrap = struct {
@@ -515,12 +496,6 @@ pub fn retentionSourceMap(alloc: Allocator, text: []const u8, cols: u16) !Retent
     return map;
 }
 
-pub fn retentionSourceRows(alloc: Allocator, text: []const u8, cols: u16) ![]usize {
-    var map = try retentionSourceMap(alloc, text, cols);
-    defer map.deinit(alloc);
-    return map.rows.toOwnedSlice(alloc);
-}
-
 /// Reflow canonical command output as literal terminal text. Every physical
 /// row owns its gutter; Markdown continuation markers are deliberately not
 /// interpreted, and tabs advance to the terminal's absolute eight-column
@@ -543,18 +518,6 @@ pub fn wrapLiteralCommandOutput(
         null,
         null,
     );
-}
-
-/// Reflows literal tool detail with the three-cell rail used by Ctrl-O.
-pub fn wrapLiteralToolOutput(
-    alloc: Allocator,
-    text: []const u8,
-    cols: u16,
-) ![]u8 {
-    return wrapLiteralToolOutputInterruptible(alloc, text, cols, null) catch |err| switch (err) {
-        error.InputPending => unreachable,
-        else => |other| return other,
-    };
 }
 
 pub fn wrapLiteralToolOutputInterruptible(

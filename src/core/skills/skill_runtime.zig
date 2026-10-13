@@ -209,11 +209,6 @@ pub const SkillResolution = union(enum) {
     name_location_mismatch,
 };
 
-pub const SkillSummaryStyles = struct {
-    source_label_style: []const u8 = "",
-    reset_style: []const u8 = "",
-};
-
 pub const SkillSource = skill_contract.SkillSource;
 
 pub const SkillMenuSourceFilter = enum {
@@ -1058,13 +1053,6 @@ fn appendSkillDiagnostic(
     };
 }
 
-pub fn findSkillByName(skills: []const Skill, name: []const u8) ?Skill {
-    for (skills) |skill| {
-        if (std.mem.eql(u8, skill.name, name)) return skill;
-    }
-    return null;
-}
-
 pub fn resolveSkill(skills: []const Skill, name: []const u8, location: ?[]const u8) SkillResolution {
     if (location) |exact_location| {
         for (skills, 0..) |skill, index| {
@@ -1086,25 +1074,6 @@ pub fn resolveSkill(skills: []const Skill, name: []const u8, location: ?[]const 
 
 pub fn isManagedInstallSkill(skill: Skill) bool {
     return skill.source == .global_fx;
-}
-
-pub fn skillGroupLabel(source: SkillSource) []const u8 {
-    return switch (source) {
-        .global_fx => "Managed installs",
-        .workspace_fx => "Workspace skills",
-        .workspace_shared => "Workspace skills",
-        .workspace_opencode,
-        .workspace_codex,
-        .workspace_claude,
-        .workspace_agents,
-        .workspace_claw,
-        .global_opencode,
-        .global_codex,
-        .global_claude,
-        .global_agents,
-        .global_claw,
-        => "Compatibility roots",
-    };
 }
 
 pub fn skillGroupRank(source: SkillSource) usize {
@@ -1231,10 +1200,6 @@ pub fn skillMenuDisplayIndexForActualQuery(skills: []const Skill, filter: SkillM
         if (entry.actual_index == wanted_actual_index) return entry.display_index;
     }
     return null;
-}
-
-pub fn skillMenuSkillAt(skills: []const Skill, filter: SkillMenuSourceFilter, display_index: usize) ?Skill {
-    return skillMenuSkillAtQuery(skills, filter, "", display_index);
 }
 
 pub fn skillMenuSkillAtQuery(skills: []const Skill, filter: SkillMenuSourceFilter, query: []const u8, display_index: usize) ?Skill {
@@ -2672,18 +2637,6 @@ pub const ExplicitSelection = union(enum) {
     ambiguous: []const u8,
 };
 
-pub fn matchExplicitSkillIndices(alloc: Allocator, prompt: []const u8, skills: []const Skill) ![]usize {
-    const selections = try collectExplicitSkillSelections(alloc, prompt, skills);
-    defer alloc.free(selections);
-    var indices: std.ArrayList(usize) = .empty;
-    defer indices.deinit(alloc);
-    for (selections) |selection| switch (selection) {
-        .skill => |index| try indices.append(alloc, index),
-        .ambiguous => {},
-    };
-    return indices.toOwnedSlice(alloc);
-}
-
 /// Returned names borrow the catalog; the caller owns only the selection slice.
 pub fn collectExplicitSkillSelections(alloc: Allocator, prompt: []const u8, skills: []const Skill) ![]ExplicitSelection {
     var selections: std.ArrayList(ExplicitSelection) = .empty;
@@ -2951,56 +2904,6 @@ fn normalizeReferenceText(alloc: Allocator, text: []const u8) ![]u8 {
     }
     if (out.items.len > 0 and out.items[out.items.len - 1] == ' ') _ = out.pop();
     return try out.toOwnedSlice(alloc);
-}
-
-pub fn listSkillsSummary(alloc: Allocator, skills: []const Skill) ![]u8 {
-    return listSkillsSummaryStyled(alloc, skills, .{});
-}
-
-pub fn listSkillsSummaryStyled(alloc: Allocator, skills: []const Skill, styles: SkillSummaryStyles) ![]u8 {
-    if (skills.len == 0) {
-        return alloc.dupe(u8, "No skills available.\n");
-    }
-
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-
-    const group_order = [_][]const u8{
-        "Managed installs",
-        "Workspace skills",
-        "Compatibility roots",
-    };
-
-    try out.writer.print("Visible skills ({d}):\n", .{skills.len});
-    for (group_order) |group| {
-        var count: usize = 0;
-        for (skills) |skill| {
-            if (std.mem.eql(u8, skillGroupLabel(skill.source), group)) count += 1;
-        }
-        if (count == 0) continue;
-
-        try out.writer.print("\n{s} ({d}):\n", .{ group, count });
-        for (skills) |skill| {
-            if (!std.mem.eql(u8, skillGroupLabel(skill.source), group)) continue;
-            if (skill.description.len > 0) {
-                try out.writer.print("  - {s}: {s} ", .{ skill.name, skill.description });
-            } else {
-                try out.writer.print("  - {s} ", .{skill.name});
-            }
-            try writeStyledSourceLabel(&out.writer, styles, skillSourceLabel(skill.source));
-            try out.writer.writeByte('\n');
-        }
-    }
-
-    return try out.toOwnedSlice();
-}
-
-fn writeStyledSourceLabel(writer: *std.Io.Writer, styles: SkillSummaryStyles, label: []const u8) !void {
-    if (styles.source_label_style.len == 0) {
-        try writer.print("[{s}]", .{label});
-        return;
-    }
-    try writer.print("{s}[{s}]{s}", .{ styles.source_label_style, label, styles.reset_style });
 }
 
 /// Borrows skill paths until the returned section is released.

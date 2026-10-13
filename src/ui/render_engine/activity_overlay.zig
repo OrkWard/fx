@@ -133,13 +133,3 @@ pub fn resolve(input: Input) ActivityPlacement {
 
     return .none;
 }
-
-pub fn suppressEntryOverlayForBanner(activity: *ActivityPlacement, banner_active: bool) void {
-    if (!banner_active) return;
-    switch (activity.*) {
-        .overlay_entry => {
-            activity.* = .none;
-        },
-        .none, .transient_row => {},
-    }
-}
