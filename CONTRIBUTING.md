@@ -39,21 +39,18 @@ zig build run
 
 Keep the local development loop focused: run the narrowest test that covers the changed path, build fx, and exercise the change using `./zig-out/bin/fx`. The installed `fx` on `PATH` is not valid development evidence.
 
-Once the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. **CI** runs the complete deterministic suite on Linux x86_64, which is the gate for every change. It checks formatting, the PGSO corpus, the public surface, and the compactor boundary, runs the ReleaseSafe unit tests, and builds fx once for the E2E jobs. Four duration-balanced E2E shards use checked-in weights to assign every Bun test file once, and files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one retry after tmux is reset, and a file that passes only on retry gets a warning annotation.
+Once the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. **CI** runs on Linux x86_64, which is the gate for every change. It checks formatting, the public surface, and the compactor boundary, runs the ReleaseSafe unit tests, and builds and smoke-tests fx.
 
-macOS checks run only when a change can behave differently on macOS: a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, an E2E file listed in `tests/e2e/macos-platform-tests.json`, or a shared E2E helper that reads the platform. Add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>` to request them for any other change. The `macOS arm64` check passes without a macOS runner when the change does not need one.
+macOS checks run only when a change can behave differently on macOS: a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, or the macOS checks themselves. Add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>` to request them for any other change. The `macOS arm64` check passes without a macOS runner when the change does not need one.
 
-Do not mark the draft PR ready until `Build & Test`, `E2E (deterministic)`, `Shellcheck`, `Startup Latency`, `macOS arm64`, and the final ship gate have succeeded for the exact current commit. A result from an older commit does not count. Live model evals are separate from this gate because they require credentials and are not deterministic.
-
-The PGSO pipeline runs locally; its pinned toolchain, local reproduction command, corpus exclusions, and failure rules are documented in [`scripts/pgso/README.md`](scripts/pgso/README.md).
+Do not mark the draft PR ready until `Build & Test`, `Shellcheck`, `Startup Latency`, `macOS arm64`, and the final ship gate have succeeded for the exact current commit. A result from an older commit does not count.
 
 Every pull request also receives informational ReleaseSafe binary-size
 comparisons for Linux x86_64, Linux arm64, macOS x86_64, and macOS arm64. Each
 comparison builds the pull request merge commit and base commit on the same
 native runner, reports exact file and ELF or Mach-O section deltas, and emits a
 warning at increases of 52,429 bytes (0.050000 MiB) or more. The warning requests
-investigation but does not replace the full PGSO release gate or reject a valid
-feature solely for adding code. The same jobs smoke-test each release-style
+investigation but does not reject a valid feature solely for adding code. The same jobs smoke-test each release-style
 binary; the Linux arm64 and macOS binaries run nowhere else on a pull request.
 
 ## Pull Requests
@@ -76,7 +73,7 @@ Every PR must carry exactly one label that describes its primary intent:
 
 If you can manage labels on `vercel-labs/fx`, which takes triage access or higher, apply the label when you open the PR. For a mixed PR, choose the label that best describes why the PR exists. If you contribute from outside the organization, you cannot add labels and do not need to: a maintainer applies the label during review, so open your PR and mark it ready as usual. Keep the title as a clean imperative sentence and do not add bracketed type prefixes such as `[bug]` or `[improvement]`.
 
-Requesting extra CI also needs access: the `ci:macos` label takes triage access, and `gh workflow run` takes write access. If you need the macOS checks, a PGSO run, or another on-request run and cannot start it yourself, ask in your PR and a maintainer will start it.
+Requesting extra CI also needs access: the `ci:macos` label takes triage access, and `gh workflow run` takes write access. If you need the macOS checks or another on-request run and cannot start it yourself, ask in your PR and a maintainer will start it.
 
 If an AI coding agent writes any of your contribution's prose, including the PR title and description, commit messages, documentation, and issues, it must use the `technical-writer` skill in `.fx/skills/technical-writer/`.
 
@@ -105,22 +102,8 @@ Before adding a new feature, answer these first:
 3. Does it need persistence?
 4. Does it need both text and JSON output?
 5. What docs and tests land with it?
-6. How is its deterministic E2E owner classified for macOS arm64 PGSO?
 
 If that is unclear, stop and define it first.
-
-### PGSO corpus ownership
-
-Classify every root `tests/e2e/*.test.ts` file in
-`scripts/pgso/corpus.json`. Put common or performance-sensitive behavior in
-training. Put important correctness, recovery, security, and rare behavior in
-verification-only. Exclude only nondeterministic, live-network, credentialed,
-sound-related, or harness-only coverage, and record the reason.
-
-Tests added to an existing file inherit its classification. Reconsider that
-classification when a feature changes the file's product role, and remove stale
-entries when deleting a feature or E2E owner. Normal PR CI rejects missing,
-duplicate, stale, and unclassified files without running the full PGSO gate.
 
 ## Configuration and State
 
@@ -171,19 +154,13 @@ persistence, and explicit refresh. The web bridge contract is fixed to
 `https://fx.sh/api/slack/install/config`, `/api/slack/install`, and
 `/api/slack/oauth/callback`.
 
-Build with `zig build`, then run `cd tests/e2e && bun test slack-install.test.ts`.
-The fixture exercises the freshly built binary and real loopback sockets without
-live Slack credentials. `FX_E2E_SLACK_ORIGIN` accepts only an HTTP `127.0.0.1`
+`FX_E2E_SLACK_ORIGIN` accepts only an HTTP `127.0.0.1`
 origin with a non-privileged port, serving public metadata plus mocked
 `/api/oauth.v2.access` and `/api/auth.test` responses. Production uses pinned
 Slack endpoints. Local records bind to the bridge origin to prevent fixture
 commands from refreshing production credentials. `FX_NO_OPEN_BROWSER=1` prints
 the start URL for headless operation; authorization still requires a browser on
 the same computer as the listener.
-
-This E2E owner is verification-only in the PGSO corpus because it covers a rare
-workspace setup operation and security boundaries. Live Slack authorization and
-message attribution are not deterministic tests.
 
 ## Permissions and Auto Mode
 
@@ -243,31 +220,16 @@ test "my resize scenario" {
 
 Add it to `src/ui/resize_tests.zig`. See the file header for what each Harness method does.
 
-### tmux end-to-end test (real SIGWINCH, seconds per test)
-
-For bugs that only show up with a real terminal and a real signal (timing, input integration, terminal-emulator quirks), add a scenario to `tests/e2e/tui-resize.test.ts` using the helpers in `tmux-helpers.ts`:
-
-```typescript
-test("my scenario", async () => {
-    session = await TmuxSession.create({ width: 120, height: 40 });
-    await session.waitForText(">", 10_000);
-    await session.resizeWindow(80, 30);
-    const grid = await session.capturePaneGrid();
-    expect(findFooter(grid)).not.toBeNull();
-}, 30_000);
-```
-
 ### Tape-based test (replay a real capture)
 
 For bugs reported by a user, have them run the built binary with an exact
 `FX_RECORD=<path>`, or use `FX_DEBUG_RECORD=1` for an automatic private tape.
 `FX_DEBUG_RECORD_SILENT_BANNER=1` hides the developer-only startup notice from
-the inline transcript without disabling capture; Ctrl+O still shows it. Drop
-the tape in `tests/e2e/tapes/<name>.fxtape` and assert against the built replay
-command:
+the inline transcript without disabling capture; Ctrl+O still shows it. Assert
+against the built replay command:
 
 ```bash
-./zig-out/bin/fx replay tests/e2e/tapes/my-bug.fxtape --golden tests/e2e/tapes/my-bug.txt
+./zig-out/bin/fx replay my-bug.fxtape --golden my-bug.txt
 ```
 
 Check in the golden file and wire a regression test that re-runs `fx replay` in CI and diffs.

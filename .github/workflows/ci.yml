@@ -38,9 +38,6 @@ jobs:
       - name: Check formatting
         run: zig fmt --check src/
 
-      - name: Validate PGSO corpus classification
-        run: python3 -m scripts.pgso.corpus --manifest scripts/pgso/corpus.json --list
-
       - name: Audit public surface
         run: ./scripts/check-public-surface.sh
 
@@ -48,7 +45,7 @@ jobs:
         run: ./scripts/check-compactor-boundary.sh
 
       - name: Test CI and release scripts
-        run: python3 -m unittest scripts.tests.test_macos_signing scripts.tests.test_signed_macos scripts.tests.test_detect_macos_need -q
+        run: python3 -m unittest scripts.tests.test_macos_signing scripts.tests.test_detect_macos_need -q
 
       - name: Build
         run: zig build -Doptimize=${{ matrix.optimize }}
@@ -106,150 +103,11 @@ jobs:
       - name: Smoke test fresh binary
         run: scripts/smoke-binary.sh zig-out/bin/fx
 
-      - name: Share the binary with E2E jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: fx-linux-x86_64
-          path: zig-out/bin/fx
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Save Zig cache
         uses: ./.github/actions/save-zig-cache
         with:
           cache-key: ${{ steps.zig.outputs.cache-key }}
           cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
-  e2e_mode:
-    name: E2E (deterministic, shard ${{ matrix.shard.label }})
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard:
-          - index: 0
-            label: "1/4"
-          - index: 1
-            label: "2/4"
-          - index: 2
-            label: "3/4"
-          - index: 3
-            label: "4/4"
-    env:
-      AI_GATEWAY_API_KEY: ""
-      VERCEL_OIDC_TOKEN: ""
-      FX_REQUIRE_TMUX: "1"
-      SHARD_INDEX: ${{ matrix.shard.index }}
-      SHARD_COUNT: 4
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download fx
-        uses: actions/download-artifact@v4
-        with:
-          name: fx-linux-x86_64
-          path: zig-out/bin
-
-      - name: Restore executable mode
-        run: chmod +x zig-out/bin/fx
-
-      # Some E2E files build their own Zig fixtures.
-      - name: Setup Zig
-        id: zig
-        uses: ./.github/actions/setup-zig
-        with:
-          version: "0.17.0"
-          cache-key: ci-e2e-fixtures
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
-
-      - name: Install E2E system dependencies
-        timeout-minutes: 17
-        run: |
-          missing=()
-          command -v tmux >/dev/null 2>&1 || missing+=(tmux)
-          command -v zsh >/dev/null 2>&1 || missing+=(zsh)
-          if [ "${#missing[@]}" -gt 0 ]; then
-            retry() {
-              local attempt
-              for attempt in 1 2; do
-                if "$@"; then
-                  return 0
-                fi
-                if [ "$attempt" -lt 2 ]; then
-                  printf 'Dependency install attempt %s failed; retrying in 5s\n' "$attempt" >&2
-                  sleep 5
-                fi
-              done
-              return 1
-            }
-            # The Azure mirror can stall after APT has already fetched release
-            # metadata from the direct Ubuntu fallback. Prefer that fallback
-            # for the whole update when the runner's mirror list provides it.
-            if [ -f /etc/apt/apt-mirrors.txt ] &&
-              grep -Eq '^https?://(archive|ports)\.ubuntu\.com/' /etc/apt/apt-mirrors.txt
-            then
-              sudo sed -i '/:\/\/azure\..*ubuntu\.com\//d' /etc/apt/apt-mirrors.txt
-            fi
-            retry sudo timeout --kill-after=15s 4m apt-get \
-              -o Acquire::Retries=3 \
-              -o Acquire::http::Timeout=30 \
-              -o Acquire::https::Timeout=30 \
-              update
-            retry sudo timeout --kill-after=15s 3m apt-get \
-              -o Dpkg::Use-Pty=0 \
-              install -y "${missing[@]}"
-          fi
-          printf 'set-option -g history-limit 100000\n' > "$HOME/.tmux.conf"
-          tmux -V
-          zsh --version
-
-      - name: Install E2E dependencies
-        run: bun install --frozen-lockfile
-        working-directory: tests/e2e
-
-      - name: Run deterministic E2E shard
-        working-directory: tests/e2e
-        run: |
-          selected=()
-          selection_file="$RUNNER_TEMP/fx-e2e-shard-${SHARD_INDEX}.txt"
-          bun ci-shards.ts \
-            --shard-count "$SHARD_COUNT" \
-            --shard-index "$SHARD_INDEX" > "$selection_file"
-          while IFS= read -r test_file; do
-            selected+=("$test_file")
-          done < "$selection_file"
-
-          test "${#selected[@]}" -gt 0
-          printf 'Running E2E shard %s/%s (%s files):\n' "$((SHARD_INDEX + 1))" "$SHARD_COUNT" "${#selected[@]}"
-          printf '  %s\n' "${selected[@]}"
-          ./ci-run-files.sh "${selected[@]}"
-
-      - name: Save Zig cache
-        if: matrix.shard.index == 0
-        uses: ./.github/actions/save-zig-cache
-        with:
-          cache-key: ${{ steps.zig.outputs.cache-key }}
-          cache-hit: ${{ steps.zig.outputs.cache-hit }}
-
-  e2e:
-    name: E2E (deterministic)
-    if: ${{ always() }}
-    needs: [e2e_mode]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every shard
-        env:
-          SHARD_RESULT: ${{ needs.e2e_mode.result }}
-        run: |
-          test "$SHARD_RESULT" = success
 
   lint-scripts:
     name: Shellcheck
@@ -265,7 +123,6 @@ jobs:
             scripts/check-public-surface.sh
             scripts/detect-macos-need.sh
             scripts/smoke-binary.sh
-            tests/e2e/ci-run-files.sh
           )
           # bash -n parses only its first argument, so check each script.
           for script in "${scripts[@]}"; do

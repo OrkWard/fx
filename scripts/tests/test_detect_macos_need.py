@@ -9,7 +9,6 @@ import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "detect-macos-need.sh"
-PLATFORM_LIST = "tests/e2e/macos-platform-tests.json"
 
 
 class DetectMacosNeedTests(unittest.TestCase):
@@ -27,7 +26,6 @@ class DetectMacosNeedTests(unittest.TestCase):
             "GIT_COMMITTER_EMAIL": "test@example.com",
         }
         self.git("init", "-q")
-        self.write(PLATFORM_LIST, '["listed.test.ts"]\n')
         self.write("src/plain.zig", "pub fn plain() void {}\n")
         self.write("src/mac.zig", "if (builtin.os.tag == .macos) {}\n")
         self.write("README.md", "fx\n")
@@ -88,7 +86,6 @@ class DetectMacosNeedTests(unittest.TestCase):
         self.write("src/plain.zig", "pub fn plain() u8 { return 1; }\n")
         self.write("src/windows.zig", "if (builtin.os.tag == .windows) {} else {}\n")
         self.write("src/linux_target.zig", "const name = .linux_x64;\n")
-        self.write("tests/e2e/unlisted.test.ts", "test\n")
         self.commit("head")
 
         self.assert_not_needed()
@@ -145,44 +142,12 @@ class DetectMacosNeedTests(unittest.TestCase):
         for path in (
             "scripts/detect-macos-need.sh",
             "scripts/smoke-binary.sh",
-            "tests/e2e/ci-run-files.sh",
-            "tests/e2e/ci-shards.ts",
         ):
             with self.subTest(path=path):
                 self.write(path, f"# {path}\n")
                 self.commit(path)
                 self.assertIn(path, self.assert_needed())
                 self.base = self.git("rev-parse", "HEAD")
-
-    def test_listed_platform_test_needs_macos_and_nested_paths_do_not(self) -> None:
-        self.write("tests/e2e/listed.test.ts", "test\n")
-        self.commit("listed")
-        self.assertIn("listed.test.ts", self.assert_needed())
-        self.base = self.git("rev-parse", "HEAD")
-
-        self.write("tests/e2e/fixtures/listed.test.ts", "fixture\n")
-        self.commit("nested")
-        self.assert_not_needed()
-
-    def test_shared_e2e_helper_with_platform_branch_needs_macos(self) -> None:
-        self.write("tests/e2e/helper.ts", 'const mac = process.platform === "darwin";\n')
-        self.commit("helper")
-        self.assertIn("tests/e2e/helper.ts", self.assert_needed())
-        self.base = self.git("rev-parse", "HEAD")
-
-        self.write("tests/e2e/helper.ts", "const mac = false;\n")
-        self.commit("remove branch")
-        self.assertIn("tests/e2e/helper.ts", self.assert_needed())
-        self.base = self.git("rev-parse", "HEAD")
-
-        self.write("tests/e2e/os-helper.ts", 'const linux = platform() === "linux";\n')
-        self.commit("node:os helper")
-        self.assertIn("tests/e2e/os-helper.ts", self.assert_needed())
-        self.base = self.git("rev-parse", "HEAD")
-
-        self.write("tests/e2e/plain.ts", "export const value = 1;\n")
-        self.commit("plain helper")
-        self.assert_not_needed()
 
     def test_requests_force_the_checks(self) -> None:
         self.assertIn("ci:macos label", self.assert_needed(MACOS_REQUESTED="ci:macos label"))
@@ -193,15 +158,6 @@ class DetectMacosNeedTests(unittest.TestCase):
         self.assertNotEqual(0, code, text)
         self.assertEqual({}, outputs)
         self.assertIn("cannot read revision", text)
-
-    def test_missing_platform_list_fails_instead_of_skipping(self) -> None:
-        (self.root / PLATFORM_LIST).unlink()
-
-        code, outputs, text = self.detect()
-
-        self.assertNotEqual(0, code, text)
-        self.assertEqual({}, outputs)
-        self.assertIn("not a JSON array", text)
 
 
 if __name__ == "__main__":

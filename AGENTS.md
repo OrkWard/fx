@@ -41,8 +41,6 @@ zig build run      # build and run
 zig fmt src/       # format all source files
 ```
 
-The test suites under `tests/` use Bun but are separate from the Zig codebase. See **Testing** below.
-
 ## Code Style
 
 * Format all Zig source with `zig fmt` before committing. The canonical check is `zig fmt src/`.
@@ -84,28 +82,8 @@ Before implementing, answer in order:
 3. Does it need persistence?
 4. Does it need both text and JSON output?
 5. What docs and tests land with it?
-6. How is its deterministic E2E owner classified in the macOS arm64 PGSO corpus?
 
 If unclear, define the contract first.
-
-Every root `tests/e2e/*.test.ts` file must have exactly one classification in
-`scripts/pgso/corpus.json`:
-
-* **Training:** common or performance-sensitive product behavior that should
-  influence LLVM's hot and cold decisions
-
-* **Verification-only:** important correctness, recovery, security, or rare
-  behavior that the final candidate must pass without making it hot
-
-* **Intentional exclusion:** nondeterministic, live-network, credentialed,
-  sound-related, or harness-only coverage, with a concrete reason
-
-New tests inside an already classified file inherit that file's classification,
-but feature work must reconsider whether the existing classification still
-matches the file's product role. When removing a feature or E2E owner, remove
-its stale corpus entry. Normal PR CI loads the corpus and rejects missing,
-duplicate, stale, or unclassified files without running the expensive PGSO
-qualification.
 
 ### Adding a Command
 
@@ -246,31 +224,6 @@ fx does not use declarations that Zig 0.17 deprecates. They still compile, so ch
 
 * Back `std.testing.checkAllAllocationFailures`, hand-written `FailingAllocator` sweeps, and allocation-count comparisons with `testing_allocator.no_resize` from `src/core/shared/testing_allocator.zig`. `std.testing.allocator` may grow an allocation in place on one run and not the next, which changes the allocation sequence and makes those tests flaky.
 
-## Testing (TypeScript)
-
-Two test suites live under `tests/`, both using Bun:
-
-### `tests/evals/` — LLM Evals
-
-Eval scenarios that exercise the agent through `fx ask --json`. Require `AI_GATEWAY_API_KEY`.
-
-```bash
-cd tests/evals && bun install && bun test           # run all evals
-cd tests/evals && bun run eval:matrix               # cross-model matrix run
-```
-
-### `tests/e2e/` — End-to-End Tests
-
-Deterministic runtime tests (CLI commands, TUI via tmux). No API key needed for most.
-
-```bash
-cd tests/e2e && bun install && bun test              # run all e2e tests
-cd tests/e2e && bun test cli.test.ts                 # just CLI tests
-cd tests/e2e && bun test tui-*.test.ts               # just TUI tests (requires tmux)
-```
-
-TUI tests use tmux to drive the interactive terminal. They require `tmux` to be installed.
-
 ## Pull Request Classification
 
 Every pull request must have exactly one `type:` label before it merges, chosen by its primary intent:
@@ -299,29 +252,19 @@ Do not run the complete deterministic test suite locally as the default developm
 
 After the focused checks pass, create a clean checkpoint commit, push the non-`main` feature branch, and open a draft PR immediately. Linux is the gate for every change because most fx behavior is identical on every platform:
 
-* `.github/workflows/ci.yml` runs on Linux x86_64. It checks formatting, the PGSO corpus, the public surface, and the compactor boundary, then runs the ReleaseSafe unit tests. It builds fx once, smoke-tests it, and shares that binary with four duration-balanced E2E shards. Checked-in weights assign every E2E file to exactly one shard, and files inside each shard run sequentially in separate Bun processes so terminal fixtures and process state cannot leak between files. A failed file receives one retry after its tmux server is reset. A file that passes only on retry gets a warning annotation; investigate it as a possible race. `Build & Test` passes only when the unit tests pass.
+* `.github/workflows/ci.yml` runs on Linux x86_64. It checks formatting, the public surface, and the compactor boundary, runs the ReleaseSafe unit tests, then builds fx and smoke-tests it.
 * `.github/workflows/binary-size.yml` builds each release target on its native runner, reports the size change, and smoke-tests every target's binary. See **Binary Size Observability**.
 * `.github/workflows/bench.yml` enforces the startup latency budget. See **Benchmarks**.
 
 Linux jobs install Zig through `.github/actions/setup-zig`, which restores the Zig cache that runs on `main` save with `.github/actions/save-zig-cache`. Pull requests never save a Zig cache through these actions, so they cannot push `main`'s entries out of the repository's cache quota.
 
-macOS runs only when a change can behave differently there. `.github/workflows/macos.yml` uses `scripts/detect-macos-need.sh` to check the diff. The macOS arm64 unit tests and the E2E files in `tests/e2e/macos-platform-tests.json` run when the change touches a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, a listed E2E file, a shared E2E helper that reads the platform, or the macOS checks themselves. A Linux-only branch counts because macOS takes its other path; a Windows-only branch does not. The listed E2E files run in two weighted shards that share one macOS build. If the detector cannot read the change, the `macOS arm64` check fails instead of passing. To request macOS for any other change, add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>`. The label needs triage access and the dispatch needs write access, so an outside contributor asks in the PR and a maintainer starts the run. When the change does not need macOS, the `macOS arm64` check passes without starting a macOS runner. Every E2E file that branches on `process.platform` or `platform()` being `darwin` or `linux` must appear in `tests/e2e/macos-platform-tests.json`, and `tests/e2e/ci-shards.test.ts` enforces that.
+macOS runs only when a change can behave differently there. `.github/workflows/macos.yml` uses `scripts/detect-macos-need.sh` to check the diff. The macOS arm64 unit tests and build run when the change touches a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, or the macOS checks themselves. A Linux-only branch counts because macOS takes its other path; a Windows-only branch does not. If the detector cannot read the change, the `macOS arm64` check fails instead of passing. To request macOS for any other change, add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>`. The label needs triage access and the dispatch needs write access, so an outside contributor asks in the PR and a maintainer starts the run. When the change does not need macOS, the `macOS arm64` check passes without starting a macOS runner.
 
-Live model evals need credentials and are not deterministic, so they run only on request.
-
-A CI result is valid only when it belongs to the exact current commit and `Build & Test`, `E2E (deterministic)`, `Shellcheck`, `Startup Latency`, and `macOS arm64` all succeed. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
+A CI result is valid only when it belongs to the exact current commit and `Build & Test`, `Shellcheck`, `Startup Latency`, and `macOS arm64` all succeed. Do not mark the draft PR ready or request review from a stale, partial, queued, cancelled, skipped, or failed run. If CI fails, make the smallest repair, rerun the focused local proof, push the new commit to the same draft PR, and wait for CI on the new exact commit. After CI passes, run the final ship gate and mark the PR ready only when it reports `SHIP` for that exact commit.
 
 ## Reproducing Render Bugs
 
-fx's rendering is inline by default and deliberately emits a small ANSI subset. Three owner classes are the narrow exceptions, and each takes the alternate buffer exclusively through `AlternateScreenOwner` in `src/ui/shell_runtime.zig`: interactive permission review, the full-transcript screen, and catalog menus. Only one class may own the buffer at a time, and each must leave it and restore the main grid, composer, cursor, paste, mouse, focus, and keyboard modes when it closes. Transcript rendering, question prompts, command-output expansion, and subagent delegation remain inline. Three tools exist for reproducing and regression-proofing render bugs:
-
-### tmux (live TTY repros)
-
-Best for resize and SIGWINCH interactions. The helper in `tests/e2e/tmux-helpers.ts` exposes `resizeWindow(cols, rows)`, `capturePaneGrid()`, and `capturePaneEscapes()`. See `tests/e2e/tui-resize.test.ts` for the canonical resize matrix.
-
-```bash
-cd tests/e2e && bun test tui-resize.test.ts
-```
+fx's rendering is inline by default and deliberately emits a small ANSI subset. Three owner classes are the narrow exceptions, and each takes the alternate buffer exclusively through `AlternateScreenOwner` in `src/ui/shell_runtime.zig`: interactive permission review, the full-transcript screen, and catalog menus. Only one class may own the buffer at a time, and each must leave it and restore the main grid, composer, cursor, paste, mouse, focus, and keyboard modes when it closes. Transcript rendering, question prompts, command-output expansion, and subagent delegation remain inline. Two tools exist for reproducing and regression-proofing render bugs:
 
 ### Debug terminal recording and replay
 
@@ -398,9 +341,7 @@ else on a pull request.
 Each platform check is informational. An increase of at least 52,429 bytes
 (0.050000 MiB) emits a warning and retains that platform's binaries for
 investigation, but does not reject the pull request. Investigate notable
-unexplained growth before changing the threshold. The full macOS arm64 PGSO
-release qualification remains authoritative for the 7.800 MiB production
-ceiling and performance gates.
+unexplained growth before changing the threshold.
 
 ## Documentation
 

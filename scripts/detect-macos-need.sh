@@ -5,9 +5,7 @@
 #
 # macOS runs only when a change touches behavior that can differ on macOS: a
 # Zig file with a macOS, BSD, or Linux code path before or after the change,
-# build.zig, the macOS signing script, an E2E file listed
-# in tests/e2e/macos-platform-tests.json, a shared E2E helper that reads the
-# platform before or after the change, or the macOS checks themselves. A Linux
+# build.zig, the macOS signing script, or the macOS checks themselves. A Linux
 # branch counts because macOS takes its other path. A Windows-only branch does
 # not, because macOS and Linux share its other path. Set MACOS_REQUESTED to a
 # reason to force the checks.
@@ -25,7 +23,6 @@ fi
 
 base="$1"
 head="$2"
-platform_list=tests/e2e/macos-platform-tests.json
 
 needed=false
 reasons=()
@@ -43,12 +40,6 @@ has_platform_code() {
 }
 
 zig_platform_code='\.linux([^A-Za-z0-9_]|$)|isBSD|\.macos|isDarwin|[Dd]arwin'
-ts_platform_code='process\.platform|platform\(\)'
-
-if ! jq -e 'type == "array"' "$platform_list" >/dev/null 2>&1; then
-  printf 'error: %s is missing or not a JSON array; the macOS check cannot decide\n' "$platform_list" >&2
-  exit 1
-fi
 
 for revision in "$base" "$head"; do
   if ! git rev-parse --verify --quiet "$revision^{commit}" >/dev/null; then
@@ -62,10 +53,6 @@ if ! changed_files="$(git diff --name-only --no-renames "$base" "$head")"; then
   exit 1
 fi
 
-is_platform_test() {
-  jq -e --arg file "$1" 'index($file) != null' "$platform_list" >/dev/null
-}
-
 if [ -n "${MACOS_REQUESTED:-}" ]; then
   require "$MACOS_REQUESTED"
 fi
@@ -73,7 +60,7 @@ fi
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
-    .github/workflows/macos.yml | scripts/detect-macos-need.sh | scripts/smoke-binary.sh | tests/e2e/ci-run-files.sh | tests/e2e/ci-shards.ts | "$platform_list")
+    .github/workflows/macos.yml | scripts/detect-macos-need.sh | scripts/smoke-binary.sh)
       require "$path: the macOS checks changed" ;;
     build.zig | build.zig.zon)
       require "$path: build configuration changed" ;;
@@ -82,15 +69,6 @@ while IFS= read -r path; do
     *.zig)
       if has_platform_code "$path" "$zig_platform_code"; then
         require "$path: has a macOS or Linux code path"
-      fi ;;
-    tests/e2e/*.test.ts)
-      name="${path#tests/e2e/}"
-      if [[ "$name" != */* ]] && is_platform_test "$name"; then
-        require "$path: macOS platform E2E file changed"
-      fi ;;
-    tests/e2e/*.ts)
-      if has_platform_code "$path" "$ts_platform_code"; then
-        require "$path: shared E2E helper has a platform branch"
       fi ;;
   esac
 done <<<"$changed_files"

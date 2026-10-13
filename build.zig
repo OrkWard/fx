@@ -2,21 +2,9 @@ const std = @import("std");
 
 const UpdateChannel = enum { stable, dev };
 
-const PgsoArtifact = enum {
-    fx,
-    file_index,
-    ui_activity,
-    approval_review,
-};
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const pgso_artifact = b.option(
-        PgsoArtifact,
-        "pgso-artifact",
-        "Emit ReleaseSafe LLVM bitcode for one PGO/PGSO artifact",
-    );
 
     const git_commit = readGitCommit(b);
     const app_version = readAppVersion(b);
@@ -206,35 +194,6 @@ pub fn build(b: *std.Build) void {
     test_approval_review_bench_step.dependOn(
         &run_approval_review_bench_tests.step,
     );
-
-    const pgso_ir_step = b.step(
-        "pgso-ir",
-        "Emit selected ReleaseSafe LLVM bitcode for PGO/PGSO qualification",
-    );
-    if (pgso_artifact) |artifact| {
-        const selected: *std.Build.Step.Compile = switch (artifact) {
-            .fx => exe,
-            .file_index => file_index_bench,
-            .ui_activity => ui_activity_bench,
-            .approval_review => approval_review_bench,
-        };
-        const output_name = switch (artifact) {
-            .fx => "pgso/fx.bc",
-            .file_index => "pgso/file-index.bc",
-            .ui_activity => "pgso/ui-activity.bc",
-            .approval_review => "pgso/approval-review.bc",
-        };
-        const install_ir = b.addInstallFile(
-            selected.getEmittedLlvmBc(),
-            output_name,
-        );
-        pgso_ir_step.dependOn(&install_ir.step);
-    } else {
-        const missing_artifact = b.addFail(
-            "pgso-ir requires -Dpgso-artifact",
-        );
-        pgso_ir_step.dependOn(&missing_artifact.step);
-    }
 }
 
 fn readGitCommit(b: *std.Build) []const u8 {

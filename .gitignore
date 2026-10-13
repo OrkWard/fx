@@ -2,7 +2,6 @@
 
 # Dependencies
 node_modules/
-bun.lock
 .next/
 
 # Zig build output and fetched packages

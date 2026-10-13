@@ -101,7 +101,7 @@ zig build
 
 Test your changes with the freshly built `./zig-out/bin/fx`. A bare `fx` may be an older copy on your `PATH`.
 
-`zig build test` runs the unit tests, which sit next to the code they cover. The end-to-end tests in [`tests/e2e/`](tests/e2e) drive the built binary through tmux and need [Bun](https://bun.sh).
+`zig build test` runs the unit tests, which sit next to the code they cover.
 
 The source is laid out like this:
 
@@ -112,7 +112,6 @@ src/
   tools/      built-in tools: files, shell, web, skills, subagents
   ui/         terminal rendering and input
   gateway/    model provider transport
-tests/        end-to-end tests and model evals
 benchmarks/   startup, memory, and latency benchmarks
 ```
 
