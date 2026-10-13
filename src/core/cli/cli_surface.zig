@@ -31,7 +31,6 @@ const output_contracts = @import("../output/output_contracts.zig");
 const prompt_policy = @import("../config/prompt_policy.zig");
 const session_codec = @import("../session/session_codec.zig");
 const session_store = @import("../session/session_store.zig");
-const session_adapter = @import("../session/session_adapter.zig");
 const subagent_resume_admission = @import("../subagent/resume_admission.zig");
 const usage_report = @import("../session/usage_report.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
@@ -89,7 +88,6 @@ const ResumeInvocation = struct {
 
 const resume_id_alias_prefix = "--resume-";
 pub const upgrade_relaunch_arg = "--upgrade-relaunch";
-pub const sessions_v2_arg = "--sessions-v2";
 
 pub const UpgradeRelaunch = struct {
     previous_revision: ?[]u8 = null,
@@ -130,8 +128,6 @@ pub const LaunchModifiers = struct {
     ultrafast_override: ?bool = null,
     provider_order_override: ?[][]const u8 = null,
     provider_strict_override: ?bool = null,
-    /// `--sessions-v2`: keep this process's sessions in the v2 store.
-    sessions_v2: bool = false,
 
     pub fn deinit(self: *LaunchModifiers, alloc: Allocator) void {
         if (self.context_limit_overrides.len > 0) alloc.free(self.context_limit_overrides);
@@ -394,14 +390,11 @@ fn parseGlobalLaunchArgs(
     var provider_order_override: ?[][]const u8 = null;
     errdefer if (provider_order_override) |order| freeProviderOrderOverride(alloc, order);
     var provider_strict_override: ?bool = null;
-    var sessions_v2 = false;
 
     var index: usize = 0;
     while (index < args.len) {
         const arg = args[index];
-        if (std.mem.eql(u8, arg, sessions_v2_arg)) {
-            sessions_v2 = true;
-        } else if (std.mem.eql(u8, arg, "--context-limit")) {
+        if (std.mem.eql(u8, arg, "--context-limit")) {
             index += 1;
             if (index >= args.len) return error.MissingContextLimitValue;
             try overrides.append(alloc, try config_runtime.context_limits.parseOverride(args[index]));
@@ -493,7 +486,6 @@ fn parseGlobalLaunchArgs(
             .ultrafast_override = ultrafast_override,
             .provider_order_override = provider_order_override,
             .provider_strict_override = provider_strict_override,
-            .sessions_v2 = sessions_v2,
         },
     };
 }
@@ -531,8 +523,7 @@ pub fn argsAfterGlobalLaunchArgs(args: []const [:0]const u8) []const [:0]const u
             !std.mem.eql(u8, arg, "--ultrafast") and
             !std.mem.eql(u8, arg, "--no-ultrafast") and
             !std.mem.eql(u8, arg, "--provider-strict") and
-            !std.mem.eql(u8, arg, "--no-provider-strict") and
-            !std.mem.eql(u8, arg, sessions_v2_arg))
+            !std.mem.eql(u8, arg, "--no-provider-strict"))
         {
             return args[index..];
         }
@@ -1049,7 +1040,6 @@ fn runNonInteractiveWithDeps(
     const global_args = &parsed_launch.global_args;
     const effective_args = parsed_launch.effective_args;
     const parsed_command = parsed_launch.command;
-    const sessions_v2 = session_adapter.enabled(global_args.modifiers.sessions_v2);
 
     if (global_args.modifiers.hasWorkspaceModifiers() and
         !commandSupportsWorkspaceModifiers(parsed_command))
@@ -1467,7 +1457,6 @@ fn runNonInteractiveWithDeps(
                 cfg.secret_store,
                 cfg.default_model,
                 cfg.default_agent_step_limit,
-                sessions_v2,
             );
             defer snapshot.deinit(alloc);
 
@@ -1500,7 +1489,6 @@ fn runNonInteractiveWithDeps(
                     return .handled_failure;
                 };
                 defer recovery.deinit(alloc);
-                if (sessions_v2) return runSessionRecoveryV2(alloc, deps, recovery);
 
                 const workspace_root = try io_mod.realpathAlloc(alloc, ".");
                 defer alloc.free(workspace_root);
@@ -1542,10 +1530,6 @@ fn runNonInteractiveWithDeps(
                     return .handled_failure;
                 };
                 defer migration.deinit(alloc);
-                if (sessions_v2) {
-                    try writeLookupFailure(alloc, deps, "session", error.SessionMigrationUnavailable, migration.format);
-                    return .handled_failure;
-                }
 
                 const workspace_root = try io_mod.realpathAlloc(alloc, ".");
                 defer alloc.free(workspace_root);
@@ -1583,7 +1567,6 @@ fn runNonInteractiveWithDeps(
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .session, "session", error.InvalidSessionDetailArgs, rest);
                 return .handled_failure;
             };
-            if (sessions_v2) return runSessionDetailV2(alloc, deps, target, opts.format);
 
             const workspace_root = try io_mod.realpathAlloc(alloc, ".");
             defer alloc.free(workspace_root);
@@ -1632,7 +1615,6 @@ fn runNonInteractiveWithDeps(
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .sessions, "sessions", err, rest);
                 return .handled_failure;
             };
-            if (sessions_v2) return runSessionListV2(alloc, deps, opts);
 
             const workspace_root = try io_mod.realpathAlloc(alloc, ".");
             defer alloc.free(workspace_root);
@@ -2572,92 +2554,6 @@ fn writeSessionRecovery(
     return if (result.status == .recovered) .handled_success else .handled_failure;
 }
 
-/// `fx sessions` on v2: the page v1 shows, from the v2 catalog.
-fn runSessionListV2(alloc: Allocator, deps: RunDeps, opts: SessionListOptions) !RunResult {
-    var store = session_adapter.Store.openFromEnv(alloc) catch |err| {
-        try writeLookupFailure(alloc, deps, "sessions", session_adapter.commandError(err), opts.format);
-        return .handled_failure;
-    };
-    defer store.deinit(alloc);
-    const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    defer alloc.free(workspace_root);
-    const scope: ?[]const u8 = switch (opts.scope) {
-        .current_workspace => workspace_root,
-        .all_workspaces => null,
-    };
-    var page = session_adapter.listPage(&store, alloc, scope, opts.continuation, opts.limit) catch |err| {
-        try writeLookupFailure(alloc, deps, "sessions", session_adapter.commandError(err), opts.format);
-        return .handled_failure;
-    };
-    defer page.deinit(alloc);
-    return writeSessionList(alloc, deps, page, opts);
-}
-
-/// `fx session last|{id}` on v2, read without the session's lock (D37).
-fn runSessionDetailV2(
-    alloc: Allocator,
-    deps: RunDeps,
-    target: SessionDetailTarget,
-    format: output_contracts.OutputFormat,
-) !RunResult {
-    var store = session_adapter.Store.openFromEnv(alloc) catch |err| {
-        try writeLookupFailure(alloc, deps, "session", session_adapter.commandError(err), format);
-        return .handled_failure;
-    };
-    defer store.deinit(alloc);
-    switch (target) {
-        .last => {
-            const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-            defer alloc.free(workspace_root);
-            var page = session_adapter.listPage(&store, alloc, workspace_root, null, 1) catch |err| {
-                try writeLookupFailure(alloc, deps, "session", session_adapter.commandError(err), format);
-                return .handled_failure;
-            };
-            defer page.deinit(alloc);
-            if (page.summaries.items.len == 0) {
-                try writeLookupFailure(alloc, deps, "session", error.NoSavedSessions, format);
-                return .handled_failure;
-            }
-            return writeSessionSummary(alloc, deps, page.summaries.items[0], format);
-        },
-        .id => |id| {
-            var resumed = session_adapter.readSession(&store, alloc, id) catch |err| {
-                try writeSessionDetailFailure(alloc, deps, id, session_adapter.commandError(err), format);
-                return .handled_failure;
-            };
-            defer resumed.deinit(alloc);
-            return writeSessionDetail(alloc, deps, resumed.state, format);
-        },
-    }
-}
-
-/// `fx session recover` on v2 (D15): a copy up to the last good turn.
-fn runSessionRecoveryV2(alloc: Allocator, deps: RunDeps, recovery: SessionRecoveryOptions) !RunResult {
-    var store = session_adapter.Store.openFromEnv(alloc) catch |err| {
-        try writeLookupFailure(alloc, deps, "session", session_adapter.commandError(err), recovery.format);
-        return .handled_failure;
-    };
-    defer store.deinit(alloc);
-    var recovered = session_adapter.recover(&store, alloc, recovery.session_id) catch |err| {
-        try writeLookupFailure(alloc, deps, "session", session_adapter.commandError(err), recovery.format);
-        return .handled_failure;
-    };
-    defer recovered.deinit(alloc);
-    const source_id = try alloc.dupe(u8, recovery.session_id);
-    const recovered_id = alloc.dupe(u8, recovered.id) catch |err| {
-        alloc.free(source_id);
-        return err;
-    };
-    var result: session_store.SessionRecoveryResult = .{
-        .source_session_id = source_id,
-        .recovered_session_id = recovered_id,
-        .history_len = recovered.history_len,
-        .status = if (recovered.files_complete) .recovered else .recovered_with_unverified_artifacts,
-    };
-    defer result.deinit(alloc);
-    return writeSessionRecovery(alloc, deps, result, recovery.format);
-}
-
 fn writeLookupFailure(
     alloc: Allocator,
     deps: RunDeps,
@@ -2678,9 +2574,6 @@ fn writeLookupFailure(
         },
         error.SessionNotFound => {
             try writeStderr(deps, "fx session: record not found\n");
-        },
-        error.SessionMigrationUnavailable => {
-            try writeStderr(deps, "fx session: session migrate converts v1 sessions and is not available with sessions v2 yet\n");
         },
         error.InvalidSessionFormat,
         error.InvalidPermissionState,
@@ -2861,7 +2754,6 @@ fn lookupFailureMessage(err: anyerror) ?[]const u8 {
         error.NoSavedSessions => "no saved sessions for this workspace",
         error.NoReadableSessions => "saved sessions are unreadable; run `fx doctor` for recovery guidance",
         error.SessionNotFound => "record not found",
-        error.SessionMigrationUnavailable => "session migrate converts v1 sessions and is not available with sessions v2 yet",
         error.InvalidSessionFormat,
         error.InvalidPermissionState,
         error.PermissionStateTooLarge,
@@ -3055,7 +2947,6 @@ fn workflowConfigWithLaunchModifiers(
     result.context_limit_overrides = modifiers.context_limit_overrides;
     result.additional_directories = modifiers.additional_directories;
     result.saved_directories_suppressed = modifiers.saved_directories_suppressed;
-    result.sessions_v2 = modifiers.sessions_v2;
     return result;
 }
 

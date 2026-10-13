@@ -3819,35 +3819,6 @@ noinline fn pausedRequiredAction(
         .continue_later;
 }
 
-/// Hands the model's tool calls to `append_turn_piece` before any of them
-/// runs (D28). Execution memory holds only finished exchanges, so the calls
-/// travel apart, in the form a finished step saves them, with the text of
-/// the message that issued them, the newest one (D51).
-fn appendRunningToolCalls(
-    deps: *const AgentRuntimeDeps,
-    finalization: *const TurnFinalizationGuard,
-    job: QueuedPrompt,
-    current_turn_messages: []const ChatMessage,
-    calls: []const types.ToolCall,
-) !void {
-    const append = deps.append_turn_piece orelse return;
-    if (calls.len == 0) return;
-    var scratch = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-    defer mem_utils.deinit_arena(scratch);
-    const arena = scratch.allocator();
-    const execution = try runtime_execution_memory.buildExecutionMemory(arena, current_turn_messages);
-    const running = try arena.alloc(types.ToolCall, calls.len);
-    for (calls, running) |call, *saved| saved.* = try execution_memory_helpers.dupePersistedToolCall(arena, call);
-    const issuing = current_turn_messages[current_turn_messages.len - 1];
-    std.debug.assert(issuing.role == .assistant and issuing.tool_calls.len == calls.len);
-    try append(deps.ctx, .{
-        .user = .{ .text = @constCast(job.prompt), .images = job.images },
-        .execution = try finalization.compacted_execution.project(arena, execution),
-        .running_calls = running,
-        .running_assistant = issuing.content,
-    });
-}
-
 fn persistRecoveryCheckpoint(
     deps: *const AgentRuntimeDeps,
     finalization: *const TurnFinalizationGuard,
@@ -3865,7 +3836,7 @@ fn persistRecoveryCheckpoint(
     tool_evidence: model_response_recovery.ToolEvidence,
     trace_ctx: TraceContext,
 ) !void {
-    if (deps.recovery_checkpoint == null and deps.append_turn_piece == null) return;
+    if (deps.recovery_checkpoint == null) return;
     // Every sink copies or serializes the borrowed checkpoint synchronously.
     // Retaining these full-history reconstructions in the turn arena is quadratic.
     var scratch = std.heap.ArenaAllocator.init(std.heap.c_allocator);
@@ -3877,8 +3848,6 @@ fn persistRecoveryCheckpoint(
     );
     const projected = try finalization.compacted_execution.project(arena, execution);
     const user: types.UserTurn = .{ .text = @constCast(job.prompt), .images = job.images };
-    // Every completed piece reaches the session before the next request.
-    if (deps.append_turn_piece) |append| try append(deps.ctx, .{ .user = user, .execution = projected });
     const effect = deps.recovery_checkpoint orelse return;
     try effect.set(deps.ctx, .{
         .turn_id = job.turn_id,
@@ -4030,73 +3999,6 @@ test "recovery checkpoints do not accumulate temporary history copies in the tur
     try std.testing.expectError(error.CheckpointWriteFailed, persistRecoveryCheckpoint(&deps, &finalization, fixture.job(), messages.items, "cancelled", "model", false, false, 10, 1, false, .transport_interrupted, .pause, .confirmed, .{}));
     try std.testing.expectEqual(retained_bytes, turn.queryCapacity());
     try std.testing.expectEqual(@as(usize, 1000), sink.checkpoint.?.execution.tool_steps.len);
-}
-
-test "running tool calls reach append_turn_piece before they run" {
-    const support = @import("tests/support.zig");
-    const Sink = struct {
-        appends: usize = 0,
-        finished_steps: usize = 0,
-        running: std.ArrayList([]u8) = .empty,
-        running_text: ?[]u8 = null,
-
-        fn append(raw: *anyopaque, progress: runtime_deps.TurnProgress) !void {
-            const self: *@This() = @ptrCast(@alignCast(raw));
-            self.appends += 1;
-            self.finished_steps = progress.execution.tool_steps.len;
-            if (self.running_text) |text| std.testing.allocator.free(text);
-            self.running_text = if (progress.running_assistant) |text| try std.testing.allocator.dupe(u8, text) else null;
-            for (progress.running_calls) |call| {
-                try self.running.append(std.testing.allocator, try std.testing.allocator.dupe(u8, call.id));
-            }
-        }
-    };
-    var sink: Sink = .{};
-    defer {
-        for (sink.running.items) |id| std.testing.allocator.free(id);
-        sink.running.deinit(std.testing.allocator);
-        if (sink.running_text) |text| std.testing.allocator.free(text);
-    }
-    var fake = support.FakeAgentRuntimeDeps.init(std.testing.allocator);
-    defer fake.deinit();
-    var deps = fake.deps();
-    var fixture: support.PromptFixture = .{};
-    var finalization = TurnFinalizationGuard.init(&deps, 1, support.testLifecycleContext(
-        hooks.RuntimeView.empty(),
-        std.testing.allocator,
-        fixture.workspace_root,
-    ));
-    defer finalization.deinit();
-    var finished = [_]ToolCall{.{ .id = "read_0", .name = "read_file", .arguments_json = "{\"path\":\"b\"}" }};
-    var running = [_]ToolCall{
-        .{ .id = "run_1", .name = "shell", .arguments_json = "{\"command\":\"sleep 9\"}" },
-        .{ .id = "run_2", .name = "read_file", .arguments_json = "{\"path\":\"a\"}" },
-    };
-    const messages = [_]ChatMessage{
-        .{ .role = .assistant, .content = "Reading b first.", .tool_calls = &finished },
-        .{ .role = .tool, .tool_call_id = "read_0", .tool_name = "read_file", .tool_result_status = .success, .content = "done" },
-        .{ .role = .assistant, .content = "Running both now.", .tool_calls = &running },
-    };
-
-    // Without the hook, as on v1, nothing is built or sent.
-    try appendRunningToolCalls(&deps, &finalization, fixture.job(), &messages, &running);
-    try std.testing.expectEqual(@as(usize, 0), sink.appends);
-
-    deps.ctx = &sink;
-    deps.append_turn_piece = Sink.append;
-    try appendRunningToolCalls(&deps, &finalization, fixture.job(), &messages, &running);
-    try std.testing.expectEqual(@as(usize, 1), sink.appends);
-    // The finished step travels as execution memory, the running calls beside it.
-    try std.testing.expectEqual(@as(usize, 1), sink.finished_steps);
-    try std.testing.expectEqual(@as(usize, 2), sink.running.items.len);
-    try std.testing.expectEqualStrings("run_1", sink.running.items[0]);
-    try std.testing.expectEqualStrings("run_2", sink.running.items[1]);
-    // With the text of the message that issued them, not an earlier one (D51).
-    try std.testing.expectEqualStrings("Running both now.", sink.running_text.?);
-
-    // A step with no calls sends nothing.
-    try appendRunningToolCalls(&deps, &finalization, fixture.job(), &messages, &.{});
-    try std.testing.expectEqual(@as(usize, 1), sink.appends);
 }
 
 /// Pure formatter for the full-only network record: provider, model, latency,
@@ -9824,7 +9726,6 @@ fn processQueuedPromptLoop(
             else
                 provider_replay,
         );
-        try appendRunningToolCalls(deps, finalization, job, within_turn_suffix.items, effective_tool_calls);
 
         const step_has_content = !terminal_provider_completion and completion.content != null and completion.content.?.len > 0;
         if (step_has_content) {

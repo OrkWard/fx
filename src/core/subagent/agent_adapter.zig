@@ -189,11 +189,6 @@ pub fn run(
         .subagent_id = trace_context.subagent_id,
     };
     defer if (context.refreshed_credential) |*credential| credential.deinit(turn.alloc);
-    turn.beginTurn() catch |err| {
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        turn.setFailureDiagnostic("turn_open_failed", @errorName(err));
-        return error.ProviderFailed;
-    };
     const recovery_checkpoint = turn.prepareRecoveryForActiveWork(arena) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         turn.setFailureDiagnostic("recovery_admission_failed", @errorName(err));
@@ -412,14 +407,9 @@ fn runtimeDeps(context: *Context) agent_runtime.AgentRuntimeDeps {
         .publish_committed_file_handoff = publishCommittedFileHandoff,
         .propagate_history_turn = propagateHistoryTurn,
         .commit_context_compaction = .{ .commit = commitContextCompaction },
-        // v2 keeps no paused-response checkpoint (D31), so a v2 child, like
-        // a v2 root, offers the orchestrator no place to save one.
-        .recovery_checkpoint = switch (context.turn.loaded) {
-            .v1 => .{
-                .set = setRecoveryCheckpoint,
-                .clear = clearRecoveryCheckpoint,
-            },
-            .v2 => null,
+        .recovery_checkpoint = .{
+            .set = setRecoveryCheckpoint,
+            .clear = clearRecoveryCheckpoint,
         },
         .propagate_grant = discardGrant,
         .push_event = pushLiveEvent,

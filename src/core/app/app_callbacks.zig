@@ -337,10 +337,6 @@ pub fn Bindings(comptime App: type) type {
                         null
                 else
                     null,
-                .append_turn_piece = if (comptime @hasField(App, "session_persistence"))
-                    if (app.session_persistence.v2 != null) agentAppendTurnPiece else null
-                else
-                    null,
                 .propagate_grant = agentPropagateGrant,
                 .push_event = agentPushEvent,
                 .push_text = agentPushText,
@@ -381,7 +377,7 @@ pub fn Bindings(comptime App: type) type {
                     @hasField(@TypeOf(app.session_persistence), "writable"))
                 {
                     app.session.usage.configureCheckpointSink(
-                        if (app.session_persistence.writable != null or app.session_persistence.v2 != null)
+                        if (app.session_persistence.writable != null)
                             .{
                                 .context = @ptrCast(app),
                                 .allocator = app.alloc,
@@ -1168,11 +1164,6 @@ pub fn Bindings(comptime App: type) type {
         fn agentClearRecoveryCheckpoint(ctx: *anyopaque) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             try app_session_runtime.Runtime(App).clearRecoveryCheckpoint(app);
-        }
-
-        fn agentAppendTurnPiece(ctx: *anyopaque, progress: agent_runtime.TurnProgress) anyerror!void {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            try app_session_runtime.Runtime(App).appendTurnPiece(app, progress);
         }
 
         fn agentPersistUsageCheckpoint(

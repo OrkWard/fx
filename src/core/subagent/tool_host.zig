@@ -150,19 +150,6 @@ pub const Runtime = struct {
         return createWith(alloc, .{ .v1 = sessions }, root_id, host_authority, child_runner);
     }
 
-    /// A host over a v2 parent, whose children live in its log (D22).
-    /// Borrows `children` and the callback contexts until deinit; the
-    /// parent stays open until then (`tla/Wiring.tla`
-    /// ParentOutlivesChildren).
-    pub fn createV2(
-        alloc: Allocator,
-        children: *child_state.V2Children,
-        host_authority: authority.HostResolver,
-        child_runner: ChildRunner,
-    ) !*Runtime {
-        return createWith(alloc, .{ .v2 = children }, children.parent.id(), host_authority, child_runner);
-    }
-
     fn createWith(
         alloc: Allocator,
         backend: child_state.Backend,
@@ -663,9 +650,6 @@ pub const Runtime = struct {
                         active,
                     );
                     try self.managed.state_store.save(alloc, registry);
-                    // A v2 child lost before its first turn has no log to
-                    // resume, so its next work starts it fresh (D33).
-                    if (self.backend == .v2) try self.ensureManagedChildSession(alloc, started.id, active.id, defaults);
                     return managedAdmissionReady(alloc, started.id);
                 }
                 const child_id = try session_store.generateSessionId(alloc);
@@ -700,27 +684,6 @@ pub const Runtime = struct {
         defaults: Defaults,
     ) !void {
         const sessions = switch (self.backend) {
-            .v2 => |children| {
-                // A v2 child reaches the disk with its first turn, under
-                // the id its spawn line names (D34); until then only its
-                // settings wait here.
-                try children.rememberSeed(child_id, .{
-                    .preferences = .{
-                        .provider = defaults.provider,
-                        .model = @constCast(defaults.model),
-                        .effort = defaults.effort,
-                        .fast_mode = defaults.fast_mode,
-                        .ultrafast_mode = defaults.ultrafast_mode,
-                    },
-                    .language = defaults.conversation_language,
-                });
-                debug_trace.logf(
-                    "subagent",
-                    "child session reserved child_id={s} work_id={s} provider={s} model={s} effort={s} fast_mode={} ultrafast_mode={}",
-                    .{ child_id, work_id, @tagName(defaults.provider), defaults.model, defaults.effort.label(), defaults.fast_mode, defaults.ultrafast_mode },
-                );
-                return;
-            },
             .v1 => |value| value,
         };
         var state = try freshChildState(
@@ -1016,12 +979,6 @@ pub const Runtime = struct {
                 const text = assistantTextForWork(state.history, work_id) orelse return null;
                 return @as(?[]u8, try alloc.dupe(u8, text));
             },
-            .v2 => |children| {
-                const history = children.parent.store.childHistory(alloc, child_id) catch return null;
-                defer types.freeHistoryTurnSlice(alloc, history);
-                const text = assistantTextForWork(history, work_id) orelse return null;
-                return @as(?[]u8, try alloc.dupe(u8, text));
-            },
         }
     }
 
@@ -1036,7 +993,6 @@ pub const Runtime = struct {
                 preferences.model = model;
                 return preferences;
             },
-            .v2 => |children| return children.parent.store.childPreferences(alloc, child_id),
         }
     }
 

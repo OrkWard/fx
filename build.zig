@@ -31,7 +31,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("build_options", build_options.createModule());
-    const session_manager = addSessionManager(b, exe.root_module, target, optimize, null);
 
     b.installArtifact(exe);
 
@@ -54,16 +53,8 @@ pub fn build(b: *std.Build) void {
     test_paths.addOptionPathUntracked("source_root", b.path("src"));
     exe.root_module.addImport("test_paths", test_paths.createModule());
 
-    // The session manager's own tests, as fx compiles it (no hooks).
-    const session_manager_tests = b.addTest(.{ .root_module = session_manager });
-
-    const run_session_manager_tests = b.addRunArtifact(session_manager_tests);
-    const session_manager_test_step = b.step("test-session-manager", "Run the session manager's tests");
-    session_manager_test_step.dependOn(&run_session_manager_tests.step);
-
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_session_manager_tests.step);
 
     // --- file_index search benchmark ---
     const benchmark_exports_mod = b.createModule(.{
@@ -208,32 +199,6 @@ fn readGitCommit(b: *std.Build) []const u8 {
     };
     const trimmed = std.mem.trim(u8, out, " \t\r\n");
     return b.allocator.dupe(u8, trimmed) catch "unknown";
-}
-
-/// The session manager as its own module, rooted at its API. It imports
-/// nothing but its own options, and a file cannot belong to two modules, so
-/// fx reaches it only through `@import("session_manager")`.
-fn addSessionManager(
-    b: *std.Build,
-    importer: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-    single_threaded: ?bool,
-) *std.Build.Module {
-    const options = b.addOptions();
-    options.addOption(bool, "hooks", false);
-    options.addOptionPathUntracked("trace_dir", b.graph.path(.install_prefix, "session-manager-traces"));
-    options.addOptionPathUntracked("src_dir", b.path("src/core/session_manager"));
-    const module = b.createModule(.{
-        .root_source_file = b.path("src/core/session_manager/api.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .single_threaded = single_threaded,
-    });
-    module.addImport("build_options", options.createModule());
-    importer.addImport("session_manager", module);
-    return module;
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {

@@ -556,7 +556,6 @@ const App = struct {
             launch.requested_resume = null;
         }
         errdefer if (app.requested_resume) |*target| target.deinit(alloc);
-        app.session_persistence.sessions_v2 = launch.modifiers.sessions_v2;
         try BootstrapAppRuntime.bootstrap(
             &app,
             footer_rows,
@@ -795,9 +794,8 @@ const App = struct {
         buffer: []u8,
         session_id: []const u8,
         terminal_cols: u16,
-        sessions_v2: bool,
     ) ![]const u8 {
-        return ui_render.formatResumeHandoff(buffer, session_id, terminal_cols, sessions_v2);
+        return ui_render.formatResumeHandoff(buffer, session_id, terminal_cols);
     }
 
     /// Full teardown for callers that keep running after the shell ends, such
@@ -4235,7 +4233,6 @@ test {
     _ = @import("core/session/session_commands.zig");
     _ = @import("core/session/session_json.zig");
     _ = @import("core/session/session_store.zig");
-    _ = @import("core/session/session_adapter.zig");
     _ = @import("core/session/session_layout.zig");
     _ = @import("core/session/legacy_background_migration.zig");
     _ = @import("core/session/prompt_history_store.zig");

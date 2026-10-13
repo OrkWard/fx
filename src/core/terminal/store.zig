@@ -476,9 +476,8 @@ pub const ProfileStore = struct {
     process_provider: process_provider_mod.Provider,
     sessions_dir: io_mod.VerifiedDir,
     display_sessions_path: []u8,
-    /// `~/.fx`, kept open to reach the folders v2 sessions keep terminal
-    /// state in, in v1's layout: `~/.fx/terminal/{id}` (D45), or the side
-    /// folder of a session not moved yet (D27, D47).
+    /// `~/.fx`, kept open to reach terminal state kept outside a session
+    /// folder: `~/.fx/terminal/{id}`, or an older `~/.fx/session-files/{id}`.
     fx_dir: io_mod.VerifiedDir,
     /// `~/.fx/terminal` and `~/.fx/session-files`, as `outside_roots`.
     display_outside_paths: [outside_roots.len][]u8,
@@ -643,13 +642,13 @@ pub const ProfileStore = struct {
         }
     };
 
-    /// Where v2 sessions keep terminal state outside the session manager,
-    /// in order: `~/.fx/terminal` (D45), then side folders not moved yet
-    /// (D27, D47). A new owner folder is made only in the first.
+    /// Where terminal state lives outside a session folder, in order:
+    /// `~/.fx/terminal`, then older side folders. A new owner folder is made
+    /// only in the first.
     const outside_roots = [_][]const u8{ profile_paths.terminal_dir_name, profile_paths.session_files_dir_name };
 
-    /// The folder an owner keeps its terminal state in: its v1 session
-    /// folder, or a v2 session's folder outside the manager. `create` makes
+    /// The folder an owner keeps its terminal state in: its session folder,
+    /// or a folder outside it. `create` makes
     /// `~/.fx/terminal/{id}` (`0700`) when the owner has none.
     fn open_owner(self: *ProfileStore, owner_session_id: []const u8, create: bool) !OwnerFolder {
         const zio = io_mod.getIo();
@@ -689,7 +688,7 @@ pub const ProfileStore = struct {
         return io_mod.openVerifiedPrivateDirIfPresent(&self.fx_dir, root_name);
     }
 
-    /// Every owner folder: v1 session folders, then the v2 folders of each
+    /// Every owner folder: session folders, then the folders of each
     /// outside root whose id no earlier root has. A name lasts until the
     /// next call.
     const OwnerIterator = struct {

@@ -9,7 +9,6 @@ const live_metrics = @import("live_metrics.zig");
 const io_mod = @import("../shared/io.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const permission_request = @import("../permissions/permission_request.zig");
-const session_adapter = @import("../session/session_adapter.zig");
 const session_codec = @import("../session/session_codec.zig");
 const session_store = @import("../session/session_store.zig");
 const worker_runtime = @import("../agent/worker_runtime.zig");
@@ -640,49 +639,20 @@ fn runOne(slot: *Slot) OneOutcome {
     };
 }
 
-/// The child session one work item runs in, on either backend.
+/// The child session one work item runs in.
 const OpenChild = union(enum) {
     v1: session_store.LoadedWritableSession,
-    v2: struct {
-        session: *session_adapter.Session,
-        preferences: session_codec.DurableSessionPreferences,
-    },
 
-    /// v2 opens the child's log, or starts it under the id its spawn line
-    /// names with the seed its admission left (D34).
     fn open(owner: *Owner, child_id: []const u8, instructions: []const u8) !OpenChild {
-        const children = switch (owner.backend) {
+        _ = instructions;
+        switch (owner.backend) {
             .v1 => |sessions| return .{ .v1 = try sessions.resumeTargetForWrite(
                 owner.alloc,
                 .{ .id = child_id },
                 sessions.workspace_root,
                 .{},
             ) },
-            .v2 => |value| value,
-        };
-        var seed = (try children.seedFor(owner.alloc, child_id)) orelse blk: {
-            debug_trace.logf("subagent", "child seed unavailable child_id={s} using=parent_preferences", .{child_id});
-            break :blk child_state.V2Children.ChildSeed{
-                .preferences = try children.parent.currentPreferences(owner.alloc),
-                .language = types.ConversationLanguage.default(),
-            };
-        };
-        defer seed.preferences.deinit(owner.alloc);
-        const session = try session_adapter.Session.openChild(
-            owner.alloc,
-            children.parent.store,
-            children.parent.id(),
-            child_id,
-            children.workspace,
-            .{
-                .preferences = seed.preferences,
-                .language = seed.language,
-                .permission_state = .{},
-                .instructions = instructions,
-            },
-        );
-        errdefer session.close();
-        return .{ .v2 = .{ .session = session, .preferences = try session.currentPreferences(owner.alloc) } };
+        }
     }
 
     fn close(self: *OpenChild, alloc: Allocator) void {
@@ -691,33 +661,25 @@ const OpenChild = union(enum) {
                 loaded.log.park();
                 loaded.deinit(alloc);
             },
-            .v2 => |*v2| {
-                v2.preferences.deinit(alloc);
-                v2.session.close();
-            },
         }
     }
 
     fn turn(self: *OpenChild, alloc: Allocator, max_history_turns: usize) !execution.TurnContext {
         return switch (self.*) {
             .v1 => |*loaded| execution.TurnContext.init(alloc, loaded, max_history_turns),
-            .v2 => |v2| execution.TurnContext.initV2(alloc, v2.session, max_history_turns),
         };
     }
 
     fn preferences(self: *const OpenChild) session_codec.DurableSessionPreferences {
         return switch (self.*) {
             .v1 => |*loaded| loaded.state.preferences,
-            .v2 => |v2| v2.preferences,
         };
     }
 
-    /// v1 keeps instructions in `children.json`; a v2 child keeps them in
-    /// its own `prefs` (D34).
+    /// Instructions live in `children.json`.
     fn overlayInstructions(self: *const OpenChild, registry_instructions: []const u8) []const u8 {
         return switch (self.*) {
             .v1 => registry_instructions,
-            .v2 => |v2| v2.session.childInstructions(),
         };
     }
 };

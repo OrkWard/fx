@@ -5,7 +5,6 @@ const session = @import("session.zig");
 const session_codec = @import("session_codec.zig");
 const types = @import("../shared/types.zig");
 const session_store = @import("session_store.zig");
-const session_adapter = @import("session_adapter.zig");
 const session_usage = @import("session_usage.zig");
 const usage_report = @import("usage_report.zig");
 
@@ -92,27 +91,6 @@ fn collectFromHomeCancelable(
         try collectMarkedSession(alloc, &out, usage, state.updated_at_ms, newer);
     }
 
-    // Sessions saved by `--sessions-v2` keep their markers apart; a marker and
-    // a checkpoint each record their own time.
-    var marked_v2 = session_adapter.collectMarkedUsage(alloc, home_path) catch |err| blk: {
-        if (err == error.OutOfMemory) return err;
-        debug_trace.logf("usage", "sessions v2 usage recovery incomplete reason={s}", .{@errorName(err)});
-        out.unknown_pending = true;
-        break :blk std.ArrayList(session_adapter.MarkedUsage).empty;
-    };
-    defer {
-        for (marked_v2.items) |*entry| entry.deinit(alloc);
-        marked_v2.deinit(alloc);
-    }
-    for (marked_v2.items) |marked| {
-        if (cancelRequested(cancel_requested)) return error.Cancelled;
-        const usage = marked.snapshot orelse {
-            out.unknown_pending = true;
-            continue;
-        };
-        try collectMarkedSession(alloc, &out, usage, marked.at_ms, v2CheckpointIsNewer(usage, marked.at_ms, marked.protected_updated_at_ms));
-    }
-
     return .{
         .facts = try facts.toOwnedSlice(alloc),
         .incidents = try incidents.toOwnedSlice(alloc),
@@ -144,13 +122,6 @@ fn checkpointIsNewer(
     const protected = protected_updated_at_ms orelse return true;
     if (checkpoint_modified_ns) |modified| return modified > marker_modified_at_ns;
     return updated_at_ms >= protected;
-}
-
-/// The same for a v2 session: its marker records the time of the checkpoint
-/// it protects, and a session's checkpoint times only grow.
-fn v2CheckpointIsNewer(usage: session_usage.Snapshot, at_ms: i64, protected_updated_at_ms: ?i64) bool {
-    const protected = protected_updated_at_ms orelse return false;
-    return if (session_usage.needsProfileRecovery(usage)) at_ms >= protected else at_ms > protected;
 }
 
 /// Adds one marked session's usage to `out`. `newer` says whether its
@@ -576,69 +547,4 @@ test "recovery marker distinguishes checkpoints around a crash boundary" {
         marker_still_present.deinit(alloc);
     }
     try std.testing.expectEqual(@as(usize, 1), marker_still_present.items.len);
-}
-
-test "a v2 session's usage marker is judged from its own log" {
-    const alloc = std.testing.allocator;
-    const io = io_mod.getIo();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(home);
-    var store = try session_adapter.Store.open(alloc, home);
-    defer store.deinit(alloc);
-    var model = "m".*;
-    const s = try session_adapter.Session.create(alloc, &store, "/w", .ask, .{
-        .preferences = .{ .model = &model, .effort = .auto, .fast_mode = false },
-        .language = types.ConversationLanguage.default(),
-        .permission_state = .{},
-    });
-    defer s.close();
-    try s.commitTurn(.{ .assistant = .{ .user = .{ .text = @constCast("q") }, .assistant = @constCast("a") } }, types.ConversationLanguage.default());
-
-    var usage = session_usage.Usage.initFresh();
-    defer usage.deinit(alloc);
-    var settled = try usage.snapshot(alloc);
-    defer settled.deinit(alloc);
-    var generation_id = "gen_01ARZ3NDEKTSV4RRFFQ69G5FAV".*;
-    var origin = "fx".*;
-    var generations = [_]session_usage.PendingGeneration{.{ .id = &generation_id, .sequence = 1, .origin = &origin, .team = null, .observed_at_ms = 5 }};
-    // Generation 1 is counted but not yet published to the ledger.
-    var pending = settled;
-    pending.next_sequence = 2;
-    pending.settled_through_sequence = 1;
-    pending.billing = .pending;
-    pending.pending = &generations;
-
-    // A checkpoint still owed to the ledger is recovered from the log.
-    try s.persistUsage(pending);
-    {
-        var recovery = try collectFromHome(alloc, home);
-        defer recovery.deinit(alloc);
-        try std.testing.expect(!recovery.unknown_pending);
-        try std.testing.expectEqual(@as(usize, 1), recovery.pending.len);
-        try std.testing.expectEqualStrings(&generation_id, recovery.pending[0].id);
-        try std.testing.expectEqual(@as(i64, 5), recovery.pending[0].observed_at_ms);
-    }
-
-    // A marker newer than every durable checkpoint: the crash came between
-    // the marker and its checkpoint, so recovery cannot be complete.
-    var markers = try tmp.dir.openDir(io, ".fx/" ++ session_adapter.usage_markers_dir_name, .{});
-    defer markers.close(io);
-    try markers.writeFile(io, .{ .sub_path = s.id(), .data = "v1 9999999999999\n", .flags = .{ .permissions = .fromMode(0o600) } });
-    {
-        var recovery = try collectFromHome(alloc, home);
-        defer recovery.deinit(alloc);
-        try std.testing.expect(recovery.unknown_pending);
-    }
-    try markers.deleteFile(io, s.id());
-
-    // Once nothing is owed, the marker goes and nothing is recovered.
-    try s.persistUsage(pending);
-    try s.persistUsage(settled);
-    try std.testing.expectError(error.FileNotFound, markers.statFile(io, s.id(), .{}));
-    var recovery = try collectFromHome(alloc, home);
-    defer recovery.deinit(alloc);
-    try std.testing.expect(!recovery.unknown_pending);
-    try std.testing.expectEqual(@as(usize, 0), recovery.pending.len);
 }

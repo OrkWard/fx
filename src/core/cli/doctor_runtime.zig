@@ -6,7 +6,6 @@ const agent_steps = @import("../config/agent_steps.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const host = @import("../hosts/host.zig");
 const session_store = @import("../session/session_store.zig");
-const session_adapter = @import("../session/session_adapter.zig");
 const types = @import("../shared/types.zig");
 const model_provider = @import("../config/model_provider.zig");
 
@@ -56,7 +55,6 @@ pub fn collect(
     secret_store: host.SecretStore,
     default_model: []const u8,
     default_agent_step_limit: usize,
-    sessions_v2: bool,
 ) !Snapshot {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
     debug_trace.configureFromEnv(alloc, workspace_root);
@@ -95,7 +93,7 @@ pub fn collect(
         try appendConfigLoadFailureCheck(&checks, alloc, "config", "failed to load config", err);
         try appendAuthCheck(&checks, alloc, snapshot.auth);
         try appendConfigLoadFailureCheck(&checks, alloc, "startup", "failed to resolve startup settings", err);
-        try appendStateChecks(&checks, alloc, snapshot.workspace_root, sessions_v2);
+        try appendStateChecks(&checks, alloc, snapshot.workspace_root);
         try appendGitCheck(&checks, alloc, snapshot.workspace_root);
         try appendGhCheck(&checks, alloc);
 
@@ -125,7 +123,7 @@ pub fn collect(
         .permission_mode = detailed.settings.permission_mode,
         .max_agent_steps = detailed.settings.max_agent_steps,
     }, default_agent_step_limit);
-    try appendStateChecks(&checks, alloc, snapshot.workspace_root, sessions_v2);
+    try appendStateChecks(&checks, alloc, snapshot.workspace_root);
     try appendGitCheck(&checks, alloc, snapshot.workspace_root);
     try appendGhCheck(&checks, alloc);
 
@@ -248,8 +246,7 @@ fn formatConfigLoadFailure(alloc: Allocator, prefix: []const u8, err: anyerror) 
     return alloc.print("{s}: {s}", .{ prefix, @errorName(err) });
 }
 
-fn appendStateChecks(checks: *std.ArrayList(Check), alloc: Allocator, workspace_root: []const u8, sessions_v2: bool) !void {
-    if (sessions_v2) return appendV2StateChecks(checks, alloc);
+fn appendStateChecks(checks: *std.ArrayList(Check), alloc: Allocator, workspace_root: []const u8) !void {
     var store = session_store.Store.initReadOnly(alloc, workspace_root) catch |err| {
         const status: CheckStatus = if (err == error.HomeNotSet) .warn else .fail;
         const detail = try alloc.print("failed to inspect workspace state: {s}", .{@errorName(err)});
@@ -293,39 +290,6 @@ fn appendStateChecks(checks: *std.ArrayList(Check), alloc: Allocator, workspace_
         summaries.items.len,
         if (summaries.items.len > 0) summaries.items[0].id else "",
     );
-}
-
-/// Doctor on v2 (D36): reports damaged sessions and removes side folders
-/// whose session is gone. Rebuilds nothing.
-fn appendV2StateChecks(checks: *std.ArrayList(Check), alloc: Allocator) !void {
-    var store = session_adapter.Store.openFromEnv(alloc) catch |err| {
-        const status: CheckStatus = if (err == error.HomeNotSet) .warn else .fail;
-        const detail = try alloc.print("failed to inspect sessions v2: {s}", .{@errorName(err)});
-        try appendCheckOwned(checks, alloc, "state", status, detail);
-        return;
-    };
-    defer store.deinit(alloc);
-    var report = session_adapter.doctor(&store, alloc, default_session_diagnostics_limit, io_mod.milliTimestamp()) catch |err| {
-        const detail = try alloc.print("failed to inspect sessions v2: {s}", .{@errorName(err)});
-        try appendCheckOwned(checks, alloc, "state", .fail, detail);
-        return;
-    };
-    defer report.deinit(alloc);
-    try appendCheck(checks, alloc, "state", .ok, "sessions v2");
-    for (report.damaged.items) |id| {
-        const detail = try alloc.print("session {s} has a damaged log; `fx session recover {s}` copies its good turns", .{ id, id });
-        try appendCheckOwned(checks, alloc, "session", .warn, detail);
-    }
-    if (report.checked < report.sessions) try appendSessionDiagnosticsTruncatedCheck(checks, alloc, report.checked);
-    if (report.removed > 0) {
-        const detail = try alloc.print("removed {d} terminal or side folder(s) whose session is gone", .{report.removed});
-        try appendCheckOwned(checks, alloc, "session", .ok, detail);
-    }
-    if (report.kept > 0) {
-        const detail = try alloc.print("{d} terminal or side folder(s) whose session is gone could not be removed", .{report.kept});
-        try appendCheckOwned(checks, alloc, "session", .warn, detail);
-    }
-    try appendSessionsCountCheck(checks, alloc, report.sessions, report.latest orelse "");
 }
 
 fn appendSessionDiagnosticsTruncatedCheck(
