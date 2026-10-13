@@ -295,28 +295,6 @@ pub fn Runtime(comptime App: type) type {
             try beginProviderPickerInventoryRefresh(app, .provider_picker_command);
         }
 
-        pub fn openSetupHub(app: *App) !void {
-            if (hostManagesAuth(app)) {
-                try writeAuthNotice(app, .{ .topic = "auth", .tone = .neutral, .body = credentials.host_managed_auth_message });
-                return;
-            }
-            switch (app.auth.beginSourceInventoryRefresh(app.alloc, .{
-                .provider = provider_runtime.provider(app),
-            })) {
-                .started => {},
-                .busy => try writeAuthNotice(app, .{
-                    .topic = "auth",
-                    .tone = .warning,
-                    .body = "Authentication inventory refresh is already in progress.",
-                }),
-                .failed => try writeAuthNotice(app, .{
-                    .topic = "auth",
-                    .tone = .@"error",
-                    .body = "Authentication sources could not be checked. The picker remains closed.",
-                }),
-            }
-        }
-
         /// Reports blocked provider interaction without changing the composer.
         pub fn reject_provider_picker_if_busy(app: *App) !bool {
             if (!auth_transition.provider_work_busy(app.stream.active, app.worker.queuedPromptCount())) return false;

@@ -86,22 +86,6 @@ pub fn streamModelCompletion(
                 completed.completion,
                 completed.usage,
             );
-            {
-                if (std.meta.activeTag(completed.usage) == .deferred) if (usage) |ledger| {
-                    if (request.credential.secret()) |credential| {
-                        ledger.startDeferredReconciliation(
-                            usage_allocator,
-                            completed.usage.deferred,
-                            credential,
-                        );
-                    } else if (request.credential.credentialSource() == .host_managed) {
-                        ledger.startHostManagedDeferredReconciliation(
-                            usage_allocator,
-                            completed.usage.deferred,
-                        );
-                    }
-                };
-            }
         },
     }
     return switch (result) {

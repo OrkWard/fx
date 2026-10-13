@@ -329,60 +329,6 @@ pub const Runtime = struct {
         };
     }
 
-    /// Loads the catalog inline on the calling thread.
-    pub fn loadInline(
-        self: *Self,
-        provider: model_catalog.Provider,
-        access: credentials.CatalogAccess,
-    ) void {
-        self.from_profile_settings = provider.provider_id == .configured;
-        if (!self.beginLoad(access, provider.refresh_interval_ms)) return;
-
-        const result = model_catalog.fetchWithPublicFallback(provider, self.alloc, .{
-            .access = access,
-            .endpoint = self.models_path,
-            .cancel_flag = &self.cancel_requested,
-            .view = .picker,
-        });
-        var loaded = switch (result) {
-            .loaded => |loaded| loaded,
-            .failed => |failure| {
-                self.markFailed(failure);
-                self.mutex.lockUncancelable(io_mod.getIo());
-                self.completion_pending = true;
-                self.mutex.unlock(io_mod.getIo());
-                return;
-            },
-        };
-
-        self.mutex.lockUncancelable(io_mod.getIo());
-        if (loaded.catalog.items.len == 0 and self.outcome.loaded != null and self.catalog.items.len > 0) {
-            model_catalog.freeModelCatalog(self.alloc, &loaded.catalog);
-            self.outcome.last_failure = if (loaded.provenance.fallback_failure) |failure|
-                .{
-                    .access = loaded.provenance.access,
-                    .anonymous_fallback_used = loaded.provenance.anonymous_fallback_used,
-                    .failure = failure,
-                }
-            else
-                null;
-            self.state = .ready;
-            self.completion_pending = true;
-            const retained_entries = self.catalog.items.len;
-            self.mutex.unlock(io_mod.getIo());
-            recordLoadReady(retained_entries, true, loaded.provenance);
-            return;
-        }
-        model_catalog.freeModelCatalog(self.alloc, &self.catalog);
-        self.catalog = loaded.catalog;
-        self.outcome = .{ .loaded = loaded.provenance };
-        self.state = .ready;
-        self.completion_pending = true;
-        const loaded_entries = self.catalog.items.len;
-        self.mutex.unlock(io_mod.getIo());
-        recordLoadReady(loaded_entries, false, loaded.provenance);
-    }
-
     fn beginLoad(self: *Self, access: credentials.CatalogAccess, refresh_interval_ms: ?i64) bool {
         self.finishThreadIfDone();
 

@@ -9,7 +9,6 @@ const language_script = @import("../shared/language_script.zig");
 const tool_result_errors = @import("../tooling/tool_result_errors.zig");
 const session_permission_state = @import("../permissions/session_permission_state.zig");
 const image_attachments = @import("../images/image_attachments.zig");
-const generation_usage_provider = @import("generation_usage_provider.zig");
 const compactor = @import("../compactor/compactor.zig");
 const web_fetch_artifacts = @import("web_fetch_artifacts.zig");
 const command_replay_store = @import("command_replay_store.zig");
@@ -955,38 +954,21 @@ pub const SessionRuntime = struct {
     /// first agent turn of the resumed session, so no lock is required.
     has_stale_shell_handles: bool = false,
 
-    pub fn init(
-        max_history_turns: usize,
-        provider: generation_usage_provider.Provider,
-    ) SessionRuntime {
+    pub fn init(max_history_turns: usize) SessionRuntime {
         return .{
-            .usage = session_usage.Usage.initFreshWithProvider(provider),
+            .usage = session_usage.Usage.initFresh(),
             .max_history_turns = max_history_turns,
         };
     }
 
-    pub fn initWithProviders(
-        max_history_turns: usize,
-        providers: generation_usage_provider.Set,
-    ) SessionRuntime {
-        return .{
-            .usage = session_usage.Usage.initFreshWithProviders(providers),
-            .max_history_turns = max_history_turns,
-        };
-    }
-
-    pub fn initIntoWithProviders(
-        self: *SessionRuntime,
-        max_history_turns: usize,
-        providers: generation_usage_provider.Set,
-    ) void {
+    pub fn initInto(self: *SessionRuntime, max_history_turns: usize) void {
         const session_runtime_info = @typeInfo(SessionRuntime).@"struct";
         inline for (session_runtime_info.field_names, session_runtime_info.field_types, session_runtime_info.field_attrs) |field_name, field_type, field_attrs| {
             if (comptime std.mem.eql(u8, field_name, "usage") or
                 std.mem.eql(u8, field_name, "max_history_turns")) continue;
             @field(self.*, field_name) = field_attrs.defaultValue(field_type).?;
         }
-        self.usage.initIntoFreshWithProviders(providers);
+        self.usage.initIntoFresh();
         self.max_history_turns = max_history_turns;
     }
 
@@ -1090,30 +1072,6 @@ pub const SessionRuntime = struct {
         return session_permission_state.dupe(alloc, self.permission_state);
     }
 
-    pub fn applyPermissionEvent(
-        self: *SessionRuntime,
-        alloc: Allocator,
-        event: session_permission_state.ConfirmedRuleEvent,
-    ) !session_permission_state.ApplyStatus {
-        self.permission_state_lock.lockUncancelable(io_mod.getIo());
-        defer self.permission_state_lock.unlock(io_mod.getIo());
-        const result = try session_permission_state.apply(
-            alloc,
-            self.permission_state,
-            event,
-        );
-        return switch (result) {
-            .applied => |next| blk: {
-                self.permission_state.deinit(alloc);
-                self.permission_state = next;
-                break :blk .applied;
-            },
-            .stale => .stale,
-            .full => .full,
-            .invalid => .invalid,
-        };
-    }
-
     pub fn replacePermissionStateOwned(
         self: *SessionRuntime,
         alloc: Allocator,
@@ -1202,22 +1160,6 @@ pub const SessionRuntime = struct {
         return false;
     }
 
-    pub fn compactedTurnCount(self: *const SessionRuntime) usize {
-        if (self.agent.history.items.len == 0) return 0;
-        return switch (self.agent.history.items[0]) {
-            .compacted_summary => |entry| entry.removed_turn_count,
-            else => 0,
-        };
-    }
-
-    pub fn compactionCount(self: *const SessionRuntime) usize {
-        if (self.agent.history.items.len == 0) return 0;
-        return switch (self.agent.history.items[0]) {
-            .compacted_summary => |entry| entry.compaction_count,
-            else => 0,
-        };
-    }
-
     pub fn snapshotHistory(self: *const SessionRuntime, alloc: Allocator) ![]HistoryTurn {
         return self.agent.snapshotHistory(alloc);
     }
@@ -1228,15 +1170,6 @@ pub const SessionRuntime = struct {
         current_images: []const ImageAttachment,
     ) ![]ImageAttachment {
         return collect_image_catalog(alloc, self.agent.history.items, current_images);
-    }
-
-    pub fn snapshotContextHistory(self: *const SessionRuntime, alloc: Allocator) ![]HistoryTurn {
-        return snapshotOwnedContextHistory(
-            alloc,
-            self.agent.history.items,
-            0,
-            self.max_history_turns,
-        );
     }
 
     pub fn appendHistoryEntry(self: *SessionRuntime, alloc: Allocator, turn: HistoryTurn) !void {
@@ -1277,15 +1210,6 @@ pub const SessionRuntime = struct {
         self.agent.history = std.ArrayList(HistoryTurn).fromOwnedSlice(history);
         self.agent.fresh = false;
         self.unversioned_history_len = if (uncertain) history.len else 0;
-    }
-
-    pub fn appendAssistantHistoryTurn(self: *SessionRuntime, alloc: Allocator, user: []const u8, assistant: []const u8) !void {
-        const turn = try makeAssistantTurn(alloc, user, assistant);
-        var owns_turn = true;
-        errdefer if (owns_turn) freeHistoryTurn(alloc, turn);
-
-        try self.agent.history.append(alloc, turn);
-        owns_turn = false;
     }
 
     pub fn appendHistoryMessages(
@@ -1330,16 +1254,6 @@ pub const SessionRuntime = struct {
         return null;
     }
 
-    pub fn lastSummary(self: *const SessionRuntime) ?[]const u8 {
-        var index = self.agent.history.items.len;
-        while (index > 0) {
-            index -= 1;
-            if (self.agent.history.items[index] == .compacted_summary) {
-                return self.agent.history.items[index].compacted_summary.summary;
-            }
-        }
-        return null;
-    }
     fn setConversationLanguage(self: *SessionRuntime, language: ConversationLanguage) void {
         self.language_lock.lockUncancelable(io_mod.getIo());
         defer self.language_lock.unlock(io_mod.getIo());
@@ -1449,19 +1363,6 @@ fn dupeImageAttachment(alloc: Allocator, src: ImageAttachment) !ImageAttachment 
 }
 /// Deep-copies one history turn; caller owns the returned turn and frees with freeHistoryTurn.
 pub const dupeHistoryTurn = core_types.dupeHistoryTurn;
-
-/// Appends a finished turn to an owned prompt-context projection and reapplies its turn limit.
-/// Builds one owned assistant history turn; caller frees with freeHistoryTurn.
-pub fn makeAssistantTurn(alloc: Allocator, user_text: []const u8, assistant_text: []const u8) !HistoryTurn {
-    const user_copy = try alloc.dupe(u8, user_text);
-    errdefer alloc.free(user_copy);
-    const assistant_copy = try alloc.dupe(u8, assistant_text);
-    errdefer alloc.free(assistant_copy);
-    return .{ .assistant = .{
-        .user = .{ .text = user_copy, .images = &.{} },
-        .assistant = assistant_copy,
-    } };
-}
 
 /// Projects stored history into request messages while preserving stored turn order.
 pub fn appendHistoryMessages(

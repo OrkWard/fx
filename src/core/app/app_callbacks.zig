@@ -24,7 +24,6 @@ const tool_presentation = @import("../tooling/tool_presentation.zig");
 const gateway_error_format = @import("../shared/gateway_error_format.zig");
 const io_mod = @import("../shared/io.zig");
 const session_codec = @import("../session/session_codec.zig");
-const subagent_model_contract = @import("../subagent/model_contract.zig");
 const result_store = @import("../session/result_store.zig");
 const tool_result_limits = @import("../tooling/tool_result_limits.zig");
 const session_usage = @import("../session/session_usage.zig");
@@ -538,18 +537,9 @@ pub fn Bindings(comptime App: type) type {
             return .{ .ctx = app, .render_fn = renderSubagentStatusLine };
         }
 
-        pub fn onWebSearchProgress(ctx: *anyopaque, call_id: []const u8, progress: types.WebSearchProgress) void {
-            const app: *App = @ptrCast(@alignCast(ctx));
-            app_worker_runtime.Runtime(App).pushWebSearchProgress(app, call_id, progress) catch {};
-        }
-
         pub fn onWebFetchProgress(ctx: *anyopaque, call_id: []const u8, progress: types.WebFetchProgress) void {
             const app: *App = @ptrCast(@alignCast(ctx));
             app_worker_runtime.Runtime(App).pushWebFetchProgress(app, call_id, progress) catch {};
-        }
-
-        pub fn onInnerToolUsage(ctx: *anyopaque, tool_name: []const u8, usage: types.ToolUsage) void {
-            agentReportInnerToolUsage(ctx, tool_name, usage);
         }
 
         fn supportsSubagentSteering() bool {
@@ -678,24 +668,6 @@ pub fn Bindings(comptime App: type) type {
                 return app.isModelCacheFailed();
             }
             return false;
-        }
-
-        fn resolveSubagentModelOverride(ctx: ?*anyopaque, alloc: Allocator, raw_model: []const u8) Allocator.Error!subagent_model_contract.ModelCatalogMatch {
-            const app: *App = @ptrCast(@alignCast(ctx.?));
-            if (comptime @hasDecl(App, "resolveModelCapabilitiesForRequest")) {
-                // Wait out a still-loading catalog so early delegation does not
-                // skip matching. Only cancellation maps to passthrough.
-                _ = app.resolveModelCapabilitiesForRequest(raw_model) catch return .no_catalog;
-            }
-            if (comptime @hasDecl(App, "snapshotCachedModelIds")) {
-                var ids = (try app.snapshotCachedModelIds(alloc)) orelse return .no_catalog;
-                defer {
-                    for (ids.items) |id| alloc.free(id);
-                    ids.deinit(alloc);
-                }
-                return subagent_model_contract.matchCatalogModel(alloc, ids.items, raw_model);
-            }
-            return .no_catalog;
         }
 
         fn agentResolveModelCapabilities(ctx: *anyopaque, _: Allocator, model: []const u8) model_capabilities.ResolveError!model_capabilities.Capabilities {
@@ -1182,8 +1154,7 @@ pub fn Bindings(comptime App: type) type {
         }
 
         fn agentReportInnerToolUsage(ctx: *anyopaque, tool_name: []const u8, usage: types.ToolUsage) void {
-            if (!std.mem.eql(u8, tool_name, "web_search") and
-                !tool_presentation.isProviderSearchAlias(tool_name)) return;
+            if (!tool_presentation.isProviderSearchAlias(tool_name)) return;
             const app: *App = @ptrCast(@alignCast(ctx));
             app.total_web_search_requests +|= @as(u64, usage.web_search_requests);
         }

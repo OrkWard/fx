@@ -153,23 +153,6 @@ pub const FrameInvalidationSet = struct {
     pub fn isEmpty(self: FrameInvalidationSet) bool {
         return self.len == 0;
     }
-
-    pub fn requiresFullBand(self: FrameInvalidationSet, band: FrameBand) bool {
-        if (band.isEmpty()) return false;
-        for (self.ranges()) |range| {
-            if (range.bottom >= band.top and range.top <= band.bottom) return true;
-        }
-        return false;
-    }
-
-    pub fn dominantReason(self: FrameInvalidationSet) ?FrameInvalidationReason {
-        if (self.len == 0) return null;
-        var reason = self.items[0].reason;
-        for (self.ranges()[1..]) |range| {
-            reason = moreSevereFrameInvalidation(reason, range.reason);
-        }
-        return reason;
-    }
 };
 
 pub const FrameRepaintWindowOptions = struct {

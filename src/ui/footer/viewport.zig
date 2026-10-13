@@ -157,21 +157,9 @@ pub const FooterViewport = struct {
         self.externally_invalidated = false;
     }
 
-    pub fn pushOwnedRow(self: *FooterViewport, alloc: Allocator, row: u16, text: *std.ArrayList(u8)) !void {
-        try self.rows.append(alloc, .{
-            .row = row,
-            .text = text.*,
-        });
-        text.* = .empty;
-    }
-
     pub fn setCursor(self: *FooterViewport, row: u16, col: u16) void {
         self.cursor = .{ .row = row, .col = col };
         self.cursor_visible = true;
-    }
-
-    pub fn hideCursor(self: *FooterViewport) void {
-        self.cursor_visible = false;
     }
 
     pub fn eraseCurrentFrame(self: *FooterViewport, shell: anytype, metrics: *Metrics) !void {

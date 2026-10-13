@@ -36,22 +36,6 @@ pub const State = struct {
         return self.preferred_column;
     }
 
-    pub fn applyTarget(
-        self: *State,
-        edit: *editor_state.State,
-        entities: *const registered_entities.State,
-        target_raw_offset: ?usize,
-        preferred_column: usize,
-    ) bool {
-        return self.applyTargetWithSelection(
-            edit,
-            entities,
-            target_raw_offset,
-            preferred_column,
-            false,
-        );
-    }
-
     pub fn applyTargetWithSelection(
         self: *State,
         edit: *editor_state.State,

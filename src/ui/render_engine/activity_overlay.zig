@@ -18,32 +18,10 @@ pub const ActivityPlacement = union(enum) {
         };
     }
 
-    pub fn reservesFooterRow(self: ActivityPlacement) bool {
-        return self.reservedFooterRows() > 0;
-    }
-
-    pub fn reservedTopRow(self: ActivityPlacement) ?u16 {
-        return switch (self) {
-            .transient_row => |activity| {
-                const first_row = activity.tool_row orelse activity.row;
-                if (first_row <= activity.gap_above_rows) return 1;
-                return first_row - activity.gap_above_rows;
-            },
-            .overlay_entry, .none => null,
-        };
-    }
-
     pub fn transcriptReservationRows(self: ActivityPlacement) u16 {
         return switch (self) {
             .transient_row => |activity| activity.gap_above_rows +| (activity.row -| (activity.tool_row orelse activity.row)) +| activity.row_count +| activity.footer_clearance_rows,
             .overlay_entry, .none => 0,
-        };
-    }
-
-    pub fn requiredFooterTop(self: ActivityPlacement) ?u16 {
-        return switch (self) {
-            .transient_row => |activity| activity.row +| activity.row_count +| activity.footer_clearance_rows,
-            .overlay_entry, .none => null,
         };
     }
 

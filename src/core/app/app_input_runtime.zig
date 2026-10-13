@@ -64,7 +64,6 @@ const ExplicitModelSelection = struct {
     model: []const u8,
     effort: types.ReasoningEffort,
     fast_mode: bool,
-    ultrafast_mode: bool = false,
     has_fast_mode_token: bool = false,
 };
 
@@ -103,15 +102,13 @@ fn parseExplicitModelSelection(input: []const u8) ExplicitModelSelectionParse {
 
     if (token_count != 3) return .invalid;
     const fast_mode = std.ascii.eqlIgnoreCase(tokens[2], "fast");
-    const ultrafast_mode = std.ascii.eqlIgnoreCase(tokens[2], "ultrafast");
-    if (!fast_mode and !ultrafast_mode and !std.ascii.eqlIgnoreCase(tokens[2], "normal")) {
+    if (!fast_mode and !std.ascii.eqlIgnoreCase(tokens[2], "normal")) {
         return .invalid;
     }
     return .{ .selection = .{
         .model = tokens[0],
         .effort = effort,
         .fast_mode = fast_mode,
-        .ultrafast_mode = ultrafast_mode,
         .has_fast_mode_token = true,
     } };
 }
@@ -119,13 +116,8 @@ fn parseExplicitModelSelection(input: []const u8) ExplicitModelSelectionParse {
 fn validateExplicitModelSelection(selection: ExplicitModelSelection, capabilities: model_capabilities.Capabilities) ExplicitModelSelectionParse {
     if (!model_capabilities.reasoningEffortSupported(capabilities, selection.effort)) return .invalid;
     if (!selection.has_fast_mode_token) return .{ .selection = selection };
-    if (selection.ultrafast_mode and !capabilities.supports_ultrafast_mode) return .invalid;
     if (selection.fast_mode and !capabilities.supports_fast_mode) return .invalid;
-    if (!selection.fast_mode and !selection.ultrafast_mode and
-        !capabilities.supports_fast_mode and !capabilities.supports_ultrafast_mode)
-    {
-        return .invalid;
-    }
+    if (!selection.fast_mode and !capabilities.supports_fast_mode) return .invalid;
     return .{ .selection = selection };
 }
 
@@ -617,27 +609,6 @@ pub fn Runtime(comptime App: type) type {
             return replay_byte;
         }
 
-        pub fn flushPendingEscape(app: *App, input_escape_timeout_ms: i64) !void {
-            const now = io_mod.milliTimestamp();
-            expireTerminalInputGestures(app, now);
-            const ingress = app.terminal_input_runtime.flushTerminalAction(
-                now,
-                input_escape_timeout_ms,
-                terminalPasteActive(app),
-            );
-            if (ingress.event) |event| {
-                switch (event) {
-                    .action => |decoded| {
-                        std.debug.assert(decoded.action == .escape);
-                        disarmCtrlCExit(app, "semantic_action");
-                        defer settleModelPickerDraft(app);
-                        try resolveEscape(app, decoded.cancel_pending, now);
-                    },
-                    .paste_byte, .raw => unreachable,
-                }
-            }
-        }
-
         pub fn handleTerminalByteAcrossSessionTransition(
             app: *App,
             byte: u8,
@@ -683,15 +654,6 @@ pub fn Runtime(comptime App: type) type {
                 if (dropped > 0) debug_trace.logf("input", "deferred session input dropped bytes={d} reason=quit", .{dropped});
             }
             return delivered;
-        }
-
-        pub fn handleTerminalByte(app: *App, byte: u8, max_input_len: usize, max_prompt_history: usize) !void {
-            return handleTerminalByteWithLimits(
-                app,
-                byte,
-                paste_framing.InputLimits.single(max_input_len),
-                max_prompt_history,
-            );
         }
 
         pub fn handleTerminalByteWithLimits(
@@ -776,15 +738,6 @@ pub fn Runtime(comptime App: type) type {
 
         pub const prepareFilePicker = completion_rt.prepareFilePicker;
         pub const collectFilePickerFacts = completion_rt.collectFilePickerFacts;
-
-        pub fn handleByte(app: *App, byte: u8, max_input_len: usize, max_prompt_history: usize) !void {
-            return handleTerminalByteWithLimits(
-                app,
-                byte,
-                paste_framing.InputLimits.single(max_input_len),
-                max_prompt_history,
-            );
-        }
 
         fn routeActivePasteByte(
             app: *App,
@@ -1169,11 +1122,6 @@ pub fn Runtime(comptime App: type) type {
                 }
                 return true;
             }
-            return false;
-        }
-
-        fn presentedSubagentApproval(app: *const App) bool {
-            _ = app;
             return false;
         }
 
@@ -1671,13 +1619,6 @@ pub fn Runtime(comptime App: type) type {
             app.shell.render_requests.request(.footer);
         }
 
-        fn closeSkillsMenu(app: *App) bool {
-            if (comptime !@hasField(App, "skills")) return false;
-            if (!app.skills.menu.active) return false;
-            app.skills.closeMenu();
-            return true;
-        }
-
         fn closeHelpMenu(app: *App, clear_query: bool) bool {
             if (!app.input_runtime.help_menu.active) return false;
             app.input_runtime.help_menu.close();
@@ -1888,7 +1829,6 @@ pub fn Runtime(comptime App: type) type {
                 selected,
                 app.effort,
                 app.fast_mode,
-                false,
             );
             app.model_cache.closeMenu();
             app.shell.render_requests.request(.footer);
@@ -2238,7 +2178,7 @@ pub fn Runtime(comptime App: type) type {
                     try app.writeDomainNotice(.{
                         .topic = "",
                         .tone = .@"error",
-                        .body = "usage: /model <id> <effort> [normal|fast|ultrafast]",
+                        .body = "usage: /model <id> <effort> [normal|fast]",
                     }, true);
                 },
                 .selection => |selection| {
@@ -2247,7 +2187,6 @@ pub fn Runtime(comptime App: type) type {
                         selection.model,
                         selection.effort,
                         selection.fast_mode,
-                        selection.ultrafast_mode,
                     );
                     app.input_runtime.inputResetState().clearCurrent(app.alloc);
                 },

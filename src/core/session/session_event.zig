@@ -734,7 +734,6 @@ pub const PreferencesChanged = struct {
     model: ?[]u8 = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
-    ultrafast_mode: ?bool = null,
 
     fn deinit(self: *PreferencesChanged, alloc: Allocator) void {
         if (self.model) |model| alloc.free(model);
@@ -1331,7 +1330,6 @@ fn applyDelta(
             if (payload.model) |model| proposed.preferences.model = model;
             if (payload.effort) |effort| proposed.preferences.effort = effort;
             if (payload.fast_mode) |fast_mode| proposed.preferences.fast_mode = fast_mode;
-            if (payload.ultrafast_mode) |ultrafast_mode| proposed.preferences.ultrafast_mode = ultrafast_mode;
             proposed.updated_at_ms = envelope.timestamp_ms;
             try session_codec.validateState(proposed);
             const model_copy = if (payload.model) |model|
@@ -1345,7 +1343,6 @@ fn applyDelta(
             if (payload.provider) |provider| current.preferences.provider = provider;
             if (payload.effort) |effort| current.preferences.effort = effort;
             if (payload.fast_mode) |fast_mode| current.preferences.fast_mode = fast_mode;
-            if (payload.ultrafast_mode) |ultrafast_mode| current.preferences.ultrafast_mode = ultrafast_mode;
             current.updated_at_ms = envelope.timestamp_ms;
         },
         .workspace_rebound => |payload| {
@@ -1450,7 +1447,7 @@ fn validateEnvelope(envelope: Envelope) !void {
             try session_codec.validateState(state);
         },
         .preferences_changed => |payload| {
-            if (payload.provider == null and payload.model == null and payload.effort == null and payload.fast_mode == null and payload.ultrafast_mode == null) {
+            if (payload.provider == null and payload.model == null and payload.effort == null and payload.fast_mode == null) {
                 return error.InvalidEventFrame;
             }
             if (payload.model) |model| {
@@ -1587,8 +1584,8 @@ fn parsePayload(alloc: Allocator, kind: Kind, value: std.json.Value) !Event {
         },
         .preferences_changed => blk: {
             const object = try requireObject(value);
-            if (object.count() == 0 or object.count() > 5) return error.InvalidEventFrame;
-            try rejectUnknownKeys(object, &.{ "provider", "model", "effort", "fast_mode", "ultrafast_mode" });
+            if (object.count() == 0 or object.count() > 4) return error.InvalidEventFrame;
+            try rejectUnknownKeys(object, &.{ "provider", "model", "effort", "fast_mode" });
             const provider = if (object.get("provider")) |provider_value| provider_blk: {
                 break :provider_blk model_provider.parse_saved(provider_value) catch return error.InvalidEventFrame;
             } else null;
@@ -1600,13 +1597,11 @@ fn parsePayload(alloc: Allocator, kind: Kind, value: std.json.Value) !Event {
             else
                 null;
             const fast_mode = if (object.get("fast_mode")) |_| try requireBool(object, "fast_mode") else null;
-            const ultrafast_mode = if (object.get("ultrafast_mode")) |_| try requireBool(object, "ultrafast_mode") else null;
             break :blk .{ .preferences_changed = .{
                 .provider = provider,
                 .model = model,
                 .effort = effort,
                 .fast_mode = fast_mode,
-                .ultrafast_mode = ultrafast_mode,
             } };
         },
         .workspace_rebound => blk: {

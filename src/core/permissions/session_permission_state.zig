@@ -363,23 +363,6 @@ pub const ApplyResult = union(enum) {
     stale,
     full,
     invalid,
-
-    pub fn takeApplied(self: *ApplyResult) ?State {
-        return switch (self.*) {
-            .applied => |state| blk: {
-                self.* = .invalid;
-                break :blk state;
-            },
-            else => null,
-        };
-    }
-};
-
-pub const ApplyStatus = enum {
-    applied,
-    stale,
-    full,
-    invalid,
 };
 
 pub fn apply(

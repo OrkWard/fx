@@ -25,13 +25,7 @@ pub const AgentTurnSettings = struct {
     auto_compact_percent: u8 = compactor.default_percent,
     first_call_tool_choice: types.ToolChoice = .auto,
     fast_mode: bool = false,
-    ultrafast_mode: bool = false,
     effort: types.ReasoningEffort = .auto,
-    /// Gateway provider routing for turns built from these settings. When set
-    /// on WorkerRuntime.agent_turn_settings the slice is owned by the worker
-    /// and released in WorkerRuntime.deinit; every other copy borrows it.
-    provider_order: []const []const u8 = &.{},
-    provider_strict: bool = false,
 };
 
 pub const SkillBinding = struct {
@@ -686,43 +680,6 @@ pub const WorkerRuntime = struct {
 
         for (self.worker_events.items) |event| freeWorkerEvent(alloc, event);
         self.worker_events.deinit(alloc);
-
-        if (self.agent_turn_settings.provider_order.len > 0) {
-            for (self.agent_turn_settings.provider_order) |slug| alloc.free(@constCast(slug));
-            alloc.free(self.agent_turn_settings.provider_order);
-            self.agent_turn_settings.provider_order = &.{};
-        }
-    }
-
-    /// Copies a gateway provider routing list into worker ownership for
-    /// subsequent turns. `alloc` must match the allocator later passed to
-    /// deinit (hosts use the C allocator for worker-owned memory). Copied
-    /// turn settings borrow the worker-owned list.
-    pub fn setProviderRouting(self: *WorkerRuntime, alloc: std.mem.Allocator, order: []const []const u8, strict: bool) !void {
-        var owned: []const []const u8 = &.{};
-        if (order.len > 0) {
-            const slugs = try alloc.alloc([]const u8, order.len);
-            var filled: usize = 0;
-            errdefer {
-                for (slugs[0..filled]) |slug| alloc.free(@constCast(slug));
-                alloc.free(slugs);
-            }
-            for (order, 0..) |slug, index| {
-                slugs[index] = try alloc.dupe(u8, slug);
-                filled += 1;
-            }
-            owned = slugs;
-        }
-        if (self.agent_turn_settings.provider_order.len > 0) {
-            for (self.agent_turn_settings.provider_order) |slug| alloc.free(@constCast(slug));
-            alloc.free(self.agent_turn_settings.provider_order);
-        }
-        self.agent_turn_settings.provider_order = owned;
-        self.agent_turn_settings.provider_strict = strict;
-        for (self.queued_prompts.items) |*prompt| {
-            prompt.agent_settings.provider_order = owned;
-            prompt.agent_settings.provider_strict = strict;
-        }
     }
 
     pub fn requestStop(self: *WorkerRuntime) void {
@@ -897,14 +854,6 @@ pub const WorkerRuntime = struct {
             },
             else => return,
         }
-    }
-
-    pub fn latchFinalizationFailure(self: *WorkerRuntime, failure: FinalizationFailure) void {
-        std.debug.assert(failure.turn_id != 0);
-
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        self.latchFinalizationFailureLocked(failure);
     }
 
     fn latchFinalizationFailureLocked(self: *WorkerRuntime, failure: FinalizationFailure) void {
@@ -1385,21 +1334,6 @@ pub const WorkerRuntime = struct {
         return text;
     }
 
-    pub fn waitAndTakeNextPrompt(self: *WorkerRuntime, alloc: std.mem.Allocator) !?QueuedPrompt {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-
-        while ((self.queued_prompts.items.len == 0 or self.turn_start_held or self.session_transition_held) and
-            !self.worker_stop_requested)
-        {
-            self.worker_processing = false;
-            self.active_turn_id = 0;
-            self.tool_phase_step_id = null;
-            self.worker_cond.wait(io_mod.getIo(), &self.worker_mutex) catch break;
-        }
-        return self.takeNextPromptLocked(alloc);
-    }
-
     pub fn waitAndTakeNextWork(self: *WorkerRuntime, alloc: std.mem.Allocator) !?WorkItem {
         self.worker_mutex.lockUncancelable(io_mod.getIo());
         defer self.worker_mutex.unlock(io_mod.getIo());
@@ -1412,32 +1346,6 @@ pub const WorkerRuntime = struct {
             self.active_turn_id = 0;
             self.tool_phase_step_id = null;
             self.worker_cond.wait(io_mod.getIo(), &self.worker_mutex) catch break;
-        }
-        return self.takeNextWorkLocked(alloc);
-    }
-
-    /// Nonblocking queue take for single-threaded hosts. Returns null while the
-    /// queue is empty, held, or stopped.
-    pub fn tryTakeNextPrompt(self: *WorkerRuntime, alloc: std.mem.Allocator) !?QueuedPrompt {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        if (self.queued_prompts.items.len == 0 or
-            self.turn_start_held or self.session_transition_held or
-            self.worker_stop_requested)
-        {
-            return null;
-        }
-        return self.takeNextPromptLocked(alloc);
-    }
-
-    pub fn tryTakeNextWork(self: *WorkerRuntime, alloc: std.mem.Allocator) !?WorkItem {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        if ((self.queued_prompts.items.len == 0 and
-            self.queued_context_compaction == null) or self.turn_start_held or
-            self.session_transition_held or self.worker_stop_requested)
-        {
-            return null;
         }
         return self.takeNextWorkLocked(alloc);
     }
@@ -1886,13 +1794,6 @@ pub const WorkerRuntime = struct {
         for (self.queued_prompts.items) |*prompt| prompt.agent_settings.fast_mode = enabled;
     }
 
-    pub fn syncQueuedPromptUltrafastMode(self: *WorkerRuntime, enabled: bool) void {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        self.agent_turn_settings.ultrafast_mode = enabled;
-        for (self.queued_prompts.items) |*prompt| prompt.agent_settings.ultrafast_mode = enabled;
-    }
-
     pub fn syncQueuedPromptEffort(self: *WorkerRuntime, effort: types.ReasoningEffort) void {
         self.worker_mutex.lockUncancelable(io_mod.getIo());
         defer self.worker_mutex.unlock(io_mod.getIo());
@@ -2053,12 +1954,6 @@ pub const WorkerRuntime = struct {
         self.history_publication_response = .{ .committed = snapshot };
     }
 
-    pub fn publishFreshPrompt(self: *WorkerRuntime, alloc: std.mem.Allocator, event: FreshPromptPreparation, ctx: *anyopaque, handler: FreshPromptHandler) !FreshPromptHistory {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        return self.publishFreshPromptLocked(alloc, event, ctx, handler);
-    }
-
     fn publishFreshPromptLocked(self: *WorkerRuntime, alloc: std.mem.Allocator, event: FreshPromptPreparation, ctx: *anyopaque, handler: FreshPromptHandler) !FreshPromptHistory {
         const prior_turn = event.prior_turn orelse return handler(ctx, event);
         const Publication = struct {
@@ -2075,18 +1970,6 @@ pub const WorkerRuntime = struct {
         var publication: Publication = .{ .ctx = ctx, .handler = handler, .event = event };
         try self.propagateHistoryTurnLocked(alloc, prior_turn, 0, .{ .ctx = &publication, .commit_fn = Publication.commit });
         return publication.result.?;
-    }
-
-    pub fn publishContextCompaction(
-        self: *WorkerRuntime,
-        alloc: std.mem.Allocator,
-        event: ContextCompaction,
-        ctx: *anyopaque,
-        handler: ContextCompactionHandler,
-    ) !void {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        try self.publishContextCompactionLocked(alloc, event, ctx, handler);
     }
 
     fn publishContextCompactionLocked(
@@ -2316,14 +2199,6 @@ pub const WorkerRuntime = struct {
         self.worker_mutex.lockUncancelable(io_mod.getIo());
         defer self.worker_mutex.unlock(io_mod.getIo());
         for (self.queued_prompts.items) |*prompt| try appendGrantToQueuedPrompt(alloc, prompt, tool_name, target_path);
-    }
-
-    pub fn requestPermissionBlocking(
-        self: *WorkerRuntime,
-        alloc: std.mem.Allocator,
-        request: permission_request.PermissionRequest,
-    ) permission_request.RequestCloneError!permission_request.OwnedPermissionResponse {
-        return self.requestPermissionBlockingWithReview(alloc, request, null);
     }
 
     pub fn requestPermissionBlockingWithReview(
@@ -2610,15 +2485,6 @@ pub const WorkerRuntime = struct {
         freeQuestionResponse(alloc, self.pending_question_response);
         self.pending_question_response = new_response;
         self.worker_cond.broadcast(io_mod.getIo());
-    }
-
-    pub fn cancelPendingQuestionBatch(self: *WorkerRuntime) bool {
-        self.worker_mutex.lockUncancelable(io_mod.getIo());
-        defer self.worker_mutex.unlock(io_mod.getIo());
-        if (self.pending_question_shared == null or self.pending_question_response != .pending) return false;
-        self.pending_question_response = .cancelled;
-        self.worker_cond.broadcast(io_mod.getIo());
-        return true;
     }
 
     pub fn snapshotPendingQuestionBatch(self: *WorkerRuntime, alloc: std.mem.Allocator) !?PendingQuestionBatchSnapshot {

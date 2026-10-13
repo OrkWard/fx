@@ -30,10 +30,6 @@ pub const StepBatchState = struct {
     /// Turn-scoped identical-failure tracker owned by the orchestrator step
     /// loop. Null disables escalation (tests and non-turn callers).
     identical_failure_escalation: ?*runtime_tool_admission.IdenticalFailureEscalationState = null,
-
-    pub fn allToolResultsFailed(self: StepBatchState) bool {
-        return self.step_total_count > 0 and self.step_error_count == self.step_total_count;
-    }
 };
 
 pub const ToolResultAccounting = struct {

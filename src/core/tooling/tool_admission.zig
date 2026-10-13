@@ -159,12 +159,6 @@ fn permissionTargetKindForCall(
         permissionTargetKind(input.tool_registry, call.name);
 }
 
-fn registeredWebSearchTarget(input: Input, name: []const u8) ?[]const u8 {
-    const spec = registeredTool(input, name) orelse return null;
-    if (spec.executor_kind != .web_search) return null;
-    return spec.name;
-}
-
 pub const FileMutationPreflight = union(enum) {
     allowed: file_mutation_contract.FileExecutionAuthorization,
     prompt: file_mutation_contract.FileExecutionAuthorization,
@@ -2416,15 +2410,6 @@ fn targetPathForFailureMessage(arena: Allocator, call: ToolCall) !?[]const u8 {
 }
 
 fn permissionTargetsForCall(input: Input, arena: Allocator, call: ToolCall) !permissions.PermissionCallTargets {
-    if (registeredWebSearchTarget(input, call.name)) |target_name| {
-        const items = try arena.alloc(permissions.PermissionCallTarget, 1);
-        errdefer arena.free(items);
-        items[0] = .{
-            .role = "target",
-            .path = try arena.dupe(u8, target_name),
-        };
-        return .{ .items = items };
-    }
     const tool = registeredTool(input, call.name) orelse return error.UnsupportedTool;
     if (try isRunCommandCall(input, arena, call)) {
         const items = try arena.alloc(permissions.PermissionCallTarget, 1);
@@ -2471,7 +2456,6 @@ fn sessionGrantsAllowAll(grants: []const PermissionGrant, tool_name: []const u8,
 }
 
 pub fn permissionTargetForCall(input: Input, arena: Allocator, call: ToolCall) ![]const u8 {
-    if (registeredWebSearchTarget(input, call.name)) |target_name| return arena.dupe(u8, target_name);
     const tool = registeredTool(input, call.name) orelse return error.UnsupportedTool;
     if (try isRunCommandCall(input, arena, call)) {
         return commandPermissionTarget(input, arena, call);

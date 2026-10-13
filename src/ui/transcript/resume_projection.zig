@@ -42,20 +42,6 @@ pub const ResumeProjection = struct {
         };
     }
 
-    /// Start a detached projection with the source runtime's presentation
-    /// policy but none of its conversation content.
-    pub fn initEmpty(
-        alloc: Allocator,
-        source: *TranscriptRuntime,
-        created_at_ms: i64,
-        next_diff_id: u32,
-    ) !ResumeProjection {
-        var projection = try init(alloc, source, created_at_ms, next_diff_id);
-        projection.runtime.clearTranscript(alloc);
-        projection.runtime.next_entry_id = 1;
-        return projection;
-    }
-
     pub fn deinit(self: *ResumeProjection) void {
         if (!self.consumed) self.runtime.deinit(self.alloc);
         if (self.publication_source) |*source| source.deinit(self.alloc);
@@ -346,12 +332,6 @@ pub const ResumeProjection = struct {
         return self.finalizeForPresentation(false);
     }
 
-    /// A live projection may end at a valid command-output prefix. Keep that
-    /// block open so later output and its terminal event can continue it.
-    pub fn finalizeLivePresentation(self: *ResumeProjection) !void {
-        return self.finalizeForPresentation(true);
-    }
-
     fn finalizeForPresentation(
         self: *ResumeProjection,
         allow_open_command_block: bool,
@@ -451,37 +431,5 @@ pub const ResumeProjection = struct {
 
         self.consumed = true;
         self.runtime.deinit(self.alloc);
-    }
-
-    /// Transfers a finalized detached projection into a standalone transcript
-    /// runtime. The caller owns the returned runtime and must deinitialize it
-    /// with the same allocator.
-    pub fn intoRuntime(self: *ResumeProjection) TranscriptRuntime {
-        std.debug.assert(self.finalized);
-        std.debug.assert(!self.consumed);
-        std.debug.assert(self.runtime.pending_resume_source == null);
-
-        self.runtime.pending_resume_source = self.publication_source;
-        self.publication_source = null;
-        self.runtime.reconcileDetachedInstallSource(
-            self.runtime.pendingResumeFlow(),
-        );
-        self.runtime.markTranscriptDirty();
-
-        self.consumed = true;
-        return self.runtime;
-    }
-
-    /// Transfers the full-diff sidecars that belong to the detached
-    /// presentation. The caller owns the returned entries and must deinitialize
-    /// each entry and the list with `std.heap.c_allocator`.
-    pub fn takePendingDiffs(
-        self: *ResumeProjection,
-    ) std.ArrayList(diff.DiffEntry) {
-        std.debug.assert(self.finalized);
-        std.debug.assert(!self.consumed);
-        const pending = self.pending_diffs;
-        self.pending_diffs = .empty;
-        return pending;
     }
 };

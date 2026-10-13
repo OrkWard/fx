@@ -24,17 +24,6 @@ pub fn ApprovalRuntime(comptime App: type) type {
             app_render_runtime.Runtime(App).requestActiveSurfaceFrame(app, .modal);
         }
 
-        pub fn handlePermissionAction(
-            app: *App,
-            action: approval_decision.Action,
-        ) !bool {
-            return switch (try handlePermissionActionWithLimit(app, action, null)) {
-                .consumed => true,
-                .ignored => false,
-                .limit_exceeded => unreachable,
-            };
-        }
-
         pub fn handlePermissionActionBounded(
             app: *App,
             action: approval_decision.Action,

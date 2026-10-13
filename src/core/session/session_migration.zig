@@ -355,6 +355,5 @@ fn loadMigrationPreferences(
         ),
         .effort = detailed.settings.effort orelse .auto,
         .fast_mode = detailed.settings.fast_mode orelse false,
-        .ultrafast_mode = detailed.settings.ultrafast_mode orelse false,
     };
 }

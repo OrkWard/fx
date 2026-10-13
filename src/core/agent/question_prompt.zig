@@ -196,15 +196,6 @@ pub const QuestionPrompt = struct {
         return self.syncFromOptions(alloc, entries, true);
     }
 
-    /// Rebuild the prompt without the synthetic freeform slot.
-    pub fn syncChoicesFrom(
-        self: *QuestionPrompt,
-        alloc: Allocator,
-        entries: []const types.QuestionBatchEntry,
-    ) !void {
-        return self.syncFromOptions(alloc, entries, false);
-    }
-
     fn syncFromOptions(
         self: *QuestionPrompt,
         alloc: Allocator,

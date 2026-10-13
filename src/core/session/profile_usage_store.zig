@@ -294,14 +294,6 @@ pub const Store = struct {
         self.* = undefined;
     }
 
-    fn appendFact(
-        self: *Store,
-        alloc: Allocator,
-        fact: usage_report.GenerationFact,
-    ) !AppendOutcome {
-        return self.appendEvent(alloc, .{ .generation = fact });
-    }
-
     pub fn appendEvent(
         self: *Store,
         alloc: Allocator,

@@ -139,10 +139,6 @@ pub const StartupState = struct {
     context_limits: config_runtime.context_limits.Values = .{},
     context_enabled: bool = true,
     fast_mode: bool = false,
-    ultrafast_mode: bool = false,
-    configured_ultrafast_mode: bool = false,
-    ultrafast_process_override: ?bool = null,
-    ultrafast_mode_source: config_runtime.ConfigSource = .compiled_default,
     fast_mode_model_bound: bool = false,
     fast_mode_source: config_runtime.ConfigSource = .compiled_default,
     slash_menu_categories: bool = true,
@@ -156,8 +152,6 @@ pub const StartupState = struct {
     effort: types.ReasoningEffort = .auto,
     /// Owned gateway provider slugs in preference order; empty leaves routing
     /// to the gateway.
-    provider_order: [][]const u8 = &.{},
-    provider_strict: bool = false,
     /// Resolved review-model override for automatic permission review. Owned;
     /// empty keeps the reviewer's compiled default.
     review_model: []u8 = &.{},
@@ -180,10 +174,6 @@ pub const StartupState = struct {
         if (self.selected_model.len > 0) alloc.free(self.selected_model);
         if (self.configured_model.len > 0) alloc.free(self.configured_model);
         if (self.review_model.len > 0) alloc.free(self.review_model);
-        if (self.provider_order.len > 0) {
-            for (self.provider_order) |slug| alloc.free(@constCast(slug));
-            alloc.free(self.provider_order);
-        }
         self.permission_rules.deinit(alloc);
         if (self.config_diagnostics.len > 0) {
             for (self.config_diagnostics) |*diagnostic| diagnostic.deinit(alloc);
@@ -244,7 +234,7 @@ pub const StartupState = struct {
 
     /// Applies per-launch turn overrides after session preferences are
     /// configured, so they shape runtime state without rewriting persistence.
-    pub fn applyLaunchTurnOverrides(self: *StartupState, effort: ?types.ReasoningEffort, fast: ?bool, ultrafast: ?bool) void {
+    pub fn applyLaunchTurnOverrides(self: *StartupState, effort: ?types.ReasoningEffort, fast: ?bool) void {
         if (effort) |value| self.effort = value;
         if (fast) |value| {
             self.fast_mode = value;
@@ -252,35 +242,6 @@ pub const StartupState = struct {
             // footer indicator reflects it; --no-fast clears the binding.
             self.fast_mode_model_bound = value;
         }
-        if (ultrafast) |value| {
-            self.ultrafast_process_override = value;
-            self.ultrafast_mode = value;
-        }
-        if (self.ultrafast_mode) self.fast_mode = false;
-    }
-
-    /// Applies per-launch `--provider-order`/`--provider-strict` flags. Like
-    /// the turn overrides, flags shape this launch only and never rewrite
-    /// stored settings.
-    pub fn applyLaunchProviderRouting(self: *StartupState, alloc: Allocator, order: ?[]const []const u8, strict: ?bool) !void {
-        if (order) |slugs| {
-            const owned = try alloc.alloc([]const u8, slugs.len);
-            var filled: usize = 0;
-            errdefer {
-                for (owned[0..filled]) |slug| alloc.free(@constCast(slug));
-                alloc.free(owned);
-            }
-            for (slugs, 0..) |slug, index| {
-                owned[index] = try alloc.dupe(u8, slug);
-                filled += 1;
-            }
-            if (self.provider_order.len > 0) {
-                for (self.provider_order) |slug| alloc.free(@constCast(slug));
-                alloc.free(self.provider_order);
-            }
-            self.provider_order = owned;
-        }
-        if (strict) |value| self.provider_strict = value;
     }
 
     pub fn takePermissionRules(self: *StartupState) types.PermissionRuleSet {
@@ -326,7 +287,6 @@ pub const StartupStatus = struct {
     model_origin: ModelOrigin = .default,
     /// The reasoning effort a new session starts with, as `StartupState` resolves it.
     effort: types.ReasoningEffort = .auto,
-    ultrafast_mode: bool = false,
     auth: auth_runtime.StatusSnapshot = .{},
     permission_mode: PermissionMode,
     agent_step_limit: usize,
@@ -487,7 +447,6 @@ pub fn loadStartupStatusWithAuthMode(
         .owned_selected_model = selected_model.owned,
         .model_origin = ModelOrigin.of(settings, configured_selection.provider, run_model),
         .effort = settings.effort orelse .auto,
-        .ultrafast_mode = detailed.ultrafast_mode_env_override orelse (settings.ultrafast_mode orelse false),
         .auth = auth_status,
         .permission_mode = loadPermissionMode(settings.permission_mode),
         .agent_step_limit = loadAgentStepLimit(default_agent_step_limit, settings.max_agent_steps),
@@ -540,13 +499,6 @@ fn loadStartupStateFromOwnedWorkspace(
         try config_runtime.loadMergedSettingsDetailed(alloc, state.workspace_root);
     defer detailed.deinit(alloc);
     const settings = &detailed.settings;
-    // A malformed process override must never silently fall through to a
-    // potentially paid profile preference, regardless of credential mode.
-    for (detailed.diagnostics) |diagnostic| {
-        if (diagnostic.cause == .invalid_ultrafast_mode_override) {
-            return error.InvalidUltrafastOverride;
-        }
-    }
     // A rejected local profile cannot safely identify the destination of model data.
     if (auth_mode == .local) for (detailed.diagnostics) |diagnostic| {
         if (diagnostic.layer != .user) continue;
@@ -621,10 +573,6 @@ fn loadStartupStateFromOwnedWorkspace(
     state.fast_mode = fast_mode.enabled;
     state.fast_mode_model_bound = fast_mode.model_bound;
     state.fast_mode_source = detailed.sources.fast_mode;
-    state.configured_ultrafast_mode = settings.ultrafast_mode orelse false;
-    state.ultrafast_process_override = detailed.ultrafast_mode_env_override;
-    state.ultrafast_mode = state.ultrafast_process_override orelse state.configured_ultrafast_mode;
-    state.ultrafast_mode_source = detailed.sources.ultrafast_mode;
     state.slash_menu_categories = settings.slash_menu_categories orelse true;
     state.collapse_tool_calls = settings.collapse_tool_calls orelse false;
     state.auto_upgrade = settings.auto_upgrade orelse true;
@@ -634,20 +582,6 @@ fn loadStartupStateFromOwnedWorkspace(
     state.effort = settings.effort orelse .auto;
     state.review_model = try alloc.dupe(u8, settings.review_model orelse "");
     state.first_call_tool_choice = settings.first_call_tool_choice orelse .auto;
-    state.provider_strict = settings.provider_strict orelse false;
-    if (settings.provider_order) |order| {
-        const owned_order = try alloc.alloc([]const u8, order.len);
-        var filled: usize = 0;
-        errdefer {
-            for (owned_order[0..filled]) |slug| alloc.free(@constCast(slug));
-            alloc.free(owned_order);
-        }
-        for (order, 0..) |slug, index| {
-            owned_order[index] = try alloc.dupe(u8, slug);
-            filled += 1;
-        }
-        state.provider_order = owned_order;
-    }
     state.statusline_context = settings.statusline_context orelse false;
     state.statusline_session = settings.statusline_session orelse false;
     state.statusline_workspace = settings.statusline_workspace orelse false;

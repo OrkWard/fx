@@ -215,16 +215,11 @@ fn permissionDeniedMessage(tool_name: []const u8, reason: types.ToolPermissionDe
         .review_caution => "Action held after safety review",
         .review_evidence_incomplete => "Safety review evidence incomplete; action held",
         .review_unavailable => "Safety reviewer unavailable; action held",
-        .policy_denied => if (is_network_tool(tool_name))
-            "Network or browser access was denied by configured policy"
-        else
-            "Tool access was denied by configured policy",
+        .policy_denied => "Tool access was denied by configured policy",
         .permission_required => if (std.mem.eql(u8, tool_name, "run_command") or
             std.mem.eql(u8, tool_name, "terminal") or
             std.mem.eql(u8, tool_name, "shell"))
             "Shell command approval is required before this tool can run"
-        else if (is_network_tool(tool_name))
-            "Network or browser approval is required before this tool can run"
         else
             "Tool approval is required before this tool can run",
     };
@@ -242,10 +237,6 @@ fn permissionDeniedSuggestion(
         .policy_denied => "The tool did not run. Do not retry unchanged; explain the configured policy blocker or use an allowed alternative.",
         .permission_required => "The tool did not run. Noninteractive mode cannot show an approval prompt. Rerun interactively to approve, or configure a narrow permission rule before retrying.",
     };
-}
-
-fn is_network_tool(tool_name: []const u8) bool {
-    return std.mem.eql(u8, tool_name, "web_search");
 }
 
 pub fn toolPermissionDenialReason(output: []const u8) ?types.ToolPermissionDenialReason {

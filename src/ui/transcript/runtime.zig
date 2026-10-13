@@ -16,14 +16,12 @@ const footer_viewport_runtime = @import("../footer/viewport.zig");
 const render_request = @import("../render_request.zig");
 const command_output_runtime = @import("command_output_runtime.zig");
 const input_visual_layout = @import("../input/visual_layout.zig");
-const user_message_card = @import("../assistant/user_message_card.zig");
 const render_engine = @import("../render_engine.zig");
 const build_checkpoint = @import("../render_engine/build_checkpoint.zig");
 const transcript_io = @import("io.zig");
 const transcript_painter = @import("painter.zig");
 const source_preparation = @import("source_preparation.zig");
 const full_transcript_worker = @import("full_transcript_worker.zig");
-const tool_group_projection = @import("tool_group_projection.zig");
 const transcript_store = @import("store.zig");
 const full_transcript_screen = @import("../full_transcript_screen.zig");
 const transcript_viewport_runtime = @import("viewport_runtime.zig");
@@ -68,18 +66,6 @@ pub const AssistantTurnSegments = transcript_blocks.AssistantTurnSegments;
 pub const RawEntryClass = transcript_blocks.RawEntryClass;
 pub const TranscriptEntry = transcript_blocks.TranscriptEntry;
 pub const TranscriptPreparationSource = source_preparation.TranscriptPreparationSource;
-
-pub const VisibleTranscriptSnapshot = struct {
-    text: []u8,
-    terminal_rows: u16,
-    terminal_cols: u16,
-    complete: bool,
-
-    pub fn deinit(self: *VisibleTranscriptSnapshot, alloc: Allocator) void {
-        alloc.free(self.text);
-        self.* = undefined;
-    }
-};
 
 pub const ResizeObservationPhase = enum {
     live,
@@ -968,14 +954,6 @@ pub const TranscriptRuntime = struct {
         return transcript_io.disableShadowVt(self);
     }
 
-    pub fn bindDetachedCommitAllocator(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-    ) void {
-        std.debug.assert(self.shadow_vt == null);
-        self.detached_commit_alloc = alloc;
-    }
-
     pub fn deinit(self: *TranscriptRuntime, alloc: Allocator) void {
         self.disableShadowVt();
         self.full_transcript_window_load.deinit();
@@ -1034,15 +1012,6 @@ pub const TranscriptRuntime = struct {
         if (exit_len != entry_len) {
             debug_trace.logf("paint", "transcript mutated during paint: entry_len={d} exit_len={d}", .{ entry_len, exit_len });
         }
-    }
-
-    pub fn beginPaintSilent(self: *TranscriptRuntime) void {
-        std.debug.assert(!self.painting);
-        self.painting = true;
-    }
-
-    pub fn endPaintSilent(self: *TranscriptRuntime) void {
-        self.painting = false;
     }
 
     pub fn assertCanMutateTranscript(self: *TranscriptRuntime) !void {
@@ -1507,88 +1476,6 @@ pub const TranscriptRuntime = struct {
                 .visibility = .full_only,
             } });
         }
-    }
-
-    pub fn snapshotVisibleTranscriptText(
-        self: *const TranscriptRuntime,
-        alloc: Allocator,
-        max_bytes: usize,
-    ) !?VisibleTranscriptSnapshot {
-        const grid = self.shadow_vt orelse return null;
-        if (!self.has_painted_transcript or
-            self.last_visible_transcript_top_row == 0 or
-            self.last_visible_transcript_last_row < self.last_visible_transcript_top_row)
-        {
-            return null;
-        }
-        const footer_gap_rows = if (!self.committed_frame_layout.footer_area.isEmpty() and
-            self.committed_frame_layout.footer_area.top > self.last_visible_transcript_last_row)
-            self.committed_frame_layout.footer_area.top - self.last_visible_transcript_last_row - 1
-        else
-            0;
-        if (footer_gap_rows >= max_bytes) return null;
-        const text_byte_limit = max_bytes - footer_gap_rows;
-        var out: std.ArrayList(u8) = .empty;
-        errdefer out.deinit(alloc);
-        var start_row = self.last_visible_transcript_top_row;
-        const leading_welcome_visible = if (self.entries.items.len > 0 and
-            self.entries.items[0] == .raw_bytes and
-            self.entries.items[0].raw_bytes.class == .welcome and
-            self.last_viewport_selection != null)
-            self.last_viewport_selection.?.start_line == 0 or
-                (self.last_viewport_selection.?.split_active and
-                    self.last_viewport_selection.?.split_prefix_lines > 0)
-        else
-            false;
-        if (leading_welcome_visible) {
-            var saw_welcome_text = false;
-            while (start_row <= self.last_visible_transcript_last_row) : (start_row += 1) {
-                var line: std.ArrayList(u8) = .empty;
-                defer line.deinit(grid.alloc);
-                try grid.rowTextTrimmed(start_row, &line);
-                if (line.items.len > 0) {
-                    saw_welcome_text = true;
-                } else if (saw_welcome_text) {
-                    start_row += 1;
-                    break;
-                }
-            }
-            if (!saw_welcome_text or start_row > self.last_visible_transcript_last_row) return null;
-        }
-        var selected_start: ?u16 = null;
-        var selected_bytes: usize = 0;
-        var row = self.last_visible_transcript_last_row;
-        while (true) {
-            var line: std.Io.Writer.Allocating = .init(grid.alloc);
-            defer line.deinit();
-            try grid.rowStyledTextTrimmed(row, &line.writer);
-            if (line.written().len >= text_byte_limit - selected_bytes) break;
-            selected_bytes += line.written().len + 1;
-            selected_start = row;
-            if (row == start_row) break;
-            row -= 1;
-        }
-        row = selected_start orelse return null;
-        var has_content = false;
-        while (row <= self.last_visible_transcript_last_row) : (row += 1) {
-            var line: std.Io.Writer.Allocating = .init(grid.alloc);
-            defer line.deinit();
-            try grid.rowStyledTextTrimmed(row, &line.writer);
-            has_content = has_content or line.written().len > 0;
-            try out.appendSlice(alloc, line.written());
-            try out.append(alloc, '\n');
-        }
-        if (!has_content) {
-            out.deinit(alloc);
-            return null;
-        }
-        try out.appendNTimes(alloc, '\n', footer_gap_rows);
-        return .{
-            .text = try out.toOwnedSlice(alloc),
-            .terminal_rows = grid.rows,
-            .terminal_cols = grid.cols,
-            .complete = selected_start.? == start_row,
-        };
     }
 
     pub fn resetVisualEpoch(self: *TranscriptRuntime, alloc: Allocator, welcome: []const u8) !void {
@@ -2662,15 +2549,6 @@ pub const TranscriptRuntime = struct {
         self.markTranscriptContentDirtyFrom(entry_id);
     }
 
-    pub fn hasStoredResultDetails(self: *const TranscriptRuntime) bool {
-        for (self.tool_details.items) |detail| {
-            if (detail.result_handle != null or
-                detail.command_artifact_handle != null or
-                detail.command_output_replay != null) return true;
-        }
-        return false;
-    }
-
     fn commandOutputEntryIdForLifecycle(
         self: *const TranscriptRuntime,
         lifecycle_id: ?types.ToolLifecycleId,
@@ -3242,49 +3120,6 @@ pub const TranscriptRuntime = struct {
         page_anchor: full_transcript_page.Anchor,
     };
 
-    pub fn snapshotFullTranscriptViewport(
-        self: *const TranscriptRuntime,
-    ) FullTranscriptViewportSnapshot {
-        return .{
-            .presentation = self.full_transcript.snapshot(),
-            .page_anchor = self.full_transcript_page_anchor,
-        };
-    }
-
-    pub fn restoreFullTranscriptViewport(
-        self: *TranscriptRuntime,
-        snapshot: FullTranscriptViewportSnapshot,
-    ) void {
-        self.full_transcript = .from_snapshot(snapshot.presentation);
-        self.full_transcript_page_anchor = snapshot.page_anchor;
-        self.markTranscriptDirty();
-    }
-
-    pub fn requestTailViewport(
-        self: *TranscriptRuntime,
-        request: viewport_selection.TailViewportPolicy,
-    ) void {
-        const changed = if (self.tail_viewport_request) |current|
-            !std.meta.eql(current, request)
-        else
-            true;
-        self.tail_viewport_request = request;
-        self.tail_viewport_resolution = null;
-        const has_committed_anchor = switch (self.transcript_commit_state) {
-            .invalid => false,
-            .stable, .recovering => true,
-        };
-        if (changed and has_committed_anchor) {
-            self.invalidateTranscriptAnchor("tail viewport changed");
-        }
-    }
-
-    pub fn resolvedTailViewport(
-        self: *const TranscriptRuntime,
-    ) ?viewport_selection.TailOffsetResolution {
-        return self.tail_viewport_resolution;
-    }
-
     pub fn closeFullTranscriptState(self: *TranscriptRuntime) void {
         self.full_transcript = self.full_transcript.closed();
         self.resetFullTranscriptPageNavigation();
@@ -3629,10 +3464,6 @@ pub const TranscriptRuntime = struct {
             .stable => |anchor| anchor.retention_identity,
             .recovering => |receipt| receipt.retention_identity,
         };
-    }
-
-    pub fn prepareCommittedRetentionSource(self: *const TranscriptRuntime, alloc: Allocator) !?TranscriptPreparationSource {
-        return self.prepareCommittedRetentionSourceInterruptible(alloc, null);
     }
 
     pub fn prepareCommittedRetentionSourceInterruptible(self: *const TranscriptRuntime, alloc: Allocator, checkpoint: ?*build_checkpoint.BuildCheckpoint) !?TranscriptPreparationSource {
@@ -4010,13 +3841,6 @@ pub const TranscriptRuntime = struct {
             semantic_rows,
             @min(projection.visual_rows, semantic_cap),
         );
-    }
-
-    pub fn planTranscriptScroll(
-        self: *const TranscriptRuntime,
-        prepared: *const transcript_painter.PreparedTranscriptSurfacePaint,
-    ) TranscriptScrollFacts {
-        return self.planTranscriptScrollForFrame(prepared, false, false);
     }
 
     /// Selects the finality floor in flow bytes from the prepared paint's
@@ -4639,25 +4463,10 @@ pub const TranscriptRuntime = struct {
             return self.target.cursor_col;
         }
 
-        pub fn bodyDisposition(self: ResolvedTranscriptTarget) TranscriptBodyDisposition {
-            return self.target.body_disposition;
-        }
-
         pub fn occupiedTranscriptRows(self: ResolvedTranscriptTarget) u16 {
             const area = self.target_layout.transcript_area;
             if (area.isEmpty() or self.target.selection.last_visible_row < area.top) return 0;
             return self.target.selection.last_visible_row - area.top + 1;
-        }
-
-        pub fn applyToPaintPlan(
-            self: ResolvedTranscriptTarget,
-            plan: *render_engine.paint_plan.PaintPlan,
-        ) void {
-            plan.viewport = self.target.selection;
-            if (plan.cursor_target) |*cursor| {
-                cursor.row = self.target.cursor_row;
-                cursor.col = self.target.cursor_col;
-            }
         }
     };
 
@@ -5448,48 +5257,6 @@ pub const TranscriptRuntime = struct {
         };
     }
 
-    pub fn finalizeTranscriptTransitionForFrame(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        source: *TranscriptPreparationSource,
-        prepared: *transcript_painter.PreparedTranscriptSurfacePaint,
-        target_layout: render_engine.frame_layout.CommittedLayoutSnapshot,
-        plan: *render_engine.paint_plan.PaintPlan,
-        scroll_plan: render_engine.frame_scroll_plan.FrameScrollPlan,
-        footer_reservation_changed: bool,
-        replay_displaced_footer_history: bool,
-    ) !TranscriptTransition {
-        const scroll_facts = try self.prepareTranscriptScrollFactsForFrame(
-            alloc,
-            source,
-            prepared,
-            footer_reservation_changed,
-            replay_displaced_footer_history,
-        );
-        const destructive_invalidation = render_engine.frame_retention.transcriptAreaHasDestructiveInvalidation(
-            self.committed_frame_layout.transcript_area,
-            plan.invalidation,
-        );
-        const resolved = try self.resolveTranscriptTransitionTargetForFrame(
-            alloc,
-            source,
-            prepared,
-            target_layout,
-            scroll_plan,
-            scroll_facts,
-            destructive_invalidation,
-            plan.activity == .overlay_entry,
-        );
-        resolved.applyToPaintPlan(plan);
-        return self.sealTranscriptTransition(
-            alloc,
-            source,
-            prepared,
-            plan,
-            resolved,
-        );
-    }
-
     pub fn sealTranscriptTransition(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -5925,16 +5692,6 @@ pub const TranscriptRuntime = struct {
         };
     }
 
-    pub fn consumeTranscriptTransition(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        transition: *TranscriptTransition,
-        result: render_engine.terminal_diff.FrameCommitResult,
-    ) void {
-        const scroll_commit = result.scrollCommit(transition.scroll_plan);
-        self.consumeTranscriptTransitionWithCommit(alloc, transition, result, scroll_commit);
-    }
-
     pub fn consumeFrameScrollCommit(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -6295,15 +6052,6 @@ pub const TranscriptRuntime = struct {
         const shadow = self.shadow_vt orelse return null;
         if (target_cols == 0 or shadow.cursor_row == 0) return null;
         return reflowedRows(shadow, 1, shadow.cursor_row, target_cols, true);
-    }
-
-    pub fn ackPreservedRowRelease(
-        self: *TranscriptRuntime,
-        scroll_plan: render_engine.frame_scroll_plan.FrameScrollPlan,
-        committed_terminal_scroll_rows: u16,
-    ) !void {
-        try scroll_plan.validate(self.layout.rows);
-        self.ackPreservedRowReleaseAssumeValid(scroll_plan, committed_terminal_scroll_rows);
     }
 
     pub fn ackPreservedRowReleaseAssumeValid(
@@ -6884,23 +6632,6 @@ pub const TranscriptRuntime = struct {
         }
     };
 
-    pub noinline fn buildFullTranscriptProjection(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        full_diff_resolver: ?full_transcript_screen.FullDiffResolver,
-    ) !full_transcript_screen.Projection {
-        self.prepareFullTranscriptProjectionLayout();
-        return self.buildFullTranscriptProjectionUncached(
-            alloc,
-            full_diff_resolver,
-            self.fullTranscriptAnchorEntryId(),
-            null,
-        ) catch |err| switch (err) {
-            error.InputPending => unreachable,
-            else => |other| return other,
-        };
-    }
-
     pub fn pollFullTranscriptPageLoad(
         self: *TranscriptRuntime,
     ) !bool {
@@ -7064,23 +6795,6 @@ pub const TranscriptRuntime = struct {
         self.full_transcript_open_request = request;
         debug_trace.logf("full_transcript", "open_request state=pending", .{});
         return false;
-    }
-
-    pub fn deferRestoredFullTranscriptOpen(self: *TranscriptRuntime) void {
-        std.debug.assert(self.full_transcript.depth == .full);
-        self.full_transcript_open_request = self.desiredFullTranscriptPageRequest();
-        self.full_transcript = self.full_transcript.defer_full_open();
-        self.full_transcript_restore_open_pending = true;
-        debug_trace.logf(
-            "full_transcript",
-            "restored_open deferred scroll_rows={d} follow_tail={} bookmark_pending={} bookmark_entry_id={d}",
-            .{
-                self.full_transcript.scroll_rows,
-                self.full_transcript.follow_tail,
-                self.full_transcript.bookmark_pending,
-                self.full_transcript.bookmark_entry_id orelse 0,
-            },
-        );
     }
 
     pub fn cancelPendingFullTranscriptOpen(self: *TranscriptRuntime) bool {
@@ -7614,91 +7328,6 @@ pub const TranscriptRuntime = struct {
         return source.command_blocks.items.len - 1;
     }
 
-    fn prepareFullTranscriptProjectionLayout(self: *TranscriptRuntime) void {
-        self.full_transcript = self.full_transcript.prepare_projection(
-            self.layout.cols,
-        );
-    }
-
-    fn buildFullTranscriptProjectionUncached(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        full_diff_resolver: ?full_transcript_screen.FullDiffResolver,
-        anchor_entry_id: ?u32,
-        checkpoint: ?*build_checkpoint.BuildCheckpoint,
-    ) !full_transcript_screen.Projection {
-        return self.buildFullTranscriptProjectionUncachedFrom(
-            alloc,
-            full_diff_resolver,
-            anchor_entry_id,
-            0,
-            checkpoint,
-        );
-    }
-
-    fn buildFullTranscriptProjectionUncachedFrom(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        full_diff_resolver: ?full_transcript_screen.FullDiffResolver,
-        anchor_entry_id: ?u32,
-        start_index: usize,
-        checkpoint: ?*build_checkpoint.BuildCheckpoint,
-    ) !full_transcript_screen.Projection {
-        var relationships = try tool_group_projection.buildExpandedRelationshipsInterruptible(
-            alloc,
-            self.entries.items,
-            self.tool_details.items,
-            checkpoint,
-        );
-        defer relationships.deinit(alloc);
-        var entry_actions = try tool_group_projection.materializeExpandedRelationshipsRangeInterruptible(
-            alloc,
-            &relationships,
-            start_index,
-            self.layout.cols,
-            .{
-                .marker_style = user_message_card.promptMarkerStyle(),
-                .text_style = ui_render.statusline_style,
-                .reset_style = "\x1b[0m",
-            },
-            checkpoint,
-        );
-        defer entry_actions.deinit(alloc);
-        return full_transcript_screen.buildProjectionWithEntryActionsInterruptible(
-            alloc,
-            self.entries.items[start_index..],
-            self.tool_details.items,
-            self.command_output_blocks.items,
-            self.command_output_render.styles,
-            self.layout.cols,
-            anchor_entry_id,
-            full_diff_resolver,
-            entry_actions.entry_actions.items,
-            checkpoint,
-        );
-    }
-
-    pub noinline fn prepareFullTranscriptSurfacePaint(
-        self: *TranscriptRuntime,
-        alloc: Allocator,
-        metrics: *Metrics,
-        projection: *full_transcript_screen.Projection,
-        capability: ?*session_child_store.SessionChildCapability,
-        area: render_engine.frame_layout.FrameRect,
-    ) !FullTranscriptSurfacePaint {
-        return self.prepareFullTranscriptSurfacePaintInterruptible(
-            alloc,
-            metrics,
-            projection,
-            capability,
-            area,
-            null,
-        ) catch |err| switch (err) {
-            error.InputPending => unreachable,
-            else => |other| return other,
-        };
-    }
-
     pub noinline fn prepareFullTranscriptSurfacePaintInterruptible(
         self: *TranscriptRuntime,
         alloc: Allocator,
@@ -8113,33 +7742,6 @@ pub const TranscriptRuntime = struct {
         self.cursor_col = result.end_col;
         self.cursor_row = @intCast(@min(result.end_row, @as(u32, self.layout.rows)));
         return result;
-    }
-
-    pub fn updateExtraInputRows(self: *TranscriptRuntime, alloc: Allocator, metrics: *Metrics, new_extra: u16) !void {
-        _ = alloc;
-        _ = metrics;
-        if (new_extra == self.extra_input_rows) return;
-        const old_extra = self.extra_input_rows;
-        self.extra_input_rows = new_extra;
-        self.markTranscriptDirty();
-        self.footer_viewport.invalidateAfterExternalClear();
-
-        if (self.layout.rows > 0) {
-            const top = if (self.owned_top_row == 0 or self.owned_top_row > self.layout.rows)
-                @as(u16, 1)
-            else
-                self.owned_top_row;
-            try self.recordFrameInvalidation(.{
-                .reason = .external_clear,
-                .top = top,
-                .bottom = self.layout.rows,
-            });
-        }
-        debug_trace.logf(
-            "frame_plan",
-            "footer_extra_update_frame_deferred old={d} new={d} owned_top={d} rows={d}",
-            .{ old_extra, new_extra, self.owned_top_row, self.layout.rows },
-        );
     }
 
     pub fn resetCursorTracking(self: *TranscriptRuntime) void {

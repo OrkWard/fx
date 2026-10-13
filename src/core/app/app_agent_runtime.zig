@@ -164,8 +164,6 @@ pub fn Runtime(comptime App: type) type {
             const selected_provider = provider_runtime.provider(app);
             const provider_capabilities = if (comptime @hasDecl(App, "providerSet"))
                 app.providerSet().select(selected_provider).capabilities
-            else if (selected_provider == .gateway)
-                provider_set.Bundle.Capabilities{ .fx_search = true, .vision_fallback = true }
             else
                 provider_set.Bundle.Capabilities{};
             var ctx: tool_runtime.Context = .{
@@ -193,7 +191,6 @@ pub fn Runtime(comptime App: type) type {
                 .reviewer_model = if (comptime @hasField(App, "review_model")) app.review_model else "",
                 .agent_step_limit = app.agent_step_limit,
                 .fast_mode = agent_settings.fast_mode,
-                .ultrafast_mode = agent_settings.ultrafast_mode,
                 .effort = agent_settings.effort,
                 .first_call_tool_choice = agent_settings.first_call_tool_choice,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry() else .{},
@@ -723,15 +720,12 @@ pub fn Runtime(comptime App: type) type {
             const arena = arena_state.allocator();
 
             var deps = app_callbacks.Bindings(App).agentRuntimeDeps(app);
-            const provider_capabilities: provider_set.Bundle.Capabilities = if (comptime @hasDecl(App, "providerSet")) blk: {
-                const bundle = app.providerSet().select(job.provider);
-                deps.agent_stream_provider = bundle.agent_stream_or_unavailable();
-                break :blk bundle.capabilities;
-            } else .{};
+            if (comptime @hasDecl(App, "providerSet")) {
+                deps.agent_stream_provider = app.providerSet().select(job.provider).agent_stream_or_unavailable();
+            }
             const capabilities = deps.available_model_capabilities(deps.ctx, job.model);
             const settings = app.worker.effectiveAgentTurnSettings();
-            var provider_options = model_capabilities.resolveProviderOptionsForCapabilities(capabilities, settings.effort, settings.fast_mode);
-            provider_options.prompt_caching = provider_capabilities.gateway_prompt_caching;
+            const provider_options = model_capabilities.resolveProviderOptionsForCapabilities(capabilities, settings.effort, settings.fast_mode);
             var summary_model: agent_runtime.CompactorCaller = .{
                 .stream_provider = deps.agent_stream_provider,
                 .provider = job.provider,
@@ -879,8 +873,6 @@ pub fn Runtime(comptime App: type) type {
                 .advertised_functions = tool_projection.advertised_functions,
                 .provider_capabilities = if (comptime @hasDecl(App, "providerSet"))
                     app.providerSet().select(job.provider).capabilities
-                else if (job.provider == .gateway)
-                    .{ .fx_search = true, .vision_fallback = true }
                 else
                     .{},
                 .custom_tool_guidance = tool_projection.custom_guidance,
@@ -890,7 +882,6 @@ pub fn Runtime(comptime App: type) type {
                 .cancel_flag = &app.worker.worker_cancel_requested,
                 .review_enabled = false,
                 .fast_mode = job.agent_settings.fast_mode,
-                .ultrafast_mode = job.agent_settings.ultrafast_mode,
                 .effort = job.agent_settings.effort,
                 .first_call_tool_choice = job.agent_settings.first_call_tool_choice,
                 .workspace_root = workspace.root,
@@ -925,9 +916,6 @@ fn formatToolAction(
     state: ToolActionState,
     denied_label: ?[]const u8,
 ) ![]const u8 {
-    if (std.mem.eql(u8, call.name, "web_search") or tool_presentation.isProviderSearchAlias(call.name)) {
-        return formatWebSearchAction(arena, call, state, denied_label);
-    }
     const spec = ctx.tool_registry.lookup(call.name) orelse
         return formatMissingSpecToolAction(arena, state, denied_label, call.name);
     if (try tool_presentation.formatRunCommandActivity(arena, ctx.tool_registry, ctx.workspace_root, call)) |activity| {
@@ -972,18 +960,6 @@ fn formatToolAction(
         tool_dispatch.presentationLabelValue(presentation, args) orelse
         presentation.label_arg_default;
     return formatToolActionValue(arena, presentationLabel(presentation, state, denied_label), value);
-}
-
-fn formatWebSearchAction(arena: Allocator, call: ToolCall, state: ToolActionState, denied_label: ?[]const u8) ![]const u8 {
-    const args = tool_args.parseToolArgsObject(arena, call.arguments_json) catch {
-        return formatInvalidArgsToolAction(arena, state, denied_label);
-    };
-    const label = switch (state) {
-        .active => "Searching",
-        .completed => "Searched",
-        .denied => denied_label.?,
-    };
-    return formatToolActionValue(arena, label, try tool_presentation.formatWebSearchActionDetail(arena, args));
 }
 
 fn formatMissingSpecToolAction(arena: Allocator, state: ToolActionState, denied_label: ?[]const u8, name: []const u8) ![]const u8 {

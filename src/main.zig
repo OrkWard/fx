@@ -397,10 +397,7 @@ const App = struct {
     herdr: builtin_hooks.Client = .{},
     program_status: ui_program_status.Reporter = .{},
 
-    session: SessionRuntime = SessionRuntime.initWithProviders(
-        max_history_turns,
-        builtin_providers.native.deferredUsageProviders(),
-    ),
+    session: SessionRuntime = SessionRuntime.init(max_history_turns),
     session_persistence: app_session_runtime.Persistence = .{},
     prompt_history: PromptHistoryRuntime = .{},
     requested_resume: ?cli_surface.ResumeTarget = null,
@@ -474,11 +471,7 @@ const App = struct {
         usage_dashboard_runtime.Runtime.initInto(&app.usage_dashboard, std.heap.c_allocator);
         app_session_runtime.Persistence.initInto(&app.session_persistence);
         InputRuntime.initInto(&app.input_runtime);
-        SessionRuntime.initIntoWithProviders(
-            &app.session,
-            max_history_turns,
-            builtin_providers.native.deferredUsageProviders(),
-        );
+        SessionRuntime.initInto(&app.session, max_history_turns);
         app.shell.max_transcript_bytes = max_transcript_bytes;
         if (launch.requested_resume) |target| {
             app.requested_resume = target;
@@ -500,9 +493,6 @@ const App = struct {
                 .model = launch.modifiers.model_override,
                 .effort = launch.modifiers.effort_override,
                 .fast = launch.modifiers.fast_override,
-                .ultrafast = launch.modifiers.ultrafast_override,
-                .provider_order = launch.modifiers.provider_order_override,
-                .provider_strict = launch.modifiers.provider_strict_override,
             },
         );
         errdefer app.deinit();
@@ -801,39 +791,6 @@ const App = struct {
             &self.metrics,
             self.terminalTitle(),
         );
-    }
-
-    pub fn runExternalInteractive(self: *App, argv: []const []const u8) !void {
-        try self.flushBeforeBlockingExternalWork();
-
-        self.terminal.disableRawMode();
-        var raw_restored = false;
-        defer if (!raw_restored) {
-            self.terminal.enableRawMode() catch {};
-        };
-
-        const io = io_mod.getIo();
-        try std.Io.File.stdout().writeStreamingAll(io, "\n");
-        var child = std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        }) catch return error.ExternalInteractiveFailed;
-        const term = child.wait(io) catch return error.ExternalInteractiveFailed;
-        try std.Io.File.stdout().writeStreamingAll(io, "\n");
-
-        try self.terminal.captureOriginalTermios();
-        try self.terminal.enableRawMode();
-        raw_restored = true;
-        self.shell.layout = self.terminal.queryLayout(footer_rows) catch self.shell.layout;
-        try self.shell.requestTerminalReset(&self.metrics);
-        self.shell.render_requests.request(.first_frame);
-
-        switch (term) {
-            .exited => |code| if (code != 0) return error.ExternalInteractiveFailed,
-            else => return error.ExternalInteractiveFailed,
-        }
     }
 
     pub fn flushBeforeBlockingExternalWork(self: *App) !void {
@@ -1173,10 +1130,6 @@ const App = struct {
 
     pub fn commitStartupResumeReplayAnchor(self: *App) !void {
         try self.flushRequestedFrame();
-    }
-
-    pub fn flushDirectTerminalShutdownOutcome(self: *App) !void {
-        try RenderAppRuntime.flushRequestedFrame(@as(*Self, self));
     }
 
     fn snapshotAndAdmitInteractivePromptWithSkillBindings(

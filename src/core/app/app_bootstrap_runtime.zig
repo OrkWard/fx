@@ -85,8 +85,6 @@ fn BootstrapDeps(comptime App: type) type {
             types.ReasoningEffort,
             bool,
             bool,
-            bool,
-            ?bool,
             ?types.ReasoningEffort,
             ?bool,
             ?model_provider.ProviderId,
@@ -119,10 +117,6 @@ pub fn Runtime(comptime App: type) type {
             model: ?[]const u8 = null,
             effort: ?types.ReasoningEffort = null,
             fast: ?bool = null,
-            ultrafast: ?bool = null,
-            /// Borrowed from the launch arguments; StartupState dupes on apply.
-            provider_order: ?[]const []const u8 = null,
-            provider_strict: ?bool = null,
         };
 
         pub fn bootstrap(
@@ -182,8 +176,6 @@ pub fn Runtime(comptime App: type) type {
             effort: types.ReasoningEffort,
             fast_mode: bool,
             fast_mode_model_bound: bool,
-            configured_ultrafast_mode: bool,
-            ultrafast_process_override: ?bool,
             effort_process_override: ?types.ReasoningEffort,
             fast_process_override: ?bool,
             provider_process_override: ?model_provider.ProviderId,
@@ -197,8 +189,6 @@ pub fn Runtime(comptime App: type) type {
                 effort,
                 fast_mode,
                 fast_mode_model_bound,
-                configured_ultrafast_mode,
-                ultrafast_process_override,
                 effort_process_override,
                 fast_process_override,
                 provider_process_override,
@@ -416,11 +406,7 @@ pub fn Runtime(comptime App: type) type {
             // configured and stored preferences keep their pre-flag values.
             const persisted_effort = startup.effort;
             const persisted_fast_mode = startup.fast_mode;
-            const persisted_ultrafast_mode = startup.configured_ultrafast_mode;
-            startup.applyLaunchTurnOverrides(launch_overrides.effort, launch_overrides.fast, launch_overrides.ultrafast);
-            if (launch_overrides.provider_order != null or launch_overrides.provider_strict != null) {
-                try startup.applyLaunchProviderRouting(app.alloc, launch_overrides.provider_order, launch_overrides.provider_strict);
-            }
+            startup.applyLaunchTurnOverrides(launch_overrides.effort, launch_overrides.fast);
             try deps.configure_session_preferences(
                 app,
                 startup.provider,
@@ -430,8 +416,6 @@ pub fn Runtime(comptime App: type) type {
                 persisted_effort,
                 persisted_fast_mode,
                 startup.fast_mode_model_bound,
-                persisted_ultrafast_mode,
-                startup.ultrafast_process_override,
                 launch_overrides.effort,
                 launch_overrides.fast,
                 launch_overrides.provider,
@@ -444,10 +428,7 @@ pub fn Runtime(comptime App: type) type {
             if (comptime @hasField(App, "context_limits")) app.context_limits = startup.context_limits;
             app.worker.agent_turn_settings.first_call_tool_choice = startup.first_call_tool_choice;
             app.worker.agent_turn_settings.fast_mode = startup.fast_mode;
-            app.worker.agent_turn_settings.ultrafast_mode = startup.ultrafast_mode;
             app.worker.agent_turn_settings.effort = startup.effort;
-            // Worker-owned memory uses the C allocator, matching worker deinit.
-            try app.worker.setProviderRouting(std.heap.c_allocator, startup.provider_order, startup.provider_strict);
             app.context_enabled = startup.context_enabled;
             app.fast_mode = startup.fast_mode;
             app.input_runtime.slash_menu_categories = startup.slash_menu_categories;

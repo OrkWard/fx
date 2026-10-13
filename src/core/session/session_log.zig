@@ -298,10 +298,6 @@ pub const ConversationWriter = struct {
         return seq;
     }
 
-    pub fn pendingToolCallCount(self: *const ConversationWriter) usize {
-        return self.pending_tool_calls.items.len;
-    }
-
     pub fn appendHistoryTurn(
         self: *ConversationWriter,
         alloc: Allocator,
@@ -436,16 +432,6 @@ pub const ConversationWriter = struct {
         }
         if (!progress.reached and !std.meta.eql(cut, types.ContextHistoryCut{})) return error.InvalidContextHistoryStart;
         return progress.coverage;
-    }
-
-    pub fn readAllForTest(self: *const ConversationWriter, alloc: Allocator) ![]u8 {
-        const size = std.math.cast(usize, self.committed_bytes) orelse
-            return error.ConversationTooLarge;
-        const bytes = try alloc.alloc(u8, size);
-        errdefer mem_utils.free(alloc, bytes);
-        const count = try self.file.readPositionalAll(io_mod.getIo(), bytes, 0);
-        if (count != size) return error.TruncatedConversation;
-        return bytes;
     }
 
     fn pendingIndex(self: *const ConversationWriter, call_id: []const u8) ?usize {
@@ -675,7 +661,6 @@ fn encodeConversationMetadataWithTitle(
         .model = state.preferences.model,
         .effort = state.preferences.effort.label(),
         .fast_mode = state.preferences.fast_mode,
-        .ultrafast_mode = if (state.preferences.ultrafast_mode) true else null,
         .title = title,
         .subagent_child = state.subagent_child,
     });
@@ -1276,7 +1261,6 @@ fn load_conversation_state_at_boundary(
             .model = model,
             .effort = effort,
             .fast_mode = metadata.value.fast_mode,
-            .ultrafast_mode = metadata.value.ultrafast_mode orelse false,
         },
         .history = history,
         .context_history_start = latestConversationCheckpointIndex(history),
@@ -1980,34 +1964,6 @@ pub const ConversationHistoryReader = struct {
         return null;
     }
 };
-
-pub fn loadConversationHistoryRange(
-    alloc: Allocator,
-    dir: *io_mod.VerifiedDir,
-    start: usize,
-    end: usize,
-) ![]session.HistoryTurn {
-    if (start > end) return error.InvalidHistoryPageCursor;
-    var buffer: [8192]u8 = undefined;
-    var reader = try ConversationHistoryReader.init(alloc, dir, &buffer);
-    defer reader.deinit();
-    var turns: std.ArrayList(session.HistoryTurn) = .empty;
-    errdefer {
-        for (turns.items) |turn| session.freeHistoryTurn(alloc, turn);
-        turns.deinit(alloc);
-    }
-    var turn_index: usize = 0;
-    while (turn_index < end) : (turn_index += 1) {
-        const turn = (try reader.next()) orelse break;
-        if (turn_index >= start) {
-            errdefer session.freeHistoryTurn(alloc, turn);
-            try turns.append(alloc, turn);
-        } else {
-            session.freeHistoryTurn(alloc, turn);
-        }
-    }
-    return turns.toOwnedSlice(alloc);
-}
 
 pub fn loadConversationArchive(
     alloc: Allocator,
@@ -2976,12 +2932,6 @@ pub const WritableSessionDir = struct {
         self.writer_lock = null;
     }
 
-    pub fn eventLogLengthForTest(self: *WritableSessionDir) !u64 {
-        var file = try openManagedFile(&self.dir, events_file, .read_only);
-        defer file.close(io_mod.getIo());
-        return file.length(io_mod.getIo());
-    }
-
     fn entryExistsForTest(self: *WritableSessionDir, name: []const u8) !bool {
         return entryExists(&self.dir, name);
     }
@@ -3101,7 +3051,6 @@ pub const LoadedWritableSession = struct {
             .model = metadata.value.model,
             .effort = metadata.value.effort,
             .fast_mode = metadata.value.fast_mode,
-            .ultrafast_mode = metadata.value.ultrafast_mode,
             .title = title,
             .subagent_child = metadata.value.subagent_child,
         });
@@ -3318,7 +3267,6 @@ pub const LoadedWritableSession = struct {
                 if (patch.provider) |provider| preferences.provider = provider;
                 if (patch.effort) |effort| preferences.effort = effort;
                 if (patch.fast_mode) |fast_mode| preferences.fast_mode = fast_mode;
-                if (patch.ultrafast_mode) |ultrafast_mode| preferences.ultrafast_mode = ultrafast_mode;
                 var proposed = self.state;
                 proposed.preferences = preferences;
                 proposed.updated_at_ms = timestamp_ms;
@@ -4264,7 +4212,6 @@ fn createNativeSession(
         .model = initial_state.preferences.model,
         .effort = initial_state.preferences.effort.label(),
         .fast_mode = initial_state.preferences.fast_mode,
-        .ultrafast_mode = if (initial_state.preferences.ultrafast_mode) true else null,
         .title = if (display.present) display.title else null,
         .subagent_child = initial_state.subagent_child,
     });

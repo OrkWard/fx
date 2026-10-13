@@ -248,15 +248,6 @@ pub const FrameCommitResult = struct {
         return self.document_append_committed;
     }
 
-    pub fn committed_cursor(self: FrameCommitResult) ?paint_plan.FrameCursorTarget {
-        if (!self.is_committed()) return null;
-        return .{
-            .row = self.committed_cursor_row,
-            .col = self.committed_cursor_col,
-            .visible = self.committed_cursor_visible,
-        };
-    }
-
     pub fn retry_invalidation(self: FrameCommitResult) ?paint_plan.FrameInvalidationRange {
         if (self.is_committed()) return null;
         std.debug.assert(self.next_invalidation.len <= 1);

@@ -999,16 +999,6 @@ pub const Runtime = struct {
         return result.toOwnedSlice(alloc);
     }
 
-    pub fn commitDelivery(
-        self: *Runtime,
-        execution_id: []const u8,
-        reservation_id: u64,
-    ) !void {
-        const entry = self.acquireEntry(execution_id) orelse return error.ExecutionNotFound;
-        defer self.releaseEntry(entry);
-        return self.commitEntryDelivery(entry, reservation_id);
-    }
-
     fn commitEntryDelivery(
         self: *Runtime,
         entry: *Entry,

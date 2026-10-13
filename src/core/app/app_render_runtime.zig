@@ -661,13 +661,7 @@ pub fn Runtime(comptime App: type) type {
                 }
             }
 
-            var statusline = buildStatuslineItems(app, visible_model);
-            statusline.ultrafast_indicator_active = if (pending_model != null)
-                visible_capabilities.supports_ultrafast_mode and std.mem.eql(u8, pendingPickerSpeed(model_query, app.input_runtime.picker.model_picker_fast_index), "ultrafast")
-            else if (comptime @hasField(@TypeOf(app.worker), "agent_turn_settings"))
-                app.worker.agent_turn_settings.ultrafast_mode
-            else
-                false;
+            const statusline = buildStatuslineItems(app, visible_model);
 
             return .{
                 .slash_registry = app.slashRegistry(),
@@ -1941,10 +1935,6 @@ pub fn Runtime(comptime App: type) type {
         fn settingsMenuActive(app: *const App) bool {
             if (comptime @hasField(App, "input_runtime")) return app.input_runtime.settings_menu.active;
             return false;
-        }
-
-        fn catalogMenuActive(app: *const App) bool {
-            return modelMenuActive(app) and !settingsMenuActive(app);
         }
 
         fn activityProjection(app: *const App) activity_runtime.ActivityProjection {

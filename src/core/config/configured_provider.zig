@@ -7,7 +7,6 @@ pub const max_id_bytes = 64;
 pub const max_model_bytes = 1024;
 const max_url_bytes = 2048;
 const max_env_bytes = 128;
-const max_json_bytes = 1024 * 1024;
 
 pub const ParseError = Allocator.Error || error{
     InvalidJson,
@@ -125,24 +124,6 @@ pub const Registry = struct {
             initialized += 1;
         }
         return .{ .definitions = definitions };
-    }
-
-    /// Bounded, duplicate-rejecting convenience parser for a raw providers object.
-    /// std.json.Value parses iteratively; input size also bounds nesting/work.
-    /// The temporary JSON tree is released before returning the owned registry.
-    pub fn parse_json(alloc: Allocator, json: []const u8) ParseError!Registry {
-        if (json.len > max_json_bytes) return error.LimitExceeded;
-        var parsed = std.json.parseFromSlice(std.json.Value, alloc, json, .{
-            .duplicate_field_behavior = .@"error",
-            .max_value_len = max_url_bytes,
-        }) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.DuplicateField => return error.DuplicateField,
-            error.ValueTooLong => return error.LimitExceeded,
-            else => return error.InvalidJson,
-        };
-        defer parsed.deinit();
-        return parse(alloc, parsed.value);
     }
 
     pub fn deinit(self: *Registry, alloc: Allocator) void {

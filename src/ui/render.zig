@@ -158,7 +158,6 @@ pub fn welcomeMessage(alloc: std.mem.Allocator) ![]u8 {
 }
 
 pub const StatuslineItems = struct {
-    ultrafast_indicator_active: bool = false,
     workspace_label: []const u8 = "",
     git_branch: ?[]const u8 = null,
     context_used: u64 = 0,
@@ -357,12 +356,7 @@ fn appendSessionStatusSegments(
     if (model_supports_effort and !effort.isDefault()) {
         appendStatusSegment(out, end, effort.displayLabel());
     }
-    if (statusline.ultrafast_indicator_active) {
-        const marker_style = if (truecolor_enabled) "\x1b[38;2;255;204;0m" else "\x1b[38;5;220m";
-        var marker_buf: [64]u8 = undefined;
-        const marker = std.mem.print(&marker_buf, "{s}⚡︎{s}", .{ marker_style, statusline_style }) catch "⚡︎";
-        appendStatusSegment(out, end, marker);
-    } else if (fast_indicator_active) {
+    if (fast_indicator_active) {
         appendStatusSegment(out, end, "⚡︎");
     }
     if (statusline.session_title) |title| {

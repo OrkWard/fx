@@ -316,9 +316,6 @@ const AskOptions = struct {
     model_override: ?[]u8 = null,
     effort_override: ?types.ReasoningEffort = null,
     fast_override: ?bool = null,
-    ultrafast_override: ?bool = null,
-    provider_order_override: ?[][]const u8 = null,
-    provider_strict_override: ?bool = null,
     image_paths: std.ArrayList([]u8) = .empty,
     images: std.ArrayList(ImageAttachment) = .empty,
     system_prompt_override: ?[]u8 = null,
@@ -339,10 +336,6 @@ const AskOptions = struct {
         self.images.deinit(alloc);
         if (self.system_prompt_override) |s| alloc.free(s);
         if (self.model_override) |m| alloc.free(m);
-        if (self.provider_order_override) |order| {
-            for (order) |slug| alloc.free(@constCast(slug));
-            if (order.len > 0) alloc.free(order);
-        }
     }
 };
 
@@ -354,7 +347,6 @@ const ToolCallRecord = struct {
     error_code: ?[]u8 = null,
     command_result_json: ?[]u8 = null,
     ask_question_text: ?[]u8 = null,
-    web_search_completion: ?types.WebSearchCompletion = null,
     web_fetch_completion: ?types.WebFetchCompletion = null,
 };
 
@@ -459,9 +451,6 @@ const RunOptions = struct {
     model_override: ?[]const u8 = null,
     effort_override: ?types.ReasoningEffort = null,
     fast_override: ?bool = null,
-    ultrafast_override: ?bool = null,
-    provider_order_override: ?[]const []const u8 = null,
-    provider_strict_override: ?bool = null,
     deps: RunDeps,
 };
 
@@ -547,13 +536,9 @@ const AskContext = struct {
     fast_mode: bool = false,
     /// Profile preference used only when creating a new durable session.
     /// Process and CLI overrides remain per-run and never rewrite this value.
-    persisted_ultrafast_mode: bool = false,
-    ultrafast_mode: bool = false,
     effort: types.ReasoningEffort = .auto,
     /// Borrowed gateway provider routing for this run; startup state owns the
     /// backing memory.
-    provider_order: []const []const u8 = &.{},
-    provider_strict: bool = false,
     /// Owned slug of the provider that served the latest gateway request this
     /// run, reported by the gateway's routing metadata.
     resolved_provider: ?[]u8 = null,
@@ -600,7 +585,6 @@ const AskContext = struct {
     final_source: std.ArrayList(u8) = .empty,
     tool_call_records: std.ArrayList(ToolCallRecord) = .empty,
     tool_call_records_mutex: std.Io.Mutex = .init,
-    web_search_progress_mutex: std.Io.Mutex = .init,
     step_count: usize = 0,
     web_fetch_runtime: web_fetch_runtime.Runtime = web_fetch_runtime.Runtime.init(.{}),
     capability_resolver: gateway_provider.CapabilityResolver = .{},
@@ -622,10 +606,7 @@ const AskContext = struct {
             .model = cfg.default_model,
             .seed_model = cfg.default_model,
             .mode_id = cfg.mode_registry.default_mode_id,
-            .session = session_runtime.SessionRuntime.initWithProviders(
-                cfg.max_history_turns,
-                cfg.provider_set.deferredUsageProviders(),
-            ),
+            .session = session_runtime.SessionRuntime.init(cfg.max_history_turns),
             .terminal_client = terminal_client_runtime.Runtime.init(
                 cfg.process_provider,
             ),
@@ -724,7 +705,6 @@ const AskContext = struct {
         self.terminal_client.deinit();
         self.workspace_access.deinit(self.alloc);
         self.worker.deinit(std.heap.c_allocator);
-        self.session.usage.finishReconciliationBeforeShutdown();
         self.session.usage.finishProfilePublicationsBeforeShutdown();
         self.session.usage.configurePublicationSink(null);
         self.session.usage.configureCheckpointSink(null);
@@ -885,7 +865,6 @@ const AskContext = struct {
             .model = @constCast(self.seed_model),
             .effort = self.effort,
             .fast_mode = self.fast_mode,
-            .ultrafast_mode = self.persisted_ultrafast_mode,
         };
         var writable = if (self.requested_resume) |target|
             try subagent_resume_admission.resumeForExternalPrompt(
@@ -944,7 +923,6 @@ const AskContext = struct {
             self.model = preferences.model;
             self.effort = preferences.effort;
             self.fast_mode = preferences.fast_mode;
-            self.ultrafast_mode = preferences.ultrafast_mode;
         }
         self.subagent_host = subagent_tool_host.Runtime.create(
             self.alloc,
@@ -1013,7 +991,6 @@ const AskContext = struct {
             .reviewer_model = self.reviewer_model,
             .agent_step_limit = self.agent_step_limit,
             .fast_mode = self.fast_mode,
-            .ultrafast_mode = self.ultrafast_mode,
             .effort = self.effort,
             .first_call_tool_choice = self.first_call_tool_choice,
             .permission_mode = self.permission_mode,
@@ -1281,9 +1258,6 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
         .model_override = options.model_override,
         .effort_override = options.effort_override,
         .fast_override = options.fast_override,
-        .ultrafast_override = options.ultrafast_override,
-        .provider_order_override = options.provider_order_override,
-        .provider_strict_override = options.provider_strict_override,
         .deps = deps,
     }) catch |err| {
         if (interrupt_scope.requested()) return headless_interrupt.exitCode();
@@ -1504,10 +1478,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     ctx.context_limits = startup.context_limits;
     ctx.context_limits.applyCommandLine(cfg.context_limit_overrides);
     ctx.fast_mode = startup.fast_mode;
-    ctx.persisted_ultrafast_mode = startup.configured_ultrafast_mode;
-    ctx.ultrafast_mode = startup.ultrafast_mode;
-    ctx.provider_order = startup.provider_order;
-    ctx.provider_strict = startup.provider_strict;
     ctx.effort = toCoreReasoningEffort(startup.effort);
     ctx.first_call_tool_choice = startup.first_call_tool_choice;
     ctx.permission_mode = permission_mode;
@@ -1543,7 +1513,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         }
         // Environment precedence survives resume without rewriting the saved
         // profile preference. CLI flags below remain the final per-run layer.
-        if (startup.ultrafast_process_override) |ultrafast| ctx.ultrafast_mode = ultrafast;
         ctx.session.setConversationLanguageFromUserMessage(owned_prompt);
     }
 
@@ -1557,28 +1526,12 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     }
     if (options.fast_override) |fast| {
         ctx.fast_mode = fast;
-        if (fast) ctx.ultrafast_mode = false;
     } else if (options.model_override != null and ctx.requested_resume == null and
         startup.fast_mode_source == .compiled_default)
     {
         // Default fast mode applies to the compiled default model only; an
         // explicit model override drops it unless --fast restores it.
         ctx.fast_mode = false;
-    }
-    if (options.ultrafast_override) |ultrafast| {
-        ctx.ultrafast_mode = ultrafast;
-        if (ultrafast) ctx.fast_mode = false;
-    } else if (options.model_override != null and ctx.requested_resume == null and
-        startup.ultrafast_mode_source == .compiled_default)
-    {
-        // Ultra mode must never follow an explicit model override by default.
-        ctx.ultrafast_mode = false;
-    }
-    if (options.provider_order_override) |order| {
-        ctx.provider_order = order;
-    }
-    if (options.provider_strict_override) |strict| {
-        ctx.provider_strict = strict;
     }
 
     var recovery_checkpoint: ?session_codec.RecoveryCheckpoint = null;
@@ -1608,14 +1561,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         ctx.credential_source = .host_managed;
         ctx.account_id = null;
         ctx.model_catalog_access = .host_managed;
-        {
-            if (ctx.cfg.provider_set.select(ctx.provider).deferred_usage != null) {
-                ctx.session.usage.replaceHostManagedReconciliationAuthority(
-                    ctx.alloc,
-                    ctx.provider,
-                );
-            }
-        }
     } else {
         const startup_matches_final_model = if (startup.credential) |credential|
             startup.provider.same_authority(ctx.provider) and model_provider.authorizesCredential(ctx.provider, credential.source)
@@ -1640,17 +1585,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
             credential.token,
             credential.accountId(),
         );
-        {
-            if (ctx.cfg.provider_set.select(ctx.provider).deferred_usage != null) {
-                ctx.session.usage.replaceProviderReconciliationCredential(
-                    alloc,
-                    ctx.provider,
-                    credential.source,
-                    credential.accountId(),
-                    credential.token,
-                );
-            }
-        }
     }
 
     const restored_image_catalog = try ctx.session.snapshotImageCatalog(alloc, &.{});
@@ -1782,7 +1716,6 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
         .auto_compact_percent = startup.auto_compact_percent,
         .cancel_flag = ctx.cancelFlag(),
         .fast_mode = ctx.fast_mode,
-        .ultrafast_mode = ctx.ultrafast_mode,
         .effort = ctx.effort,
         .first_call_tool_choice = ctx.first_call_tool_choice,
         .workspace_root = ctx.workspace_root,
@@ -2696,7 +2629,6 @@ fn appendToolCallRecord(
         .error_code = error_code,
         .command_result_json = command_result_json,
         .ask_question_text = ask_question_text,
-        .web_search_completion = if (result) |execution| execution.web_search_completion else null,
         .web_fetch_completion = if (result) |execution| execution.web_fetch_completion else null,
     });
 }
@@ -3185,8 +3117,6 @@ fn onWebFetchProgress(raw_ctx: *anyopaque, _: []const u8, progress: types.WebFet
     const alloc = std.heap.c_allocator;
     const line = tool_presentation.formatWebFetchProgressPlain(alloc, progress) catch return;
     defer alloc.free(line);
-    ctx.web_search_progress_mutex.lockUncancelable(io_mod.getIo());
-    defer ctx.web_search_progress_mutex.unlock(io_mod.getIo());
     ctx.writeLine(line) catch {};
 }
 
@@ -3325,20 +3255,6 @@ fn resolveAskSubagentAuthority(
     );
 }
 
-/// Parses one `--provider-order` value for `fx ask`, replacing any earlier
-/// occurrence. The returned slice is owned by `alloc`.
-fn parseAskProviderOrder(alloc: Allocator, raw: []const u8, previous: ?[][]const u8) ![][]const u8 {
-    const parsed: [][]const u8 = switch (config_runtime.parseProviderOrderList(alloc, raw)) {
-        .ok => |maybe| maybe orelse return error.InvalidAskArgs,
-        .invalid => return error.InvalidAskArgs,
-    };
-    if (previous) |old| {
-        for (old) |slug| alloc.free(@constCast(slug));
-        if (old.len > 0) alloc.free(old);
-    }
-    return parsed;
-}
-
 fn parseOptionsWithStdin(alloc: Allocator, args: []const [:0]const u8, stdin: StdinSource) !AskOptions {
     var opts: AskOptions = .{ .prompt = &.{} };
     errdefer opts.deinit(alloc);
@@ -3378,24 +3294,6 @@ fn parseOptionsWithStdin(alloc: Allocator, args: []const [:0]const u8, stdin: St
             if (opts.fast_override != null and opts.fast_override.? != enabled)
                 return error.InvalidAskArgs;
             opts.fast_override = enabled;
-            if (enabled) opts.ultrafast_override = false;
-        } else if (std.mem.eql(u8, arg, "--ultrafast") or std.mem.eql(u8, arg, "--no-ultrafast")) {
-            const enabled = std.mem.eql(u8, arg, "--ultrafast");
-            if (opts.ultrafast_override != null and opts.ultrafast_override.? != enabled)
-                return error.InvalidAskArgs;
-            opts.ultrafast_override = enabled;
-            if (enabled) opts.fast_override = false;
-        } else if (std.mem.eql(u8, arg, "--provider-order")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            opts.provider_order_override = try parseAskProviderOrder(alloc, args[i], opts.provider_order_override);
-        } else if (std.mem.startsWith(u8, arg, "--provider-order=")) {
-            opts.provider_order_override = try parseAskProviderOrder(alloc, arg["--provider-order=".len..], opts.provider_order_override);
-        } else if (std.mem.eql(u8, arg, "--provider-strict") or std.mem.eql(u8, arg, "--no-provider-strict")) {
-            const strict = std.mem.eql(u8, arg, "--provider-strict");
-            if (opts.provider_strict_override != null and opts.provider_strict_override.? != strict)
-                return error.InvalidAskArgs;
-            opts.provider_strict_override = strict;
         } else if (std.mem.eql(u8, arg, "--resume") or std.mem.eql(u8, arg, "--resume-id")) {
             if (opts.resume_target != null) return error.InvalidAskArgs;
             const exact_id = std.mem.eql(u8, arg, "--resume-id");
@@ -3623,9 +3521,6 @@ fn renderFinalJsonResult(alloc: Allocator, result: PromptRunResult) ![]u8 {
         if (tc.ask_question_text) |text| {
             try out.writer.writeAll(",\"question\":");
             try std.json.Stringify.value(text, .{}, &out.writer);
-        }
-        if (tc.web_search_completion) |completion| {
-            try out.writer.print(",\"web_search\":{{\"searches\":{d},\"duration_ms\":{d}}}", .{ completion.searches, completion.duration_ms });
         }
         if (tc.web_fetch_completion) |completion| {
             try out.writer.writeAll(",\"web_fetch\":{\"url\":");

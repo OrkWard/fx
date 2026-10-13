@@ -39,23 +39,6 @@ pub const Message = struct {
     owns_content: bool = false,
     owns_tool_calls: bool = false,
 
-    /// Builds a borrowed system message.
-    pub fn systemText(text: []const u8) Message {
-        return .{
-            .role = .system,
-            .content = .{ .text = text },
-        };
-    }
-
-    /// Builds an owned system message; caller transfers ownership of text to the Message; Message.deinit will free it.
-    pub fn systemOwned(text: []u8) Message {
-        return .{
-            .role = .system,
-            .content = .{ .text = text },
-            .owns_content = true,
-        };
-    }
-
     /// Builds a borrowed user message.
     pub fn userText(text: []const u8) Message {
         return .{
@@ -93,23 +76,6 @@ pub const Message = struct {
         };
     }
 
-    /// Builds a tool-result message that owns the result text.
-    pub fn toolOwned(
-        content: []u8,
-        tool_call_id: []const u8,
-        tool_name: []const u8,
-        status: types.PersistedToolStatus,
-    ) Message {
-        return .{
-            .role = .tool,
-            .content = .{ .text = content },
-            .tool_call_id = tool_call_id,
-            .tool_name = tool_name,
-            .tool_result_status = status,
-            .owns_content = true,
-        };
-    }
-
     /// Frees owned message fields and leaves borrowed fields untouched.
     pub fn deinit(self: *Message, alloc: std.mem.Allocator) void {
         if (self.owns_content) {
@@ -128,10 +94,6 @@ pub const Request = struct {
     /// Wraps a borrowed conversation slice owned by the caller.
     pub fn init(messages: []const Message) Request {
         return .{ .messages = messages };
-    }
-
-    pub fn initWithToolChoice(messages: []const Message, tool_choice: types.ToolChoice) Request {
-        return .{ .messages = messages, .tool_choice = tool_choice };
     }
 };
 

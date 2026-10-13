@@ -2,7 +2,6 @@ const stream_provider = @import("../agent/stream_provider.zig");
 const model_provider = @import("../config/model_provider.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
-const generation_usage_provider = @import("../session/generation_usage_provider.zig");
 const gateway_provider = @import("gateway_provider.zig");
 const auto_classifier = @import("../permissions/auto_classifier.zig");
 const model_catalog = @import("model_catalog.zig");
@@ -13,8 +12,6 @@ pub const Bundle = struct {
         grok,
     };
     pub const Capabilities = struct {
-        gateway_prompt_caching: bool = false,
-        fx_search: bool = false,
         vision_fallback: bool = false,
     };
 
@@ -29,7 +26,6 @@ pub const Bundle = struct {
     cli_model_catalog: ?gateway_provider.CliModelCatalogProvider = null,
     model_catalog: ?model_catalog.Provider = null,
     permission_reviewer: ?auto_classifier.Provider = null,
-    deferred_usage: ?generation_usage_provider.Provider = null,
 
     pub fn agent_stream_or_unavailable(self: Bundle) stream_provider.Provider {
         return self.agent_stream orelse stream_provider.unavailable_provider;
@@ -62,13 +58,6 @@ pub const Set = struct {
                 const bound = provider.bind(registry) catch break :blk .{};
                 break :blk factory(self.configured_context, registry.get(bound.label()).?);
             },
-        };
-    }
-
-    pub fn deferredUsageProviders(self: Set) generation_usage_provider.Set {
-        return .{
-            .codex = self.codex.deferred_usage,
-            .grok = self.grok.deferred_usage,
         };
     }
 };

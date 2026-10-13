@@ -49,13 +49,6 @@ pub const Header = struct {
         self.pending_child_len = @intCast(child_id.len);
         @memcpy(self.pending_child[0..child_id.len], child_id);
     }
-
-    pub fn clearPending(self: *Header) void {
-        self.pending_kind = .none;
-        self.pending_slot = no_slot;
-        self.pending_next_free = no_slot;
-        self.pending_child_len = 0;
-    }
 };
 
 pub const Slot = struct {
@@ -63,10 +56,6 @@ pub const Slot = struct {
     next_free: u64 = no_slot,
     child_len: u16 = 0,
     child: [255]u8 = @splat(0),
-
-    pub fn childId(self: *const Slot) []const u8 {
-        return self.child[0..self.child_len];
-    }
 
     pub fn setOccupied(self: *Slot, child_id: []const u8) void {
         std.debug.assert(child_id.len <= self.child.len);

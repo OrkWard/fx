@@ -73,16 +73,6 @@ pub const State = struct {
         try self.insertSlice(alloc, &.{byte}, picker_policy);
     }
 
-    pub fn insertByteBounded(
-        self: State,
-        alloc: Allocator,
-        byte: u8,
-        max_len: usize,
-        picker_policy: PickerPolicy,
-    ) Allocator.Error!InsertResult {
-        return self.insertSliceBounded(alloc, &.{byte}, max_len, picker_policy);
-    }
-
     pub fn insertSlice(
         self: State,
         alloc: Allocator,

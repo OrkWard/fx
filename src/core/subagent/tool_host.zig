@@ -34,7 +34,6 @@ pub const Defaults = struct {
     model: []const u8,
     effort: types.ReasoningEffort,
     fast_mode: bool = false,
-    ultrafast_mode: bool = false,
     conversation_language: session.ConversationLanguage,
 };
 
@@ -605,7 +604,7 @@ pub const Runtime = struct {
             writable.deinit(alloc);
             debug_trace.logf(
                 "subagent",
-                "child session created child_id={s} work_id={s} provider={s} model={s} effort={s} fast_mode={} ultrafast_mode={}",
+                "child session created child_id={s} work_id={s} provider={s} model={s} effort={s} fast_mode={}",
                 .{
                     child_id,
                     work_id,
@@ -613,7 +612,6 @@ pub const Runtime = struct {
                     state.preferences.model,
                     state.preferences.effort.label(),
                     state.preferences.fast_mode,
-                    state.preferences.ultrafast_mode,
                 },
             );
         } else |err| switch (err) {
@@ -1183,7 +1181,6 @@ fn freshChildState(
             .model = model,
             .effort = defaults.effort,
             .fast_mode = defaults.fast_mode,
-            .ultrafast_mode = defaults.ultrafast_mode,
         },
         .history = try alloc.alloc(types.HistoryTurn, 0),
         .total_input_tokens = 0,
@@ -1208,7 +1205,6 @@ fn captureAdmission(
         .model = request.preferences.model,
         .provider = request.preferences.provider,
         .effort = request.preferences.effort,
-        .ultrafast_mode = request.preferences.ultrafast_mode,
         .permission_mode = snapshot.permission_mode,
         .tool_names = snapshot.tools,
         .rules = snapshot.rules,

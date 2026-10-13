@@ -157,22 +157,6 @@ pub const State = struct {
         return self.setCursor(text_boundaries.nextCharacterEnd(self.input.items, self.cursor));
     }
 
-    pub fn moveHome(self: *State) bool {
-        return self.setCursor(0);
-    }
-
-    pub fn moveEnd(self: *State) bool {
-        return self.setCursor(self.input.items.len);
-    }
-
-    pub fn moveLineStart(self: *State) bool {
-        return self.setCursor(text_boundaries.logicalLineStart(self.input.items, self.cursor));
-    }
-
-    pub fn moveLineEnd(self: *State) bool {
-        return self.setCursor(text_boundaries.logicalLineEnd(self.input.items, self.cursor));
-    }
-
     pub fn insertSliceAssumeCapacity(self: *State, bytes: []const u8) void {
         if (bytes.len == 0) return;
         self.input.insertSliceAssumeCapacity(self.cursor, bytes);

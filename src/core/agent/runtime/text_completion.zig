@@ -180,7 +180,7 @@ fn onEvent(raw: *anyopaque, event: agent_stream_provider.Event) void {
 /// options and output limit apply to its own model; another model keeps the
 /// provider routing and prompt caching but gets only the reasoning asked for
 /// and its own output limit. A request after the conversation keeps the
-/// conversation's options except Ultrafast, which is reserved for agent turns.
+/// conversation's options.
 pub const CompactorCaller = struct {
     stream_provider: agent_stream_provider.Provider,
     provider: model_provider.ProviderId,
@@ -233,13 +233,8 @@ pub const CompactorCaller = struct {
         // provider reuses its cache only for the same settings. Another model
         // keeps the user's provider routing but none of the options chosen
         // for this one.
-        var options: model_capabilities.ResolvedProviderOptions = if (conversation) |sent| sent.provider_options else if (own) self.provider_options else .{
-            .prompt_caching = self.provider_options.prompt_caching,
-            .provider_order = self.provider_options.provider_order,
-            .provider_strict = self.provider_options.provider_strict,
-        };
+        var options: model_capabilities.ResolvedProviderOptions = if (conversation) |sent| sent.provider_options else if (own) self.provider_options else .{};
         if (conversation == null) options.reasoning = call.reasoning;
-        options.ultrafast = false;
         var usage: types.Usage = .{};
         const outcome = try complete(alloc, .{
             .stream_provider = self.stream_provider,

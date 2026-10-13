@@ -167,11 +167,6 @@ pub const CapabilityResolver = struct {
         return fallback;
     }
 
-    pub fn catalogEntries(self: *const CapabilityResolver) ?[]const model_catalog.ModelCatalogEntry {
-        if (self.state != .ready) return null;
-        return self.catalog.items;
-    }
-
     pub fn adoptOwnedCatalog(
         self: *CapabilityResolver,
         alloc: Allocator,

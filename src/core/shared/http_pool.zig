@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const debug_trace = @import("debug_trace.zig");
 const io_mod = @import("io.zig");
 
@@ -65,15 +64,6 @@ pub const HttpPool = struct {
         self.last_activity_ms.store(io_mod.milliTimestamp(), .release);
     }
 
-    /// Free-connection count for observability; owns the std-pool locking so
-    /// callers never touch connection_pool internals.
-    pub fn freeConnectionCount(self: *HttpPool) usize {
-        const io = io_mod.getIo();
-        self.client.connection_pool.mutex.lockUncancelable(io);
-        defer self.client.connection_pool.mutex.unlock(io);
-        return self.client.connection_pool.free_len;
-    }
-
     /// Establishes one connection to the URL's origin and parks it in the
     /// pool. Best-effort: failures are traced, never propagated.
     fn warm(self: *HttpPool, url: []const u8) void {
@@ -120,73 +110,6 @@ pub const HttpPool = struct {
         if (client.now != null) return; // a concurrent request loaded it first
         client.now = now;
         std.mem.swap(std.crypto.Certificate.Bundle, &client.ca_bundle, &bundle);
-    }
-
-    /// Spawns the warmer on a detached thread, at most once per pool.
-    /// `url` must remain valid for the process lifetime (string literals and
-    /// environment-variable storage both qualify). Test builds never spawn;
-    /// call warm() synchronously to exercise the logic.
-    pub fn warmAsync(self: *HttpPool, url: []const u8) void {
-        if (comptime builtin.is_test) return;
-        if (self.warm_started.swap(true, .acq_rel)) return;
-        const thread = std.Thread.spawn(.{}, warmThreadMain, .{ self, url }) catch {
-            self.warm_started.store(false, .release);
-            return;
-        };
-        thread.detach();
-    }
-
-    fn warmThreadMain(self: *HttpPool, url: []const u8) void {
-        defer self.warm_done.store(true, .release);
-        self.warm(url);
-    }
-
-    /// Returns the shared client after applying the idle-staleness policy for
-    /// this origin. Call once per request, before opening.
-    pub fn clientFor(self: *HttpPool, url: []const u8) *std.http.Client {
-        self.drainIfStale(url);
-        return &self.client;
-    }
-
-    fn drainIfStale(self: *HttpPool, url: []const u8) void {
-        const last = self.last_activity_ms.load(.acquire);
-        if (last == 0) return;
-        const now = io_mod.milliTimestamp();
-        const idle_ms = now - last;
-        if (idle_ms <= self.ttl_ms) return;
-        const io = io_mod.getIo();
-        const uri = std.Uri.parse(url) catch return;
-        const protocol = std.http.Client.Protocol.fromUri(uri) orelse return;
-        var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-        const host = std.Io.net.HostName.fromUri(uri, &host_buf) catch return;
-        const port: u16 = uri.port orelse defaultPort(protocol);
-        const criteria: std.http.Client.ConnectionPool.Criteria = .{
-            .host = host,
-            .port = port,
-            .protocol = protocol,
-        };
-        var drained: usize = 0;
-        while (true) {
-            // A cancelled drain stops early and leaves the cancellation pending.
-            const conn = (self.client.connection_pool.findConnection(io, criteria) catch |err| switch (err) {
-                error.Canceled => {
-                    io.recancel();
-                    break;
-                },
-            }) orelse break;
-            // findConnection moves the connection to the used list; unlink it
-            // there before destroying, since destroy does not touch the lists.
-            self.client.connection_pool.mutex.lockUncancelable(io);
-            self.client.connection_pool.used.remove(&conn.pool_node);
-            self.client.connection_pool.mutex.unlock(io);
-            conn.destroy(io);
-            drained += 1;
-        }
-        // Refresh the stamp so a run of misses does not re-drain every call.
-        self.last_activity_ms.store(now, .release);
-        if (drained > 0) {
-            debug_trace.logf("gateway", "pool_drain_stale count={d} idle_ms={d} ttl_ms={d}", .{ drained, idle_ms, self.ttl_ms });
-        }
     }
 
     fn defaultPort(protocol: std.http.Client.Protocol) u16 {

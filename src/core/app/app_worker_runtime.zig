@@ -498,24 +498,6 @@ pub fn Runtime(comptime App: type) type {
             try pushEvent(app, .{ .tool_lifecycle = event });
         }
 
-        pub fn pushWebSearchProgress(app: *App, call_id: []const u8, progress: types.WebSearchProgress) !void {
-            const turn_id = app.worker.activeTurnId();
-            if (turn_id == 0 or call_id.len == 0) {
-                debug_trace.logf(
-                    "ui_activity",
-                    "web search progress missing active lifecycle identity",
-                    .{},
-                );
-                return;
-            }
-            const label = try formatWebSearchProgress(std.heap.c_allocator, progress);
-            defer std.heap.c_allocator.free(label);
-            try pushToolLifecycle(app, .{ .progress = .{
-                .id = .{ .turn_id = turn_id, .call_id = call_id },
-                .text = label,
-            } });
-        }
-
         pub fn pushWebFetchProgress(app: *App, call_id: []const u8, progress: types.WebFetchProgress) !void {
             const turn_id = app.worker.activeTurnId();
             if (turn_id == 0 or call_id.len == 0) {
@@ -1265,20 +1247,6 @@ pub fn Runtime(comptime App: type) type {
             app.stream.phase_step_id = update.step_id;
             if (changed) app.shell.render_requests.request(.footer);
         }
-    };
-}
-
-fn formatWebSearchProgress(alloc: std.mem.Allocator, progress: types.WebSearchProgress) ![]u8 {
-    var query_buf: [160]u8 = undefined;
-    return switch (progress) {
-        .query_started => |query| alloc.print(
-            "● Searching\x1b[0m {s}{s}\x1b[0m",
-            .{ shared_theme.current().tool_stdout_style, text_utils.clippedLabel(&query_buf, query, 120) },
-        ),
-        .results_received => |entry| alloc.print(
-            "● Found {d} result{s}\x1b[0m {s}{s}\x1b[0m",
-            .{ entry.result_count, if (entry.result_count == 1) "" else "s", shared_theme.current().tool_stdout_style, text_utils.clippedLabel(&query_buf, entry.query, 120) },
-        ),
     };
 }
 

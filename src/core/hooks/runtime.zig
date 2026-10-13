@@ -63,42 +63,6 @@ pub const Runtime = struct {
         self.* = undefined;
     }
 
-    pub fn registerPreToolUse(
-        self: *Runtime,
-        handler: definitions.PreToolUseHandler,
-    ) (Allocator.Error || definitions.RegistrationError)!void {
-        try self.validateRegistration(
-            .pre_tool_use,
-            handler.name,
-            self.pre_tool_use_handlers.items,
-        );
-
-        const hook = try self.copyHook(.pre_tool_use, handler.name, handler.ctx);
-        errdefer self.alloc.free(hook.name);
-        try self.pre_tool_use_handlers.append(self.alloc, .{
-            .hook = hook,
-            .run = handler.run,
-        });
-    }
-
-    pub fn registerStop(
-        self: *Runtime,
-        handler: definitions.StopHandler,
-    ) (Allocator.Error || definitions.RegistrationError)!void {
-        try self.validateRegistration(
-            .stop,
-            handler.name,
-            self.stop_handlers.items,
-        );
-
-        const hook = try self.copyHook(.stop, handler.name, handler.ctx);
-        errdefer self.alloc.free(hook.name);
-        try self.stop_handlers.append(self.alloc, .{
-            .hook = hook,
-            .run = handler.run,
-        });
-    }
-
     pub fn registerPostTurnEnd(
         self: *Runtime,
         handler: definitions.PostTurnEndHandler,
@@ -198,10 +162,6 @@ pub const RuntimeView = struct {
         };
     }
 
-    pub fn hasPreToolUse(self: RuntimeView) bool {
-        return self.pre_tool_use_handlers.len != 0;
-    }
-
     pub fn runPreToolUse(
         self: RuntimeView,
         alloc: Allocator,
@@ -235,19 +195,11 @@ pub const RuntimeView = struct {
         return dispatch.run(self.stop_handlers);
     }
 
-    pub fn hasPostTurnEnd(self: RuntimeView) bool {
-        return self.post_turn_end_handlers.len != 0;
-    }
-
     pub fn runPostTurnEnd(
         self: RuntimeView,
         input: definitions.PostTurnEndInput,
     ) void {
         runSideEffectHandlers(input, self.post_turn_end_handlers);
-    }
-
-    pub fn hasAttentionRequired(self: RuntimeView) bool {
-        return self.attention_required_handlers.len != 0;
     }
 
     pub fn runAttentionRequired(

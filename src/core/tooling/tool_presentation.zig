@@ -559,9 +559,6 @@ pub fn formatPlainAction(alloc: Allocator, input: ToolActionInput) ![]const u8 {
     };
 
     const presentation = tool_dispatch.presentationForArgs(spec.*, args);
-    if (spec.executor_kind == .web_search) {
-        return alloc.print("{s} {s}", .{ presentation.action_label, try formatWebSearchActionDetail(scratch, args) });
-    }
     const value = input.display_target orelse
         resolvedSkillName(call, presentation) orelse
         tool_dispatch.presentationLabelValue(presentation, args) orelse

@@ -346,11 +346,6 @@ pub const FileIndex = struct {
         return generation.count();
     }
 
-    /// Kick off one background generation from an immutable access scope.
-    pub fn ensureScope(self: *FileIndex, alloc: Allocator, scope: workspace_access.AccessScope) void {
-        self.ensureScopeEpoch(alloc, scope, 0);
-    }
-
     pub fn ensureScopeEpoch(self: *FileIndex, alloc: Allocator, scope: workspace_access.AccessScope, epoch: u64) void {
         if (self.currentState() != .idle) return;
         if (scope.primary_directory.len == 0) return;
@@ -469,12 +464,6 @@ pub const FileIndex = struct {
         self.refreshOwnedRoots(alloc, roots, epoch);
     }
 
-    /// Refreshes from the latest active scope. A loading generation keeps its
-    /// immutable roots and receives one owned, coalesced replacement snapshot.
-    pub fn refreshScope(self: *FileIndex, alloc: Allocator, scope: workspace_access.AccessScope) void {
-        self.refreshScopeEpoch(alloc, scope, 0);
-    }
-
     pub fn refreshScopeEpoch(self: *FileIndex, alloc: Allocator, scope: workspace_access.AccessScope, epoch: u64) void {
         const roots = activeRootsAlloc(alloc, scope) catch |err| {
             debug_trace.logf("core", "file index scope snapshot failed generation={d} err={s}", .{ self.generation, @errorName(err) });
@@ -536,11 +525,6 @@ pub const FileIndex = struct {
         defer root.close(io_mod.getIo());
         const stat = root.statFile(io_mod.getIo(), relative, .{ .follow_symlinks = false }) catch return false;
         return candidateKindMatchesStat(expected_kind, stat.kind);
-    }
-
-    /// Builds a ready index synchronously from NUL- or newline-delimited paths.
-    pub fn buildFromRaw(self: *FileIndex, alloc: Allocator, raw_list: []const u8) !void {
-        try self.buildFromSource(alloc, .{ .file_raw = raw_list });
     }
 
     /// Build synchronously from typed candidates. Candidate paths are

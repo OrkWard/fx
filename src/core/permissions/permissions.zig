@@ -50,10 +50,6 @@ pub const PermissionEngine = struct {
         clearAllowedTools(alloc, &self.grants);
     }
 
-    pub fn isAllowed(self: PermissionEngine, tool_name: []const u8, target_path: []const u8) bool {
-        return isToolAllowed(self.grants.items, tool_name, target_path);
-    }
-
     pub fn allow(self: *PermissionEngine, alloc: std.mem.Allocator, tool_name: []const u8, target_path: []const u8) !void {
         try allowToolForSession(alloc, &self.grants, tool_name, target_path);
     }
@@ -61,14 +57,6 @@ pub const PermissionEngine = struct {
     pub fn replaceRules(self: *PermissionEngine, alloc: std.mem.Allocator, next_rules: types.PermissionRuleSet) void {
         self.rules.deinit(alloc);
         self.rules = next_rules;
-    }
-
-    pub fn configuredRuleDecision(self: PermissionEngine, alloc: std.mem.Allocator, workspace_root: []const u8, tool_name: []const u8, target_path: []const u8, target_kind: PermissionTargetKind) !RuleDecision {
-        return ruleDecisionFor(alloc, self.rules, workspace_root, tool_name, target_path, target_kind);
-    }
-
-    pub fn formatPermissionsText(self: PermissionEngine, alloc: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
-        return formatPermissionsStatus(alloc, workspace_root, self.mode, self.grants.items, self.rules);
     }
 
     pub fn formatPermissionsNoticeBody(self: PermissionEngine, alloc: std.mem.Allocator, workspace_root: []const u8) ![]u8 {
@@ -95,13 +83,8 @@ pub const PermissionTargetKind = enum {
     url,
 };
 
-pub const web_search_permission = "web_search";
 pub const web_fetch_permission = "web_fetch";
 pub const yolo_warning_text = "Full access enabled: fx permission checks disabled";
-
-pub fn isWebSearchToolName(tool_name: []const u8) bool {
-    return std.mem.eql(u8, tool_name, web_search_permission);
-}
 
 pub fn isWebFetchToolName(tool_name: []const u8) bool {
     return std.mem.eql(u8, tool_name, web_fetch_permission);
@@ -182,10 +165,6 @@ pub fn permissionTargetForCall(
         if (call.resolved_skill) |prepared| return arena.dupe(u8, prepared.skill.name);
         const args = try tool_args.parseToolArgsObject(arena, call.arguments_json);
         return arena.dupe(u8, try tool_args.requiredStringArg(args, "name"));
-    }
-
-    if (isWebSearchToolName(call.name)) {
-        return arena.dupe(u8, web_search_permission);
     }
 
     if (isWebFetchToolName(call.name)) {
@@ -1329,23 +1308,6 @@ fn appendOwnedGrant(
         .tool_name = owned_permission,
         .target_path = owned_pattern,
     });
-}
-
-pub fn formatPermissionsStatus(
-    alloc: std.mem.Allocator,
-    workspace_root: []const u8,
-    mode: types.PermissionMode,
-    grants: []const types.PermissionGrant,
-    rules: types.PermissionRuleSet,
-) ![]u8 {
-    const live = try liveSessionGrants(alloc, grants);
-    defer alloc.free(live);
-    return (output_contracts.PermissionsSnapshot{
-        .workspace_root = workspace_root,
-        .mode = mode,
-        .grants = live,
-        .rules = rules,
-    }).renderText(alloc);
 }
 
 /// Reports whether a remembered session grant still applies. A shell refresh

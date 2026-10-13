@@ -150,7 +150,6 @@ fn postCommitResolutionError(
             .invalid_context_limits => return error.InvalidSettingsFormat,
             .invalid_additional_directories => return error.InvalidSettingsFormat,
             .invalid_skill_symlink_authorities,
-            .invalid_ultrafast_mode_override,
             => return error.InvalidSettingsFormat,
             .ignored_project_user_only_setting,
             .legacy_workspace_preferences,
@@ -175,7 +174,6 @@ fn appendShadowedUserSources(
     try appendShadowedUserSource(writer, "permission_mode", patch.permission_mode != null, sources.permission_mode, &wrote_header);
     try appendShadowedUserSource(writer, "effort", patch.effort != null, sources.effort, &wrote_header);
     try appendShadowedUserSource(writer, "fast_mode", patch.fast_mode != null, sources.fast_mode, &wrote_header);
-    try appendShadowedUserSource(writer, "ultrafast_mode", patch.ultrafast_mode != null, sources.ultrafast_mode, &wrote_header);
     try appendShadowedUserSource(writer, "startup_scrollback", patch.startup_scrollback != null, sources.startup_scrollback, &wrote_header);
     try appendShadowedUserSource(writer, "prompt_history", patch.prompt_history_enabled != null, sources.prompt_history_enabled, &wrote_header);
     if (patch.statusline_item) |item| {
@@ -289,7 +287,6 @@ pub fn Commands(comptime App: type) type {
                 .history_turns = app.session.historyLen(),
                 .session_permission_grants = permissions.liveSessionGrantCount(app.permission_engine.grants.items),
                 .agent_step_limit = app.agent_step_limit,
-                .ultrafast_requested = app.worker.agent_turn_settings.ultrafast_mode,
             }).renderInteractiveBody(app.alloc);
             defer app.alloc.free(text);
             try app.writeDomainNotice(.{ .topic = "status", .tone = .neutral, .body = text }, true);
@@ -680,35 +677,6 @@ pub fn Commands(comptime App: type) type {
             try toggleFastForModel(app, provider_runtime.model(app), true);
         }
 
-        pub fn handleUltrafast(app: *App, rest: []const u8) !void {
-            const command = std.mem.trim(u8, rest, " \t");
-            if (command.len == 0 or std.ascii.eqlIgnoreCase(command, "status")) {
-                try writeUltrafastStatus(app);
-                return;
-            }
-            if (std.ascii.eqlIgnoreCase(command, "on")) {
-                try applyUltrafastMode(app, true, true, true);
-                return;
-            }
-            if (std.ascii.eqlIgnoreCase(command, "off")) {
-                try applyUltrafastMode(app, false, true, true);
-                return;
-            }
-            try app.writeDomainNotice(.{
-                .topic = "",
-                .tone = .@"error",
-                .body = "usage: /ultrafast [on|off|status]",
-            }, true);
-        }
-
-        fn writeUltrafastStatus(app: *App) !void {
-            try app.writeDomainNotice(.{
-                .topic = "ultrafast",
-                .tone = .neutral,
-                .body = if (app.worker.agent_turn_settings.ultrafast_mode) "requested: on" else "requested: off",
-            }, true);
-        }
-
         fn toggleFastForModel(app: *App, model: []const u8, announce: bool) !void {
             if (app.fast_mode) {
                 try applyFastMode(app, false, announce, true);
@@ -731,26 +699,14 @@ pub fn Commands(comptime App: type) type {
 
         fn applyFastMode(app: *App, enabled: bool, announce: bool, persist: bool) !void {
             const previous = app.fast_mode;
-            const previous_ultrafast = app.worker.agent_turn_settings.ultrafast_mode;
             app.fast_mode = enabled;
-            if (enabled) {
-                app.worker.agent_turn_settings.ultrafast_mode = false;
-                if (comptime @hasField(App, "session_persistence")) {
-                    app.session_persistence.process_ultrafast_override = false;
-                }
-            }
             app.worker.syncQueuedPromptFastMode(app.fast_mode);
-            if (previous_ultrafast != app.worker.agent_turn_settings.ultrafast_mode) {
-                app.worker.syncQueuedPromptUltrafastMode(app.worker.agent_turn_settings.ultrafast_mode);
-            }
             debug_trace.logf(
                 "session",
-                "fast mode changed old={s} new={s} ultrafast_old={s} ultrafast_new={s} model={s} supports_fast={s}",
+                "fast mode changed old={s} new={s} model={s} supports_fast={s}",
                 .{
                     if (previous) "true" else "false",
                     if (app.fast_mode) "true" else "false",
-                    if (previous_ultrafast) "true" else "false",
-                    if (app.worker.agent_turn_settings.ultrafast_mode) "true" else "false",
                     provider_runtime.model(app),
                     if (model_capabilities.resolveForApp(App, app, provider_runtime.model(app)).supports_fast_mode) "true" else "false",
                 },
@@ -763,7 +719,6 @@ pub fn Commands(comptime App: type) type {
                         .provider = provider_runtime.provider(app),
                         .model = provider_runtime.model(app),
                         .fast_mode = app.fast_mode,
-                        .ultrafast_mode = app.worker.agent_turn_settings.ultrafast_mode,
                     },
                     "fast",
                     !announce,
@@ -773,67 +728,6 @@ pub fn Commands(comptime App: type) type {
             if (announce) {
                 const label = if (app.fast_mode) "on" else "off";
                 try app.writeDomainNotice(.{ .topic = "fast", .tone = .neutral, .body = label }, true);
-                if (comptime @hasDecl(App, "playInteractionSound")) app.playInteractionSound();
-            }
-            app.shell.render_requests.request(.footer);
-        }
-
-        fn applyUltrafastMode(app: *App, enabled: bool, announce: bool, persist: bool) !void {
-            const capabilities = model_capabilities.resolveForApp(App, app, provider_runtime.model(app));
-            if (enabled and !capabilities.supports_ultrafast_mode) {
-                if (announce) {
-                    try app.writeDomainNotice(.{
-                        .topic = "ultrafast",
-                        .tone = .warning,
-                        .body = "Ultra mode is unavailable for this model and may increase cost.",
-                    }, true);
-                }
-                app.shell.render_requests.request(.footer);
-                return;
-            }
-
-            const previous_ultrafast = app.worker.agent_turn_settings.ultrafast_mode;
-            const previous_fast = app.fast_mode;
-            app.worker.agent_turn_settings.ultrafast_mode = enabled;
-            if (comptime @hasField(App, "session_persistence")) {
-                app.session_persistence.process_ultrafast_override = enabled;
-            }
-            if (enabled) app.fast_mode = false;
-            app.worker.syncQueuedPromptUltrafastMode(app.worker.agent_turn_settings.ultrafast_mode);
-            if (previous_fast != app.fast_mode) app.worker.syncQueuedPromptFastMode(app.fast_mode);
-            debug_trace.logf(
-                "session",
-                "ultrafast mode changed old={s} new={s} fast_old={s} fast_new={s} model={s} supports_ultrafast={s}",
-                .{
-                    if (previous_ultrafast) "true" else "false",
-                    if (app.worker.agent_turn_settings.ultrafast_mode) "true" else "false",
-                    if (previous_fast) "true" else "false",
-                    if (app.fast_mode) "true" else "false",
-                    provider_runtime.model(app),
-                    if (capabilities.supports_ultrafast_mode) "true" else "false",
-                },
-            );
-
-            if (persist) {
-                try persistPreferenceTargets(
-                    app,
-                    .{
-                        .provider = provider_runtime.provider(app),
-                        .model = provider_runtime.model(app),
-                        .fast_mode = app.fast_mode,
-                        .ultrafast_mode = app.worker.agent_turn_settings.ultrafast_mode,
-                    },
-                    "ultrafast",
-                    !announce,
-                );
-            }
-
-            if (announce) {
-                try app.writeDomainNotice(.{
-                    .topic = "ultrafast",
-                    .tone = .neutral,
-                    .body = if (app.worker.agent_turn_settings.ultrafast_mode) "requested on" else "requested off",
-                }, true);
                 if (comptime @hasDecl(App, "playInteractionSound")) app.playInteractionSound();
             }
             app.shell.render_requests.request(.footer);
@@ -867,7 +761,6 @@ pub fn Commands(comptime App: type) type {
             model: []const u8,
             effort: types.ReasoningEffort,
             fast_mode: bool,
-            ultrafast_mode: bool,
         ) !void {
             try setResolvedModelRuntime(app, model);
             var patch = app_session_runtime.SessionPreferencePatch{
@@ -879,16 +772,11 @@ pub fn Commands(comptime App: type) type {
                 try applyEffort(app, effort, false, false);
                 patch.effort = effort;
             }
-            const selected_ultrafast_mode = capabilities.supports_ultrafast_mode and ultrafast_mode;
-            const selected_fast_mode = capabilities.supports_fast_mode and fast_mode and !selected_ultrafast_mode;
+            const selected_fast_mode = capabilities.supports_fast_mode and fast_mode;
             if (selected_fast_mode != app.fast_mode) {
                 try applyFastMode(app, selected_fast_mode, false, false);
             }
-            if (selected_ultrafast_mode != app.worker.agent_turn_settings.ultrafast_mode) {
-                try applyUltrafastMode(app, selected_ultrafast_mode, false, false);
-            }
             patch.fast_mode = app.fast_mode;
-            patch.ultrafast_mode = app.worker.agent_turn_settings.ultrafast_mode;
             try announceModelSelection(app);
             try persistPreferenceTargets(app, patch, "model picker", false);
         }
@@ -1148,9 +1036,6 @@ pub fn Commands(comptime App: type) type {
             if (model_changed and app.fast_mode) {
                 try applyFastMode(app, false, false, false);
             }
-            if (model_changed and app.worker.agent_turn_settings.ultrafast_mode) {
-                try applyUltrafastMode(app, false, false, false);
-            }
             if (announce) try announceModelSelection(app);
             try persistPreferenceTargets(
                 app,
@@ -1158,7 +1043,6 @@ pub fn Commands(comptime App: type) type {
                     .provider = provider_runtime.provider(app),
                     .model = resolved,
                     .fast_mode = app.fast_mode,
-                    .ultrafast_mode = app.worker.agent_turn_settings.ultrafast_mode,
                 },
                 "model",
                 !announce,
@@ -1244,9 +1128,7 @@ pub fn Commands(comptime App: type) type {
             const selected = provider_runtime.model(app);
             const active_response = if (comptime @hasField(App, "stream")) app.stream.active else false;
             const prefix: []const u8 = if (active_response) "Next turn will use " else "Switched to ";
-            const speed: []const u8 = if (app.worker.agent_turn_settings.ultrafast_mode)
-                "ultrafast"
-            else if (app.fast_mode or model_capabilities.resolveForApp(App, app, selected).intrinsic_fast)
+            const speed: []const u8 = if (app.fast_mode or model_capabilities.resolveForApp(App, app, selected).intrinsic_fast)
                 "fast"
             else
                 "normal";
@@ -1357,7 +1239,6 @@ fn isKnownAllowlistTool(tool_registry: tool_dispatch.Registry, name: []const u8)
         "glob",
         "grep",
         "skill",
-        permissions.web_search_permission,
     };
     for (categories) |category| {
         if (std.mem.eql(u8, name, category)) return true;

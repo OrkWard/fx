@@ -25,7 +25,6 @@ pub fn isReadOnlyCall(registry: tool_dispatch.Registry, call: ToolCall) bool {
         .grep_files,
         .skill,
         .web_fetch,
-        .web_search,
         => tool.activity_kind == .read,
         else => false,
     };
@@ -339,7 +338,6 @@ fn duplicateParallelToolResult(alloc: Allocator, call: ToolCall, execution: Tool
         .model_content_kind = execution.model_content_kind,
         .status = execution.status,
         .model_output = try alloc.dupe(u8, execution.model_output),
-        .web_search_completion = execution.web_search_completion,
         .web_fetch_completion = execution.web_fetch_completion,
         .inner_usage = execution.inner_usage,
     };

@@ -128,34 +128,6 @@ const ConnectedRequestWatch = struct {
         return .{ .timing = timing };
     }
 
-    fn arm_response_head(self: *ConnectedRequestWatch) ?anyerror {
-        self.response_head_deadline = std.Io.Clock.Timestamp.fromNow(
-            io_mod.getIo(),
-            .{
-                .clock = .awake,
-                .raw = .fromMilliseconds(self.timing.timeout_ms),
-            },
-        );
-        if (self.phase.cmpxchgStrong(
-            .sending,
-            .awaiting_head,
-            .seq_cst,
-            .seq_cst,
-        )) |winner| return phase_error(winner);
-        return null;
-    }
-
-    fn commit_response_head(self: *ConnectedRequestWatch) ?anyerror {
-        if (self.phase.cmpxchgStrong(
-            .awaiting_head,
-            .streaming,
-            .seq_cst,
-            .seq_cst,
-        )) |winner| return phase_error(winner);
-        self.markStreamProgress();
-        return null;
-    }
-
     fn finish(self: *ConnectedRequestWatch) ?anyerror {
         var current = self.phase.load(.seq_cst);
         while (is_active(current)) {
@@ -171,13 +143,6 @@ const ConnectedRequestWatch = struct {
             return null;
         }
         return phase_error(current);
-    }
-
-    fn finish_error(
-        self: *ConnectedRequestWatch,
-        transport_error: anyerror,
-    ) anyerror {
-        return self.finish() orelse transport_error;
     }
 
     fn win(self: *ConnectedRequestWatch, winner: Phase) bool {
@@ -206,13 +171,6 @@ const ConnectedRequestWatch = struct {
             .seq_cst,
             .seq_cst,
         ) == null;
-    }
-
-    fn markStreamProgress(self: *ConnectedRequestWatch) void {
-        // Both writer and reader use the monotonic awake clock; mixing in the
-        // wall clock would make the elapsed subtraction permanently negative.
-        const now_ns = std.Io.Clock.Timestamp.now(io_mod.getIo(), .awake).raw.toNanoseconds();
-        self.last_progress_ms.store(@intCast(@divFloor(now_ns, std.time.ns_per_ms)), .seq_cst);
     }
 
     /// Positive-evidence stall: the head arrived, then the stream went silent

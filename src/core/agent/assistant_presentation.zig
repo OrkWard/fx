@@ -46,22 +46,6 @@ pub const Event = union(enum) {
         };
     }
 
-    pub fn retainedByteCount(self: Event) usize {
-        return switch (self) {
-            .text => |text| text.len,
-            .table => |table| blk: {
-                var total: usize = table.alignments.len;
-                for (table.rows) |row| {
-                    total +|= row.cells.len * @sizeOf([]u8);
-                    for (row.cells) |cell| total +|= cell.len;
-                }
-                break :blk total;
-            },
-            .code_block => |block| block.language.len +| block.code.len,
-            .thematic_rule => 1,
-        };
-    }
-
     pub fn deinit(self: *Event, alloc: Allocator) void {
         switch (self.*) {
             .text => |text| alloc.free(text),
@@ -145,16 +129,6 @@ pub const MarkdownProcessor = struct {
         try self.pushWithCompletions(alloc, input, out, .{});
     }
 
-    pub fn pushWithTableCompletion(
-        self: *MarkdownProcessor,
-        alloc: Allocator,
-        input: []const u8,
-        out: *std.ArrayList(u8),
-        completion: ?*const payload.TableCompletion,
-    ) !void {
-        try self.pushWithCompletions(alloc, input, out, .{ .table = completion });
-    }
-
     pub fn pushWithCompletions(
         self: *MarkdownProcessor,
         alloc: Allocator,
@@ -177,15 +151,6 @@ pub const MarkdownProcessor = struct {
 
     pub fn flush(self: *MarkdownProcessor, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try self.flushWithCompletions(alloc, out, .{});
-    }
-
-    pub fn flushWithTableCompletion(
-        self: *MarkdownProcessor,
-        alloc: Allocator,
-        out: *std.ArrayList(u8),
-        completion: ?*const payload.TableCompletion,
-    ) !void {
-        try self.flushWithCompletions(alloc, out, .{ .table = completion });
     }
 
     pub fn flushWithCompletions(

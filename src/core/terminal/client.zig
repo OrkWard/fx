@@ -371,15 +371,6 @@ pub const Runtime = struct {
         return false;
     }
 
-    pub fn takeCompletion(self: *Runtime) ?Completion {
-        const zio = io_mod.getIo();
-        self.mutex.lockUncancelable(zio);
-        defer self.mutex.unlock(zio);
-        const completion = self.completions.take() orelse return null;
-        self.consumeCompletionLocked(completion);
-        return completion;
-    }
-
     pub fn takeCompletionFor(
         self: *Runtime,
         correlation_id: contracts.CorrelationId,
@@ -401,14 +392,6 @@ pub const Runtime = struct {
         self.mutex.lockUncancelable(zio);
         defer self.mutex.unlock(zio);
         return self.projection.snapshot(alloc);
-    }
-
-    pub fn clearTerminalProjection(self: *Runtime) bool {
-        const zio = io_mod.getIo();
-        self.mutex.lockUncancelable(zio);
-        defer self.mutex.unlock(zio);
-        const alloc = self.alloc orelse return false;
-        return self.projection.clear(alloc);
     }
 
     /// Ends every terminal this runtime started, with no prompt, and refuses

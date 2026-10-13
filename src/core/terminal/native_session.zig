@@ -2211,18 +2211,6 @@ const Session = struct {
         }
     }
 
-    fn appendScreenTextLocked(
-        self: *Session,
-        engine: *const terminal_engine.Grid,
-        screen_text: *std.ArrayList(u8),
-    ) !void {
-        var row: u16 = 1;
-        while (row <= engine.rows) : (row += 1) {
-            try engine.rowTextTrimmed(row, screen_text);
-            try screen_text.append(self.alloc, '\n');
-        }
-    }
-
     fn checkpointLocked(
         self: *Session,
         applied_cursor: contracts.RawCursor,

@@ -156,23 +156,6 @@ pub const ReadOnlyDetail = struct {
     }
 };
 
-/// A bounded, independently-owned chronological slice of canonical history.
-/// The session store remains the authority; callers must deinit this page.
-pub const HistoryPage = struct {
-    session_id: []u8,
-    revision_ms: i64,
-    history_len: usize,
-    turns: []session.HistoryTurn,
-    next_cursor: ?[]u8 = null,
-
-    pub fn deinit(self: *HistoryPage, alloc: Allocator) void {
-        alloc.free(self.session_id);
-        session.freeHistoryTurnSlice(alloc, self.turns);
-        if (self.next_cursor) |cursor| alloc.free(cursor);
-        self.* = undefined;
-    }
-};
-
 /// Outcome of a migration request.
 pub const SessionMigrationStatus = enum {
     migrated,

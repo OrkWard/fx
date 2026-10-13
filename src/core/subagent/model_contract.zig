@@ -1,106 +1,10 @@
 const std = @import("std");
 const domain = @import("domain.zig");
 const types = @import("../shared/types.zig");
-const session_commands = @import("../session/session_commands.zig");
 
 const Allocator = std.mem.Allocator;
 
 const max_error_code_bytes: usize = 64;
-
-/// Catalog candidates surfaced for ambiguous or unknown model overrides.
-pub const max_model_match_candidates: usize = 4;
-
-/// Outcome of matching a requested model override against the cached catalog.
-/// Returned slices are allocated from the allocator passed to
-/// `matchCatalogModel`; the caller owns them.
-pub const ModelCatalogMatch = union(enum) {
-    /// No catalog entries were available; the override passes through unchanged.
-    no_catalog,
-    /// Exactly one catalog entry is the best match.
-    matched: []const u8,
-    /// Several entries tie as the best confident match.
-    ambiguous: []const []const u8,
-    /// No confident match; carries close but inconclusive entries (may be empty).
-    unknown: []const []const u8,
-};
-
-/// Matches a model override against catalog IDs using the same scoring as
-/// interactive `/model` selection. Exact (case-insensitive) IDs and unique
-/// confident matches resolve; confident ties and weak matches do not.
-pub fn matchCatalogModel(
-    alloc: Allocator,
-    ids: []const []const u8,
-    query: []const u8,
-) Allocator.Error!ModelCatalogMatch {
-    if (ids.len == 0) return .no_catalog;
-    for (ids) |id| {
-        if (std.ascii.eqlIgnoreCase(id, query)) {
-            return .{ .matched = try alloc.dupe(u8, id) };
-        }
-    }
-    // Confident matches contain the query verbatim (case-insensitive). Every
-    // fuzzyModelScore band that may resolve (prefix, substring, suffix after
-    // the provider slash) requires substring membership, while its weaker
-    // token and subsequence bands can reach the same numeric scores without
-    // it, so a score threshold alone would let scrambled paraphrases resolve.
-    var confident_best: i32 = 0;
-    var confident_count: usize = 0;
-    var confident_id: ?[]const u8 = null;
-    var weak_best: i32 = 0;
-    for (ids) |id| {
-        const score = session_commands.fuzzyModelScore(id, query);
-        if (containsIgnoreCase(id, query)) {
-            if (confident_id == null or score > confident_best) {
-                confident_best = score;
-                confident_count = 1;
-                confident_id = id;
-            } else if (score == confident_best) {
-                confident_count += 1;
-            }
-        } else if (score > weak_best) {
-            weak_best = score;
-        }
-    }
-    if (confident_id) |id| {
-        if (confident_count == 1) return .{ .matched = try alloc.dupe(u8, id) };
-        return .{ .ambiguous = try collectScoredMatches(alloc, ids, query, confident_best, true) };
-    }
-    if (weak_best == 0) return .{ .unknown = &.{} };
-    return .{ .unknown = try collectScoredMatches(alloc, ids, query, weak_best, false) };
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or needle.len > haystack.len) return false;
-    var start: usize = 0;
-    while (start + needle.len <= haystack.len) : (start += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[start..][0..needle.len], needle)) return true;
-    }
-    return false;
-}
-
-/// Collects up to `max_model_match_candidates` IDs at the target score,
-/// optionally restricted to substring matches. Returned slices are owned by
-/// the caller.
-fn collectScoredMatches(
-    alloc: Allocator,
-    ids: []const []const u8,
-    query: []const u8,
-    target_score: i32,
-    require_substring: bool,
-) Allocator.Error![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (out.items) |item| alloc.free(item);
-        out.deinit(alloc);
-    }
-    for (ids) |id| {
-        if (out.items.len == max_model_match_candidates) break;
-        if (require_substring and !containsIgnoreCase(id, query)) continue;
-        if (session_commands.fuzzyModelScore(id, query) != target_score) continue;
-        try out.append(alloc, try alloc.dupe(u8, id));
-    }
-    return out.toOwnedSlice(alloc);
-}
 
 pub const Action = enum { run, message };
 

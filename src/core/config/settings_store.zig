@@ -93,7 +93,6 @@ pub const UserSettingsPatch = struct {
     yolo_acknowledged: ?bool = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
-    ultrafast_mode: ?bool = null,
     slash_menu_categories: ?bool = null,
     collapse_tool_calls: ?bool = null,
     update_channel: ?update_target.Channel = null,
@@ -112,7 +111,6 @@ pub const UserSettingsPatch = struct {
             self.yolo_acknowledged == null and
             self.effort == null and
             self.fast_mode == null and
-            self.ultrafast_mode == null and
             self.slash_menu_categories == null and
             self.collapse_tool_calls == null and
             self.update_channel == null and
@@ -207,7 +205,6 @@ const UserPreferenceField = enum(u4) {
     permission_mode,
     effort,
     fast_mode,
-    ultrafast_mode,
     slash_menu_categories,
     collapse_tool_calls,
     update_channel,
@@ -227,7 +224,6 @@ const UserPreferenceField = enum(u4) {
             .permission_mode => "settings.json.preference-migration.permission_mode.json",
             .effort => "settings.json.preference-migration.effort.json",
             .fast_mode => "settings.json.preference-migration.fast_mode.json",
-            .ultrafast_mode => "settings.json.preference-migration.ultrafast_mode.json",
             .slash_menu_categories => "settings.json.preference-migration.slash_menu_categories.json",
             .collapse_tool_calls => "settings.json.preference-migration.collapse_tool_calls.json",
             .update_channel => "settings.json.preference-migration.update_channel.json",
@@ -245,7 +241,6 @@ const user_preference_fields = [_]UserPreferenceField{
     .permission_mode,
     .effort,
     .fast_mode,
-    .ultrafast_mode,
     .slash_menu_categories,
     .collapse_tool_calls,
     .update_channel,
@@ -606,40 +601,6 @@ pub const Store = struct {
         return cleanup;
     }
 
-    pub fn readPrimaryForTest(self: *Store, alloc: Allocator) ![]u8 {
-        var raw = try self.loadRawPrimary(alloc);
-        defer raw.deinit(alloc);
-        return switch (raw) {
-            .bytes => |bytes| blk: {
-                raw = .absent;
-                break :blk bytes;
-            },
-            .absent => error.FileNotFound,
-            .oversized => error.SettingsPrimaryTooLarge,
-        };
-    }
-
-    pub fn primaryStatForTest(self: *Store) !std.Io.File.Stat {
-        const dir = self.durable_home orelse return error.FileNotFound;
-        return dir.dir.statFile(io_mod.getIo(), "settings.json", .{ .follow_symlinks = false });
-    }
-
-    pub fn commitCountForTest(self: *const Store) usize {
-        return self.commit_count;
-    }
-
-    pub fn forceFingerprintConflictsForTest(self: *Store, count: usize) void {
-        self.forced_fingerprint_conflicts = count;
-    }
-
-    pub fn failParentSyncAfterRenameForTest(self: *Store) void {
-        self.fail_parent_sync_after_rename = true;
-    }
-
-    pub fn failMigrationSnapshotForTest(self: *Store) void {
-        self.fail_migration_snapshot = true;
-    }
-
     pub fn newestValidBackupPath(self: *Store, alloc: Allocator) !?[]u8 {
         if (self.durable_home == null) return null;
         var backups = self.durable_home.?.dir.openDir(io_mod.getIo(), profile_paths.backups_dir_name, .{
@@ -862,21 +823,6 @@ pub fn validateModel(model: []const u8) !void {
     }
 }
 
-/// Bounds on the gateway provider routing list (`provider_order`). Slugs are
-/// the gateway's provider identifiers (for example `anthropic`, `bedrock`,
-/// `vertexAnthropic`; case matters).
-pub const max_provider_order_entries: usize = 8;
-pub const max_provider_slug_bytes: usize = 64;
-
-pub fn validateProviderSlug(slug: []const u8) bool {
-    if (slug.len == 0 or slug.len > max_provider_slug_bytes) return false;
-    if (!std.ascii.isAlphanumeric(slug[0])) return false;
-    for (slug) |byte| {
-        if (!std.ascii.isAlphanumeric(byte) and byte != '-') return false;
-    }
-    return true;
-}
-
 fn validateUserPatch(patch: UserSettingsPatch) !void {
     if (patch.model_preference) |preference| try validateModel(preference.model);
 }
@@ -920,7 +866,6 @@ fn applyUserPatchToRoot(
     if (patch.yolo_acknowledged) |value| application.changed = try putBool(arena, &root.object, "yolo_acknowledged", value) or application.changed;
     if (patch.effort) |value| application.changed = try putString(arena, &root.object, "effort", value.label()) or application.changed;
     if (patch.fast_mode) |value| application.changed = try putBool(arena, &root.object, "fast_mode", value) or application.changed;
-    if (patch.ultrafast_mode) |value| application.changed = try putBool(arena, &root.object, "ultrafast_mode", value) or application.changed;
     if (patch.model_preference != null and patch.fast_mode != null) {
         application.changed = try putBool(arena, &root.object, "fast_mode_model_bound", true) or application.changed;
     } else if ((patch.model_preference != null or patch.fast_mode != null) and root.object.contains("fast_mode_model_bound")) {
@@ -1046,13 +991,6 @@ fn cleanupLegacyWorkspacePreferences(
             "fast_mode",
             .fast_mode,
             patch.fast_mode != null,
-            application,
-        );
-        removeLegacyLeaf(
-            &entry.value_ptr.object,
-            "ultrafast_mode",
-            .ultrafast_mode,
-            patch.ultrafast_mode != null,
             application,
         );
         if ((patch.model_preference != null or patch.fast_mode != null) and
@@ -1705,21 +1643,7 @@ fn validateKnownSettingsObject(
     if (object.get("context_limits")) |value| {
         _ = context_limits.parseJsonObject(value) catch return error.InvalidSettingsFormat;
     }
-    if (object.get("provider_order")) |value| {
-        // An empty array explicitly clears an inherited routing list.
-        if (value != .array or value.array.items.len > max_provider_order_entries) {
-            return error.InvalidSettingsFormat;
-        }
-        for (value.array.items, 0..) |item, index| {
-            if (item != .string or !validateProviderSlug(item.string)) return error.InvalidSettingsFormat;
-            for (value.array.items[0..index]) |previous| {
-                if (previous == .string and std.mem.eql(u8, item.string, previous.string)) {
-                    return error.InvalidSettingsFormat;
-                }
-            }
-        }
-    }
-    inline for (&.{ "context", "fast_mode", "ultrafast_mode", "auto_upgrade", "slash_menu_categories", "startup_scrollback", "yolo_acknowledged", "provider_strict" }) |key| {
+    inline for (&.{ "context", "fast_mode", "auto_upgrade", "slash_menu_categories", "startup_scrollback", "yolo_acknowledged" }) |key| {
         if (object.get(key)) |value| {
             if (value != .bool) return error.InvalidSettingsFormat;
         }

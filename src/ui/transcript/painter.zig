@@ -1204,13 +1204,6 @@ pub const PreparedTranscriptSurfacePaint = struct {
             self.line_provenance.items;
     }
 
-    pub fn rowProvenance(self: *const PreparedTranscriptSurfacePaint, row: u16) ?transcript_blocks.LineProvenance {
-        for (self.row_provenance.items) |item| {
-            if (item.row == row) return item.source;
-        }
-        return null;
-    }
-
     pub fn projectionArea(self: *const PreparedTranscriptSurfacePaint) render_engine.frame_layout.FrameRect {
         if (!self.projection_area.isEmpty()) return self.projection_area;
         if (self.selection.top_row == 0 or self.selection.bottom_row < self.selection.top_row) {

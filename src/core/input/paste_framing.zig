@@ -198,12 +198,6 @@ pub const State = struct {
         self.end_candidate_overflow_bytes = 0;
     }
 
-    /// Stops retaining payload bytes while preserving end-marker detection.
-    pub fn continueDiscarding(self: *State) void {
-        self.owner = .decision_prompt;
-        self.decision_bytes = 0;
-    }
-
     /// Clears a capture after its bytes have been handled successfully.
     pub fn finishHandled(self: *State) void {
         self.clearRetainingCapacity();

@@ -340,7 +340,6 @@ fn appendCompactFacts(
     if (capabilities.context_window) |tokens| try appendTokenFact(alloc, facts, tokens, "context");
     if (capabilities.max_output_tokens) |tokens| try appendTokenFact(alloc, facts, tokens, "output");
     if (capabilities.supports_fast_mode) try appendMetadataFact(alloc, facts, "Fast");
-    if (capabilities.supports_ultrafast_mode) try appendMetadataFact(alloc, facts, "Ultra");
 }
 
 fn compactFactsWidth(capabilities: model_capabilities.Capabilities) usize {
@@ -356,10 +355,6 @@ fn compactFactsWidth(capabilities: model_capabilities.Capabilities) usize {
     if (capabilities.supports_fast_mode) {
         if (width > 0) width += display_width.visibleWidth(" · ");
         width += display_width.visibleWidth("Fast");
-    }
-    if (capabilities.supports_ultrafast_mode) {
-        if (width > 0) width += display_width.visibleWidth(" · ");
-        width += display_width.visibleWidth("Ultra");
     }
     return width;
 }

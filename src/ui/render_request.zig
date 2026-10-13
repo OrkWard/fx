@@ -216,10 +216,6 @@ pub const RenderRequestState = struct {
         return self.resize_dirty or self.pending_settled_width_reflow;
     }
 
-    pub fn shouldApplyDeferredResize(self: RenderRequestState, now_ms: i64) bool {
-        return self.resize_dirty and now_ms >= self.resize_apply_after_ms;
-    }
-
     pub fn blocksFrameCommit(self: RenderRequestState) bool {
         return self.resize_dirty or self.frame_admission_block_depth > 0;
     }

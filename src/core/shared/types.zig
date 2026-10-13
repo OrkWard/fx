@@ -791,19 +791,6 @@ pub const ToolCall = struct {
     resolved_skill: ?*const skill_contract.PreparedSkill = null,
 };
 
-pub const WebSearchProgress = union(enum) {
-    query_started: []const u8,
-    results_received: struct {
-        query: []const u8,
-        result_count: usize,
-    },
-};
-
-pub const WebSearchCompletion = struct {
-    searches: u32,
-    duration_ms: u64,
-};
-
 pub const WebFetchProgress = union(enum) {
     fetching: []const u8,
     converting: []const u8,
@@ -1337,22 +1324,6 @@ pub const ProviderFinishReason = enum {
     provider_error,
     other,
 
-    pub fn parse_unified(raw: []const u8) ?ProviderFinishReason {
-        if (std.mem.eql(u8, raw, "stop")) return .stop;
-        if (std.mem.eql(u8, raw, "length")) return .length;
-        if (std.mem.eql(u8, raw, "content-filter")) return .content_filter;
-        if (std.mem.eql(u8, raw, "tool-calls")) return .tool_calls;
-        if (std.mem.eql(u8, raw, "error")) return .provider_error;
-        if (std.mem.eql(u8, raw, "other")) return .other;
-        return null;
-    }
-
-    pub fn parse_legacy(raw: []const u8) ?ProviderFinishReason {
-        if (std.mem.eql(u8, raw, "tool_calls")) return .tool_calls;
-        if (std.mem.eql(u8, raw, "content_filter")) return .content_filter;
-        return parse_unified(raw);
-    }
-
     pub fn label(self: ProviderFinishReason) []const u8 {
         return switch (self) {
             .stop => "stop",
@@ -1375,13 +1346,11 @@ pub const ProviderServiceTier = enum {
     standard,
     flex,
     priority,
-    ultrafast,
 
     pub fn parse(raw: []const u8) ?ProviderServiceTier {
         if (std.mem.eql(u8, raw, "default") or std.mem.eql(u8, raw, "standard")) return .standard;
         if (std.mem.eql(u8, raw, "priority") or std.mem.eql(u8, raw, "fast")) return .priority;
         if (std.mem.eql(u8, raw, "flex")) return .flex;
-        if (std.mem.eql(u8, raw, "ultrafast")) return .ultrafast;
         return null;
     }
 };
@@ -1764,13 +1733,6 @@ pub const ReasoningEffort = union(enum) {
     pub fn displayLabel(self: *const ReasoningEffort) []const u8 {
         return switch (self.*) {
             .auto => "default",
-            .named => self.label(),
-        };
-    }
-
-    pub fn gatewayValue(self: *const ReasoningEffort) ?[]const u8 {
-        return switch (self.*) {
-            .auto => null,
             .named => self.label(),
         };
     }

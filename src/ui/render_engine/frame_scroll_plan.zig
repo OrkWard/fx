@@ -129,18 +129,6 @@ pub const FrameScrollPlan = struct {
         if (!std.meta.eql(self, expected)) return error.InvalidFrameScrollPlan;
     }
 
-    pub fn acceptedPreservedRows(self: FrameScrollPlan, committed_terminal_scroll_rows: u16) u16 {
-        return self.acceptedRows(committed_terminal_scroll_rows).preserved_release_rows;
-    }
-
-    pub fn acceptedInlineRows(self: FrameScrollPlan, committed_terminal_scroll_rows: u16) u32 {
-        return self.acceptedRows(committed_terminal_scroll_rows).inline_advance_rows;
-    }
-
-    pub fn acceptedRows(self: FrameScrollPlan, committed_terminal_scroll_rows: u16) AcceptedScrollRows {
-        return self.commit(committed_terminal_scroll_rows).accepted_rows;
-    }
-
     pub fn commit(self: FrameScrollPlan, committed_terminal_scroll_rows: u16) FrameScrollCommit {
         return self.commitWithExpectedRows(
             committed_terminal_scroll_rows,

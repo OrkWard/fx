@@ -359,19 +359,6 @@ pub const Reviewer = struct {
         return .{ .override_context = context, .override_fn = override_fn };
     }
 
-    fn withTransport(
-        transport: Transport,
-        cancel_flag: ?*std.atomic.Value(bool),
-        timeout_ms: u32,
-    ) Reviewer {
-        return .{
-            .transport = transport,
-            .cancel_flag = cancel_flag,
-            .timeout_ms = timeout_ms,
-            .model = "test/reviewer",
-        };
-    }
-
     pub fn withTransportModel(
         transport: Transport,
         cancel_flag: ?*std.atomic.Value(bool),

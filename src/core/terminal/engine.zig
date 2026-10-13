@@ -2202,40 +2202,6 @@ pub const Grid = struct {
         try out.appendSlice(self.alloc, trimmed);
     }
 
-    /// Append one row with its SGR attributes, excluding OSC hyperlinks and
-    /// trailing default cells.
-    pub fn rowStyledTextTrimmed(self: Grid, row: u16, out: *std.Io.Writer) !void {
-        if (row == 0 or row > self.rows) return;
-        var last_col: u16 = 0;
-        var col: u16 = 1;
-        while (col <= self.cols) : (col += 1) {
-            const cell = self.cellAt(row, col).?;
-            if (cell.width == 0) continue;
-            var style = cell.style;
-            style.hyperlink_id = 0;
-            const suffix = self.combiningSuffix(cell.combining_suffix_id) orelse &.{};
-            if (cell.codepoint != ' ' or suffix.len > 0 or !style.eql(.{})) last_col = col;
-        }
-
-        var active_style: Style = .{};
-        col = 1;
-        while (col <= last_col) : (col += 1) {
-            const cell = self.cellAt(row, col).?;
-            if (cell.width == 0) continue;
-            var style = cell.style;
-            style.hyperlink_id = 0;
-            if (!active_style.eql(style)) {
-                try emitSgrTransition(out, style);
-                active_style = style;
-            }
-            try emitCodepoint(out, cell.codepoint);
-            if (self.combiningSuffix(cell.combining_suffix_id)) |suffix| {
-                try out.writeAll(suffix);
-            }
-        }
-        if (!active_style.eql(.{})) try out.writeAll("\x1b[0m");
-    }
-
     /// Re-emit the occupied margin glyph without advancing, restoring lazy wrap
     /// after cursor addressing. The caller enables autowrap and resumes source
     /// presentation after this sequence; no terminal state is mutated here.
@@ -2306,12 +2272,6 @@ pub const Grid = struct {
             .combining_suffix_pool = suffix_pool,
             .combining_pool_bytes = self.combining_pool_bytes,
         };
-    }
-
-    /// Emits the ANSI diff between equal-sized grids. Wide-glyph continuation
-    /// cells affect change detection but are not emitted independently.
-    pub fn diffTo(prev: Grid, next: Grid, out: *std.Io.Writer) !void {
-        return diffBand(prev, next, 1, next.rows, out);
     }
 
     /// Diffs only the inclusive row band, preserving terminal content outside it.

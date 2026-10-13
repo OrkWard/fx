@@ -110,24 +110,6 @@ pub const State = struct {
         return next;
     }
 
-    pub fn prepare_projection(self: State, cols: u16) State {
-        var next = self;
-        if (next.projection_cols) |previous_cols| {
-            if (previous_cols != cols) next = next.queue_bookmark();
-        }
-        next.projection_cols = cols;
-        return next;
-    }
-
-    pub fn defer_full_open(self: State) State {
-        var next = self;
-        next.bookmark_pending = !next.follow_tail;
-        next.bookmark_entry_id = null;
-        next.bookmark_intra_row = 0;
-        next.depth = .inline_mode;
-        return next;
-    }
-
     pub fn scroll(self: State, direction: ScrollDirection, rows: u32) State {
         var next = self;
         next.follow_tail = false;
@@ -191,20 +173,6 @@ pub const State = struct {
         };
     }
 
-    pub fn from_snapshot(saved: Snapshot) State {
-        return .{
-            .depth = saved.depth,
-            .scroll_rows = saved.scroll_rows,
-            .follow_tail = saved.follow_tail,
-            .anchor_entry_id = saved.anchor_entry_id,
-            .anchor_pending = saved.anchor_pending,
-            .bookmark_entry_id = saved.bookmark_entry_id,
-            .bookmark_intra_row = saved.bookmark_intra_row,
-            .bookmark_pending = saved.bookmark_pending,
-            .projection_cols = saved.projection_cols,
-        };
-    }
-
     fn open_full(self: State) State {
         var next = if (self.bookmark_pending) self else self.reset_viewport();
         next.depth = .full;
@@ -218,12 +186,6 @@ pub const State = struct {
         var next = self;
         next.scroll_rows = 0;
         next.follow_tail = true;
-        return next;
-    }
-
-    fn queue_bookmark(self: State) State {
-        var next = self;
-        next.bookmark_pending = !next.follow_tail and next.bookmark_entry_id != null;
         return next;
     }
 

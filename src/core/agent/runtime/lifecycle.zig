@@ -67,17 +67,6 @@ pub const PreparedToolCall = union(enum) {
         };
     }
 
-    pub fn takeBlockedOutput(self: *PreparedToolCall) ?[]u8 {
-        return switch (self.*) {
-            .blocked => |*blocked| blk: {
-                const output = blocked.model_output;
-                blocked.model_output = null;
-                break :blk output;
-            },
-            else => null,
-        };
-    }
-
     pub fn deinit(self: *PreparedToolCall, alloc: Allocator) void {
         switch (self.*) {
             .provider_executed => |tool_call| types.freeToolCall(alloc, tool_call),
@@ -88,16 +77,6 @@ pub const PreparedToolCall = union(enum) {
             },
         }
         self.* = undefined;
-    }
-
-    pub fn deinitOutput(self: *PreparedToolCall, alloc: Allocator) void {
-        switch (self.*) {
-            .blocked => |*blocked| {
-                if (blocked.model_output) |output| alloc.free(output);
-                blocked.model_output = null;
-            },
-            else => {},
-        }
     }
 };
 

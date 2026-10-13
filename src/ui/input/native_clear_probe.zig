@@ -27,10 +27,6 @@ pub const Runtime = struct {
         return self.expected_terminal_row;
     }
 
-    pub fn retainedInput(self: Runtime) []const u8 {
-        return self.input.items;
-    }
-
     pub fn begin(
         self: *Runtime,
         alloc: Allocator,

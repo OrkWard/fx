@@ -1,6 +1,5 @@
 const std = @import("std");
 const debug_trace = @import("../shared/debug_trace.zig");
-const io_mod = @import("../shared/io.zig");
 const prompt_history_provider = @import("../session/prompt_history_provider.zig");
 const prompt_history_store = @import("../session/prompt_history_store.zig");
 
@@ -60,20 +59,6 @@ pub const PromptHistoryRuntime = struct {
             );
             return .unavailable;
         };
-        self.writes_available = true;
-        return .available;
-    }
-
-    pub fn initializeWithProvider(
-        self: *PromptHistoryRuntime,
-        enabled: bool,
-        provider: prompt_history_provider.Provider,
-    ) InitializeOutcome {
-        self.enabled = enabled;
-        self.loaded_count = 0;
-        self.append_warning_active = false;
-        self.last_append_error = null;
-        self.provider = provider;
         self.writes_available = true;
         return .available;
     }
@@ -192,32 +177,5 @@ pub const PromptHistoryRuntime = struct {
 
     pub fn lastAppendError(self: *const PromptHistoryRuntime) ?anyerror {
         return self.last_append_error;
-    }
-
-    pub fn setStoreLockOpsForTest(
-        self: *PromptHistoryRuntime,
-        ops: io_mod.LockOps,
-    ) void {
-        if (self.store) |*store| store.setLockOpsForTest(ops);
-    }
-
-    pub fn clearStoreTestControls(self: *PromptHistoryRuntime) void {
-        if (self.store) |*store| store.clearTestControls();
-        self.writes_available = self.store != null;
-    }
-
-    pub fn loadRecentIncludingDisabledForTest(
-        self: *PromptHistoryRuntime,
-        alloc: Allocator,
-        workspace_root: []const u8,
-        limit: usize,
-    ) ![]prompt_history_store.LoadedPromptHistoryEntry {
-        if (self.provider) |provider| {
-            return provider.loadRecent(alloc, workspace_root, limit);
-        }
-        if (self.store) |*store| {
-            return store.loadRecentForWorkspace(alloc, workspace_root, limit);
-        }
-        return alloc.alloc(prompt_history_store.LoadedPromptHistoryEntry, 0);
     }
 };

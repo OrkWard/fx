@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const secret = @import("../auth/secret.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const mem_utils = @import("../shared/mem_utils.zig");
 const generation_fact_codec = @import("generation_fact_codec.zig");
@@ -24,7 +23,6 @@ const max_origin_bytes: usize = 2048;
 const max_team_bytes: usize = 255;
 const max_identifier_bytes: usize = 8 * 1024;
 const max_active_invocations: usize = 64;
-const shutdown_reconciliation_budget_ms: usize = 250;
 pub const max_snapshot_bytes: usize = 256 * 1024;
 
 /// Completeness of the saved billing window rendered by `/cost`.
@@ -134,7 +132,7 @@ pub const InvocationObservation = struct {
                 }
                 return;
             },
-            .exact, .deferred => {},
+            .exact => {},
         }
         const delivery: DeliveryOutcome = if (completion.delivery_ambiguous)
             .ambiguous_delivery
@@ -200,22 +198,6 @@ pub const InvocationObservation = struct {
                     "usage exact generation settled sequence={d} id={s}",
                     .{ self.sequence, generation_id },
                 );
-            },
-            .deferred => |reference| {
-                const accepted = try ledger.finishDeferredInvocationDurably(
-                    alloc,
-                    self.sequence,
-                    self.elapsedMs(),
-                    delivery,
-                    reference,
-                );
-                if (!accepted) return;
-                debug_trace.logf(
-                    "session",
-                    "usage generation queued sequence={d} id={s}",
-                    .{ self.sequence, reference.generation_id },
-                );
-                ledger.scheduleProfilePublicationDrain();
             },
             .unavailable => unreachable,
         }
@@ -385,15 +367,6 @@ pub const Usage = struct {
     incidents: [max_usage_incidents]usage_report.Incident = undefined,
     incident_count: usize = 0,
     dirty: bool = false,
-    reconciliation_mutex: std.Io.Mutex = .init,
-    reconciliation_thread: ?std.Thread = null,
-    reconciliation_done: std.atomic.Value(bool) = .init(true),
-    reconciliation_cancel: std.atomic.Value(bool) = .init(false),
-    reconciliation_work_epoch: std.atomic.Value(u64) = .init(0),
-    reconciliation_key_digest: ?[Sha256.digest_length]u8 = null,
-    reconciliation_authority: ?ReconciliationAuthority = null,
-    reconciliation_credential_blocked: bool = false,
-    generation_usage_providers: generation_usage.Set = .{},
     publication_drain_mutex: std.Io.Mutex = .init,
     publication_drain_thread: ?std.Thread = null,
     publication_drain_done: std.atomic.Value(bool) = .init(true),
@@ -411,16 +384,7 @@ pub const Usage = struct {
         };
     }
 
-    pub fn initFreshWithProviders(providers: generation_usage.Set) Usage {
-        var usage = initFresh();
-        usage.generation_usage_providers = providers;
-        return usage;
-    }
-
-    pub fn initIntoFreshWithProviders(
-        self: *Usage,
-        providers: generation_usage.Set,
-    ) void {
+    pub fn initIntoFresh(self: *Usage) void {
         const usage_info = @typeInfo(Usage).@"struct";
         inline for (usage_info.field_names, usage_info.field_types, usage_info.field_attrs) |field_name, field_type, field_attrs| {
             if (comptime std.mem.eql(u8, field_name, "active_sequences") or
@@ -439,35 +403,20 @@ pub const Usage = struct {
         self.code_complete = true;
         self.reasoning_tokens = 0;
         self.request_count = 0;
-        self.generation_usage_providers = providers;
-    }
-
-    pub fn initLegacy() Usage {
-        return .{
-            .billing = .legacy,
-            .api_duration_complete = false,
-            .wall_duration_complete = false,
-            .code_complete = false,
-            .reasoning_tokens = null,
-            .request_count = null,
-        };
     }
 
     pub fn deinit(self: *Usage, alloc: Allocator) void {
-        self.stopReconciliation();
         self.stopPublicationDrain();
         self.clearOwned(alloc);
         self.* = undefined;
     }
 
     pub fn resetFresh(self: *Usage, alloc: Allocator) void {
-        self.stopReconciliation();
         self.stopPublicationDrain();
         self.reset(alloc, true);
     }
 
     pub fn resetLegacy(self: *Usage, alloc: Allocator) void {
-        self.stopReconciliation();
         self.stopPublicationDrain();
         self.reset(alloc, false);
     }
@@ -561,76 +510,6 @@ pub const Usage = struct {
         _ = try self.persistCheckpointForContinuationLocked();
         self.checkpoint_mutex.unlock(io_mod.getIo());
         self.scheduleProfilePublicationDrain();
-    }
-
-    fn finishObservedInvocationDurably(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        id: []const u8,
-        origin: []const u8,
-        team: ?[]const u8,
-    ) !bool {
-        self.checkpoint_mutex.lockUncancelable(io_mod.getIo());
-        errdefer self.checkpoint_mutex.unlock(io_mod.getIo());
-        const accepted = self.finishObservedInvocationAccepted(
-            alloc,
-            sequence,
-            duration_ms,
-            outcome,
-            id,
-            origin,
-            team,
-        ) catch |err| {
-            self.markBillingIncomplete();
-            _ = try self.persistCheckpointForContinuationLocked();
-            debug_trace.logf(
-                "session",
-                "usage generation checkpointed incomplete reason={s}",
-                .{@errorName(err)},
-            );
-            self.checkpoint_mutex.unlock(io_mod.getIo());
-            self.scheduleProfilePublicationDrain();
-            return false;
-        };
-        _ = try self.persistCheckpointForContinuationLocked();
-        self.checkpoint_mutex.unlock(io_mod.getIo());
-        return accepted;
-    }
-
-    fn finishDeferredInvocationDurably(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        reference: stream_provider.DeferredUsageReference,
-    ) !bool {
-        self.checkpoint_mutex.lockUncancelable(io_mod.getIo());
-        errdefer self.checkpoint_mutex.unlock(io_mod.getIo());
-        const accepted = self.finishDeferredInvocationAccepted(
-            alloc,
-            sequence,
-            duration_ms,
-            outcome,
-            reference,
-        ) catch |err| {
-            self.markBillingIncomplete();
-            _ = try self.persistCheckpointForContinuationLocked();
-            debug_trace.logf(
-                "session",
-                "usage generation checkpointed incomplete reason={s}",
-                .{@errorName(err)},
-            );
-            self.checkpoint_mutex.unlock(io_mod.getIo());
-            self.scheduleProfilePublicationDrain();
-            return false;
-        };
-        _ = try self.persistCheckpointForContinuationLocked();
-        self.checkpoint_mutex.unlock(io_mod.getIo());
-        return accepted;
     }
 
     fn finishExactInvocationDurably(
@@ -822,90 +701,6 @@ pub const Usage = struct {
         _ = self.finishInvocationUnlocked(sequence, duration_ms, outcome);
     }
 
-    pub fn finishObservedInvocation(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        id: []const u8,
-        origin: []const u8,
-        team: ?[]const u8,
-    ) !void {
-        _ = try self.finishObservedInvocationAccepted(
-            alloc,
-            sequence,
-            duration_ms,
-            outcome,
-            id,
-            origin,
-            team,
-        );
-    }
-
-    fn finishObservedInvocationAccepted(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        id: []const u8,
-        origin: []const u8,
-        team: ?[]const u8,
-    ) !bool {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        if (!self.finishInvocationUnlocked(sequence, duration_ms, outcome)) return false;
-        try validateGenerationId(id);
-        try validateOrigin(origin);
-        if (team) |value| try validateTeam(value);
-        self.observeGenerationUnlocked(alloc, sequence, id, origin, team) catch |err| {
-            self.billing = .incomplete;
-            self.dirty = true;
-            return err;
-        };
-        return true;
-    }
-
-    pub fn finishDeferredInvocation(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        reference: stream_provider.DeferredUsageReference,
-    ) !void {
-        _ = try self.finishDeferredInvocationAccepted(
-            alloc,
-            sequence,
-            duration_ms,
-            outcome,
-            reference,
-        );
-    }
-
-    fn finishDeferredInvocationAccepted(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        duration_ms: u64,
-        outcome: DeliveryOutcome,
-        reference: stream_provider.DeferredUsageReference,
-    ) !bool {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        if (!self.finishInvocationUnlocked(sequence, duration_ms, outcome)) return false;
-        try validateGenerationId(reference.generation_id);
-        try validateOrigin(reference.scope);
-        if (reference.account_id) |value| try validateIdentifier(value);
-        self.observeGenerationAuthorityUnlocked(alloc, sequence, reference) catch |err| {
-            self.billing = .incomplete;
-            self.dirty = true;
-            return err;
-        };
-        return true;
-    }
-
     fn finishInvocationUnlocked(
         self: *Usage,
         sequence: u64,
@@ -941,46 +736,6 @@ pub const Usage = struct {
         }
         self.dirty = true;
         return true;
-    }
-
-    fn observeGenerationUnlocked(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        id: []const u8,
-        origin: []const u8,
-        team: ?[]const u8,
-    ) !void {
-        return self.observeGenerationFieldsUnlocked(
-            alloc,
-            sequence,
-            id,
-            .codex,
-            origin,
-            team,
-            null,
-            null,
-            null,
-        );
-    }
-
-    fn observeGenerationAuthorityUnlocked(
-        self: *Usage,
-        alloc: Allocator,
-        sequence: u64,
-        reference: stream_provider.DeferredUsageReference,
-    ) !void {
-        return self.observeGenerationFieldsUnlocked(
-            alloc,
-            sequence,
-            reference.generation_id,
-            reference.provider,
-            reference.scope,
-            null,
-            reference.credential_source,
-            reference.credential_identity,
-            reference.account_id,
-        );
     }
 
     fn observeGenerationFieldsUnlocked(
@@ -1069,55 +824,6 @@ pub const Usage = struct {
         });
         if (self.billing == .complete) self.billing = .pending;
         self.dirty = true;
-    }
-
-    pub fn applyGeneration(self: *Usage, alloc: Allocator, record: GenerationRecord) !void {
-        try validateGenerationRecord(record);
-        const fact = generationFactBorrowed(record);
-
-        self.checkpoint_mutex.lockUncancelable(io_mod.getIo());
-        const publication = self.publishFact(fact);
-        if (publication != .durable and self.checkpoint_sink != null) {
-            self.stagePublicationBacklog(alloc, fact) catch |err| {
-                self.checkpoint_mutex.unlock(io_mod.getIo());
-                self.flushProfilePublications();
-                return err;
-            };
-            if (!self.persistCheckpointBestEffortLocked()) {
-                self.checkpoint_mutex.unlock(io_mod.getIo());
-                self.flushProfilePublications();
-                return error.ProfilePublicationRecoveryUnavailable;
-            }
-            self.checkpoint_mutex.unlock(io_mod.getIo());
-            self.flushProfilePublications();
-            // The rollback-readable event omits the richer publication fact,
-            // so the pending generation remains the canonical recovery bridge
-            // even when the sidecar preserves the full backlog.
-            return;
-        }
-        if (publication == .failed) {
-            self.stagePublicationBacklog(alloc, fact) catch |err| {
-                self.checkpoint_mutex.unlock(io_mod.getIo());
-                self.flushProfilePublications();
-                return err;
-            };
-        }
-
-        self.mutex.lockUncancelable(io_mod.getIo());
-        self.applyGenerationUnlocked(
-            alloc,
-            record,
-            publication == .durable,
-        ) catch |err| {
-            self.mutex.unlock(io_mod.getIo());
-            self.checkpoint_mutex.unlock(io_mod.getIo());
-            self.flushProfilePublications();
-            return err;
-        };
-        self.mutex.unlock(io_mod.getIo());
-        _ = self.persistCheckpointBestEffortLocked();
-        self.checkpoint_mutex.unlock(io_mod.getIo());
-        if (publication == .failed) self.flushProfilePublications();
     }
 
     fn applyGenerationUnlocked(
@@ -1229,34 +935,6 @@ pub const Usage = struct {
         durable,
         failed,
     };
-
-    fn publishFact(
-        self: *Usage,
-        fact: usage_report.GenerationFact,
-    ) PublicationResult {
-        self.publication_mutex.lockUncancelable(io_mod.getIo());
-        defer self.publication_mutex.unlock(io_mod.getIo());
-        const sink = self.publication_sink orelse return .not_configured;
-        sink.publish(sink.context, .{ .generation = fact }) catch |err| {
-            debug_trace.logf(
-                "session",
-                "usage profile publication failed id={s} reason={s}",
-                .{ fact.id, @errorName(err) },
-            );
-            return .failed;
-        };
-        return .durable;
-    }
-
-    fn stagePublicationBacklog(
-        self: *Usage,
-        alloc: Allocator,
-        fact: usage_report.GenerationFact,
-    ) !void {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        try self.stagePublicationBacklogUnlocked(alloc, fact);
-    }
 
     fn stagePublicationBacklogUnlocked(
         self: *Usage,
@@ -1596,21 +1274,6 @@ pub const Usage = struct {
         complete_cost: ?f64,
     };
 
-    /// Returns the latest provider-reported context usage. This state is
-    /// intentionally runtime-only: a restored billing aggregate cannot prove
-    /// how much context the next model request currently occupies.
-    pub fn liveContextSnapshot(self: *Usage) ?LiveContextSnapshot {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        return .{
-            .used = self.latest_context_used orelse return null,
-            .complete_cost = if (self.billing == .complete and std.math.isFinite(self.total_cost))
-                self.total_cost
-            else
-                null,
-        };
-    }
-
     fn observeContextUsage(self: *Usage, sequence: u64, provider_usage: types.Usage) void {
         const used: ?u64 = if (provider_usage.input_tokens) |input|
             if (provider_usage.output_tokens) |output|
@@ -1628,7 +1291,6 @@ pub const Usage = struct {
 
     /// Returns an owned point-in-time snapshot. The caller must call `deinit`.
     pub fn snapshot(self: *Usage, alloc: Allocator) !Snapshot {
-        self.finishReconciliationIfDone();
         return self.snapshotCurrent(alloc);
     }
 
@@ -1781,7 +1443,6 @@ pub const Usage = struct {
         source: Snapshot,
         session_started_at_ms: i64,
     ) !void {
-        self.stopReconciliation();
         self.stopPublicationDrain();
         try validateSnapshot(source);
 
@@ -1836,276 +1497,9 @@ pub const Usage = struct {
     }
 
     pub fn isDirty(self: *Usage) bool {
-        self.finishReconciliationIfDone();
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
         return self.dirty;
-    }
-
-    pub fn startReconciliation(
-        self: *Usage,
-        alloc: Allocator,
-        api_key: []const u8,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            api_key,
-            .{ .provider = .codex, .credential_identity = null },
-            false,
-            null,
-        );
-    }
-
-    pub fn startDeferredReconciliation(
-        self: *Usage,
-        alloc: Allocator,
-        reference: stream_provider.DeferredUsageReference,
-        credential: []const u8,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            credential,
-            .{
-                .provider = reference.provider,
-                .credential_identity = reference.credential_identity,
-            },
-            false,
-            null,
-        );
-    }
-
-    pub fn startHostManagedDeferredReconciliation(
-        self: *Usage,
-        alloc: Allocator,
-        reference: stream_provider.DeferredUsageReference,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            null,
-            .{
-                .provider = reference.provider,
-                .credential_identity = reference.credential_identity,
-            },
-            false,
-            null,
-        );
-    }
-
-    /// Installs the host's authoritative credential regardless of the prior key.
-    pub fn replaceReconciliationCredential(
-        self: *Usage,
-        alloc: Allocator,
-        api_key: []const u8,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            api_key,
-            self.reconciliation_authority orelse .{ .provider = .codex, .credential_identity = null },
-            true,
-            null,
-        );
-    }
-
-    pub fn replaceProviderReconciliationCredential(
-        self: *Usage,
-        alloc: Allocator,
-        provider: model_provider.ProviderId,
-        source: types.CredentialSource,
-        account_id: ?[]const u8,
-        credential: []const u8,
-    ) void {
-        const identity = credential_authority.derive(source, account_id) orelse {
-            self.mutex.lockUncancelable(io_mod.getIo());
-            const has_pending = self.pending.items.len > 0;
-            self.mutex.unlock(io_mod.getIo());
-            if (!has_pending) {
-                self.startReconciliationWithCredential(
-                    alloc,
-                    credential,
-                    .{ .provider = provider, .credential_identity = null },
-                    true,
-                    null,
-                );
-                return;
-            }
-            self.clearReconciliationCredential();
-            debug_trace.logf(
-                "session",
-                "usage reconciliation withheld provider={s} source={s} reason=stable_credential_identity_unavailable",
-                .{ @tagName(provider), @tagName(source) },
-            );
-            return;
-        };
-        self.startReconciliationWithCredential(
-            alloc,
-            credential,
-            .{
-                .provider = provider,
-                .credential_identity = identity,
-            },
-            true,
-            null,
-        );
-    }
-
-    pub fn replaceHostManagedReconciliationAuthority(
-        self: *Usage,
-        alloc: Allocator,
-        provider: model_provider.ProviderId,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            null,
-            .{
-                .provider = provider,
-                .credential_identity = credential_authority.derive(.host_managed, null),
-            },
-            true,
-            null,
-        );
-    }
-
-    /// Replaces a producer's key only while that key is still authoritative.
-    pub fn refreshReconciliationCredential(
-        self: *Usage,
-        alloc: Allocator,
-        expected_api_key: []const u8,
-        refreshed_api_key: []const u8,
-    ) void {
-        self.startReconciliationWithCredential(
-            alloc,
-            refreshed_api_key,
-            self.reconciliation_authority orelse .{ .provider = .codex, .credential_identity = null },
-            true,
-            expected_api_key,
-        );
-    }
-
-    /// Cancels credential work and rejects stale producer starts until replaced.
-    pub fn clearReconciliationCredential(self: *Usage) void {
-        self.reconciliation_cancel.store(true, .seq_cst);
-        self.reconciliation_mutex.lockUncancelable(io_mod.getIo());
-        defer self.reconciliation_mutex.unlock(io_mod.getIo());
-        self.reconciliation_cancel.store(true, .seq_cst);
-        _ = self.reconciliation_work_epoch.fetchAdd(1, .seq_cst);
-        const thread = self.reconciliation_thread;
-        self.reconciliation_thread = null;
-        if (thread) |handle| handle.join();
-        self.reconciliation_done.store(true, .seq_cst);
-        self.reconciliation_cancel.store(false, .seq_cst);
-        self.reconciliation_key_digest = null;
-        self.reconciliation_authority = null;
-        self.reconciliation_credential_blocked = true;
-    }
-
-    fn startReconciliationWithCredential(
-        self: *Usage,
-        alloc: Allocator,
-        credential: ?[]const u8,
-        authority: ReconciliationAuthority,
-        replace_existing: bool,
-        expected_api_key: ?[]const u8,
-    ) void {
-        if (credential) |api_key| if (api_key.len == 0) return;
-        const key_digest = if (credential) |api_key|
-            reconciliationKeyDigest(api_key)
-        else
-            hostManagedReconciliationDigest();
-        const expected_digest = if (expected_api_key) |expected|
-            reconciliationKeyDigest(expected)
-        else
-            null;
-        self.reconciliation_mutex.lockUncancelable(io_mod.getIo());
-        defer self.reconciliation_mutex.unlock(io_mod.getIo());
-        const authoritative_replace =
-            replace_existing and expected_api_key == null;
-        if (self.reconciliation_credential_blocked and
-            !authoritative_replace)
-        {
-            return;
-        }
-        if (authoritative_replace) {
-            self.reconciliation_credential_blocked = false;
-        }
-        const same_key = if (self.reconciliation_key_digest) |active_digest|
-            std.mem.eql(u8, &active_digest, &key_digest)
-        else
-            false;
-        const same_authority = if (self.reconciliation_authority) |active|
-            active.eql(authority)
-        else
-            false;
-        if (self.reconciliation_key_digest) |active_digest| {
-            if (!same_key) {
-                if (!replace_existing) return;
-                if (expected_digest) |expected| {
-                    if (!std.mem.eql(u8, &active_digest, &expected)) return;
-                }
-            }
-        }
-        _ = self.reconciliation_work_epoch.fetchAdd(1, .seq_cst);
-        if (self.reconciliation_thread) |thread| {
-            if (same_key and same_authority and !self.reconciliation_done.load(.seq_cst)) return;
-            self.reconciliation_cancel.store(true, .seq_cst);
-            self.reconciliation_thread = null;
-            thread.join();
-            self.reconciliation_done.store(true, .seq_cst);
-            self.reconciliation_cancel.store(false, .seq_cst);
-        }
-        self.reconciliation_key_digest = key_digest;
-        self.reconciliation_authority = authority;
-        if (builtin.is_test) return;
-
-        self.mutex.lockUncancelable(io_mod.getIo());
-        const still_has_pending = self.pending.items.len > 0;
-        self.mutex.unlock(io_mod.getIo());
-        if (!still_has_pending) return;
-
-        const credential_copy = if (credential) |api_key|
-            alloc.dupe(u8, api_key) catch |err| {
-                debug_trace.logf(
-                    "session",
-                    "usage reconciliation start failed reason={s}",
-                    .{@errorName(err)},
-                );
-                return;
-            }
-        else
-            null;
-        self.reconciliation_cancel.store(false, .seq_cst);
-        self.reconciliation_done.store(false, .seq_cst);
-        self.reconciliation_key_digest = key_digest;
-        self.reconciliation_thread = std.Thread.spawn(
-            .{},
-            reconciliationThreadMain,
-            .{ self, alloc, credential_copy, authority, self.generation_usage_providers },
-        ) catch |err| {
-            self.reconciliation_done.store(true, .seq_cst);
-            debug_trace.logf(
-                "session",
-                "usage reconciliation start failed reason={s}",
-                .{@errorName(err)},
-            );
-            if (credential_copy) |api_key| secret.zeroAndFree(alloc, api_key);
-            return;
-        };
-    }
-
-    pub fn cancelReconciliation(self: *Usage) void {
-        self.stopReconciliation();
-    }
-
-    /// Gives the current worker a bounded drain, then cancels it so one-shot
-    /// hosts can persist prompt results without turning exit into an API wait.
-    pub fn finishReconciliationBeforeShutdown(self: *Usage) void {
-        for (0..shutdown_reconciliation_budget_ms / 5) |_| {
-            if (self.reconciliation_done.load(.seq_cst)) {
-                self.finishReconciliationIfDone();
-                return;
-            }
-            io_mod.sleep(5 * std.time.ns_per_ms);
-        }
-        self.stopReconciliation();
     }
 
     pub fn finishProfilePublicationsBeforeShutdown(self: *Usage) void {
@@ -2122,61 +1516,12 @@ pub const Usage = struct {
         }
     }
 
-    fn finishReconciliationIfDone(self: *Usage) void {
-        if (!self.reconciliation_done.load(.seq_cst)) return;
-        self.reconciliation_mutex.lockUncancelable(io_mod.getIo());
-        if (!self.reconciliation_done.load(.seq_cst)) {
-            self.reconciliation_mutex.unlock(io_mod.getIo());
-            return;
-        }
-        const thread = self.reconciliation_thread;
-        self.reconciliation_thread = null;
-        if (thread) |handle| {
-            self.reconciliation_cancel.store(true, .seq_cst);
-            handle.join();
-            self.reconciliation_cancel.store(false, .seq_cst);
-        }
-        self.reconciliation_done.store(true, .seq_cst);
-        self.reconciliation_mutex.unlock(io_mod.getIo());
-    }
-
-    fn stopReconciliation(self: *Usage) void {
-        self.reconciliation_cancel.store(true, .seq_cst);
-        self.reconciliation_mutex.lockUncancelable(io_mod.getIo());
-        self.reconciliation_cancel.store(true, .seq_cst);
-        const thread = self.reconciliation_thread;
-        self.reconciliation_thread = null;
-        if (thread) |handle| handle.join();
-        self.reconciliation_done.store(true, .seq_cst);
-        self.reconciliation_cancel.store(false, .seq_cst);
-        self.reconciliation_mutex.unlock(io_mod.getIo());
-    }
-
     fn markBillingIncomplete(self: *Usage) void {
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
         self.billing = .incomplete;
         self.recordIncidentUnlocked(.incomplete, @max(io_mod.milliTimestamp(), 0));
         self.dirty = true;
-    }
-
-    fn rejectPendingGeneration(self: *Usage, alloc: Allocator, id: []const u8) void {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        const pending_index = for (self.pending.items, 0..) |pending, index| {
-            if (std.mem.eql(u8, pending.id, id)) break index;
-        } else null;
-        if (pending_index) |index| {
-            var removed = self.pending.orderedRemove(index);
-            self.recordIncidentUnlocked(
-                .incomplete,
-                removed.observed_at_ms orelse io_mod.milliTimestamp(),
-            );
-            removed.deinit(alloc);
-        }
-        self.billing = .incomplete;
-        self.dirty = true;
-        self.mutex.unlock(io_mod.getIo());
-        self.flushProfilePublications();
     }
 
     pub fn markCodeIncomplete(self: *Usage) void {
@@ -2336,16 +1681,6 @@ pub const Usage = struct {
         for (self.publication_backlog.items) |*fact| fact.deinit(alloc);
         self.publication_backlog.deinit(alloc);
         self.publication_backlog = .empty;
-    }
-};
-
-const ReconciliationAuthority = struct {
-    provider: model_provider.ProviderId,
-    credential_identity: ?credential_authority.Identity,
-
-    fn eql(self: ReconciliationAuthority, other: ReconciliationAuthority) bool {
-        return self.provider.same_authority(other.provider) and
-            optionalCredentialIdentitiesEqual(self.credential_identity, other.credential_identity);
     }
 };
 
@@ -3141,41 +2476,6 @@ fn writeOptionalU64(writer: *std.Io.Writer, value: ?u64) !void {
     }
 }
 
-fn reconciliationThreadMain(
-    usage: *Usage,
-    alloc: Allocator,
-    credential: ?[]u8,
-    authority: ReconciliationAuthority,
-    providers: generation_usage.Set,
-) void {
-    defer if (credential) |api_key| secret.zeroAndFree(alloc, api_key);
-    defer usage.reconciliation_done.store(true, .seq_cst);
-    var observed_epoch = usage.reconciliation_work_epoch.load(.seq_cst);
-    while (!usage.reconciliation_cancel.load(.seq_cst)) {
-        reconcilePendingBlocking(
-            usage,
-            alloc,
-            credential,
-            &usage.reconciliation_cancel,
-            authority,
-            providers,
-            30,
-        );
-        if (usage.reconciliation_cancel.load(.seq_cst)) return;
-        const current_epoch = usage.reconciliation_work_epoch.load(.seq_cst);
-        if (current_epoch != observed_epoch) {
-            observed_epoch = current_epoch;
-            continue;
-        }
-        usage.reconciliation_done.store(true, .seq_cst);
-        if (usage.reconciliation_cancel.load(.seq_cst)) return;
-        const confirmed_epoch = usage.reconciliation_work_epoch.load(.seq_cst);
-        if (confirmed_epoch == observed_epoch) return;
-        usage.reconciliation_done.store(false, .seq_cst);
-        observed_epoch = confirmed_epoch;
-    }
-}
-
 fn publicationDrainThreadMain(usage: *Usage) void {
     defer usage.publication_drain_done.store(true, .seq_cst);
     var observed_epoch = usage.publication_drain_epoch.load(.seq_cst);
@@ -3194,134 +2494,6 @@ fn publicationDrainThreadMain(usage: *Usage) void {
         usage.publication_drain_done.store(false, .seq_cst);
         observed_epoch = confirmed_epoch;
     }
-}
-
-fn reconciliationKeyDigest(api_key: []const u8) [Sha256.digest_length]u8 {
-    var digest: [Sha256.digest_length]u8 = undefined;
-    Sha256.hash(api_key, &digest, .{});
-    return digest;
-}
-
-fn hostManagedReconciliationDigest() [Sha256.digest_length]u8 {
-    return reconciliationKeyDigest("fx-host-managed-auth-v1");
-}
-
-fn reconcilePendingBlocking(
-    usage: *Usage,
-    alloc: Allocator,
-    credential: ?[]const u8,
-    cancel_flag: *std.atomic.Value(bool),
-    authority: ReconciliationAuthority,
-    providers: generation_usage.Set,
-    max_attempts: usize,
-) void {
-    if (credential) |api_key| if (api_key.len == 0) return;
-    if (cancel_flag.load(.seq_cst)) return;
-    var attempt: usize = 0;
-    while (attempt < max_attempts and !cancel_flag.load(.seq_cst)) : (attempt += 1) {
-        var current = usage.snapshot(alloc) catch |err| {
-            debug_trace.logf(
-                "session",
-                "usage reconciliation snapshot failed reason={s}",
-                .{@errorName(err)},
-            );
-            usage.markBillingIncomplete();
-            return;
-        };
-        defer current.deinit(alloc);
-        if (current.pending.len == 0) return;
-
-        var retry_needed = false;
-        for (current.pending) |pending| {
-            if (!pending.provider.same_authority(authority.provider) or
-                !optionalCredentialIdentitiesEqual(
-                    pending.credential_identity,
-                    authority.credential_identity,
-                ))
-            {
-                continue;
-            }
-            const provider = providers.select(pending.provider) orelse {
-                retry_needed = true;
-                continue;
-            };
-            var outcome = provider.lookup(alloc, .{
-                .credential = credential,
-                .origin = pending.origin,
-                .generation_id = pending.id,
-                .cancel_flag = cancel_flag,
-            }) catch |err| {
-                if (err == error.Cancelled) return;
-                debug_trace.logf(
-                    "session",
-                    "usage generation lookup failed attempt={d} reason={s}",
-                    .{ attempt + 1, @errorName(err) },
-                );
-                retry_needed = true;
-                continue;
-            };
-            defer outcome.deinit(alloc);
-            switch (outcome) {
-                .retry => {
-                    debug_trace.logf(
-                        "session",
-                        "usage generation lookup retry attempt={d}",
-                        .{attempt + 1},
-                    );
-                    retry_needed = true;
-                    continue;
-                },
-                .preserve_pending => {
-                    debug_trace.logf(
-                        "session",
-                        "usage generation lookup preserved attempt={d}",
-                        .{attempt + 1},
-                    );
-                    continue;
-                },
-                .reject => {
-                    debug_trace.logf(
-                        "session",
-                        "usage generation lookup rejected attempt={d}",
-                        .{attempt + 1},
-                    );
-                    usage.rejectPendingGeneration(alloc, pending.id);
-                },
-                .found => |record| {
-                    usage.applyGeneration(alloc, record) catch |err| {
-                        debug_trace.logf(
-                            "session",
-                            "usage generation apply failed reason={s}",
-                            .{@errorName(err)},
-                        );
-                        usage.markBillingIncomplete();
-                    };
-                },
-            }
-        }
-        if (!retry_needed) return;
-        if (attempt + 1 < max_attempts and
-            !waitForReconciliationRetry(cancel_flag))
-        {
-            return;
-        }
-    }
-}
-
-fn waitForReconciliationRetry(cancel_flag: *std.atomic.Value(bool)) bool {
-    const slices: usize = 200;
-    for (0..slices) |_| {
-        if (cancel_flag.load(.seq_cst)) return false;
-        io_mod.getIo().sleep(.fromMilliseconds(5), .awake) catch |err| {
-            debug_trace.logf(
-                "session",
-                "usage reconciliation retry wait failed reason={s}",
-                .{@errorName(err)},
-            );
-            return false;
-        };
-    }
-    return !cancel_flag.load(.seq_cst);
 }
 
 fn addRecordToModel(model: *ModelAggregate, record: GenerationRecord, sequence: u64) !void {

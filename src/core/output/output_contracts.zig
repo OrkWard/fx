@@ -415,8 +415,6 @@ pub const StatusSnapshot = struct {
     session_permission_grants: usize,
     agent_step_limit: usize,
     /// Requested Ultra mode. The serving provider may still fall back.
-    ultrafast_requested: bool = false,
-
     pub const SessionModes = struct {
         current: []const u8,
         all: []const mode_contract.ModeSpec,
@@ -457,7 +455,6 @@ pub const StatusSnapshot = struct {
         try out.writer.print("[status] history_turns={d}\n", .{self.history_turns});
         try out.writer.print("[status] session_permission_grants={d}\n", .{self.session_permission_grants});
         try out.writer.print("[status] agent_step_limit={d}\n", .{self.agent_step_limit});
-        try out.writer.print("[status] ultrafast_requested={}\n", .{self.ultrafast_requested});
         return try out.toOwnedSlice();
     }
 
@@ -484,7 +481,7 @@ pub const StatusSnapshot = struct {
         try out.writer.print("workspace={s}\n", .{self.workspace_root});
         try out.writer.print("history_turns={d}\n", .{self.history_turns});
         try out.writer.print("session_permission_grants={d}\n", .{self.session_permission_grants});
-        try out.writer.print("agent_step_limit={d}\nultrafast_requested={}", .{ self.agent_step_limit, self.ultrafast_requested });
+        try out.writer.print("agent_step_limit={d}", .{self.agent_step_limit});
         return try out.toOwnedSlice();
     }
 
@@ -575,7 +572,6 @@ pub const StatusSnapshot = struct {
         try writer.print(",\"history_turns\":{d}", .{self.history_turns});
         try writer.print(",\"session_permission_grants\":{d}", .{self.session_permission_grants});
         try writer.print(",\"agent_step_limit\":{d}", .{self.agent_step_limit});
-        try writer.print(",\"ultrafast_requested\":{}", .{self.ultrafast_requested});
         try writer.writeByte('}');
     }
 };
@@ -681,7 +677,6 @@ pub const ModelDetail = struct {
     name: ?[]const u8 = null,
     efforts: model_capabilities.ReasoningEffortOptions = .{},
     fast: bool = false,
-    ultrafast: bool = false,
 };
 
 pub const ModelListSnapshot = struct {
@@ -785,7 +780,7 @@ pub const ModelListSnapshot = struct {
             if (i > 0) try w.writeByte(',');
             try std.json.Stringify.value(effort.label(), .{}, w);
         }
-        try w.print("],\"fast\":{},\"ultrafast\":{}", .{ detail.fast, detail.ultrafast });
+        try w.print("],\"fast\":{}", .{detail.fast});
     }
 
     fn shownCount(self: ModelListSnapshot) usize {

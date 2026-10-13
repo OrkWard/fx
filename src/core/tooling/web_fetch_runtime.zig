@@ -175,28 +175,6 @@ pub const Runtime = struct {
         self.evictOverBudgetLocked();
     }
 
-    pub fn convertedBytes(self: *Runtime) usize {
-        self.lock();
-        defer self.unlock();
-        return self.converted_bytes;
-    }
-
-    pub fn entryCount(self: *Runtime) usize {
-        self.lock();
-        defer self.unlock();
-        return self.entries.items.len;
-    }
-
-    pub fn metadataBytes(self: *Runtime) usize {
-        self.lock();
-        defer self.unlock();
-        return self.metadata_bytes;
-    }
-
-    pub fn lockHeldForTest(self: *Runtime) bool {
-        return self.lock_depth > 0;
-    }
-
     fn lock(self: *Runtime) void {
         self.mutex.lockUncancelable(io_mod.getIo());
         self.lock_depth += 1;

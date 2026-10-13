@@ -37,10 +37,4 @@ pub const Prompter = struct {
             grant_offer,
         );
     }
-
-    pub fn retainGrant(self: Prompter, tool_name: []const u8, target_path: []const u8) anyerror!bool {
-        const retain = self.retain_grant_fn orelse return false;
-        try retain(self.context, tool_name, target_path);
-        return true;
-    }
 };

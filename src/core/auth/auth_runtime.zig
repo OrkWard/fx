@@ -1209,15 +1209,6 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn refreshGrokSourceInventory(self: *Self, alloc: Allocator) !void {
-        if (self.auth_mode == .host_managed) return;
-        if (try credentials.sourceExists(alloc, .grok_subscription)) {
-            self.source_inventory.insert(.grok_subscription);
-        } else if (self.credentialSource() != .grok_subscription) {
-            self.source_inventory.remove(.grok_subscription);
-        }
-    }
-
     fn refreshSourceInventoryWithProbe(
         self: *Self,
         alloc: Allocator,
@@ -1374,10 +1365,6 @@ pub const Runtime = struct {
         }
         self.sign_in_code_visible = !self.sign_in_code_visible;
         return true;
-    }
-
-    pub fn signInReturnsToRoot(self: *const Self) bool {
-        return self.sign_in_returns_to_root;
     }
 
     pub fn signInBrowserUrlAlloc(self: *Self, alloc: Allocator) !?[]u8 {

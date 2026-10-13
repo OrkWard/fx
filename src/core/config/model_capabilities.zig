@@ -1,20 +1,10 @@
 const std = @import("std");
 const types = @import("../shared/types.zig");
-const model_provider = @import("model_provider.zig");
 
 pub const ResolvedProviderOptions = struct {
     reasoning: ?types.ReasoningEffort = null,
     fast: bool = false,
-    ultrafast: bool = false,
     parallel_tool_calls: ?bool = null,
-    prompt_caching: bool = false,
-    /// Borrowed gateway provider slugs in preference order. Empty leaves
-    /// provider selection to the gateway. The backing memory must outlive
-    /// request-body serialization.
-    provider_order: []const []const u8 = &.{},
-    /// Sends `provider_order` as the gateway's hard `only` restriction
-    /// instead of its `order` preference.
-    provider_strict: bool = false,
 };
 
 pub const ReasoningEffortOptions = struct {
@@ -43,7 +33,6 @@ pub const GatewayMetadata = struct {
     supports_reasoning: bool = false,
     reasoning_efforts: ReasoningEffortOptions = .{},
     supports_fast_mode: bool = false,
-    supports_ultrafast_mode: bool = false,
     supports_tool_use: bool = false,
     supports_vision: bool = false,
     supports_file_input: bool = false,
@@ -58,7 +47,6 @@ pub const Capabilities = struct {
     supports_reasoning: bool = false,
     reasoning_efforts: ReasoningEffortOptions = .{},
     supports_fast_mode: bool = false,
-    supports_ultrafast_mode: bool = false,
     intrinsic_fast: bool = false,
     supports_tool_use: bool = false,
     supports_vision: bool = false,
@@ -93,7 +81,6 @@ pub fn mergeCapabilities(capabilities_value: Capabilities, gateway_metadata: ?Ga
         capabilities.supports_reasoning = metadata.supports_reasoning or metadata.reasoning_efforts.len > 0;
         capabilities.reasoning_efforts = metadata.reasoning_efforts;
         capabilities.supports_fast_mode = metadata.supports_fast_mode;
-        capabilities.supports_ultrafast_mode = metadata.supports_ultrafast_mode;
         capabilities.supports_tool_use = metadata.supports_tool_use;
         capabilities.supports_vision = metadata.supports_vision;
         capabilities.supports_file_input = metadata.supports_file_input;
@@ -179,15 +166,4 @@ pub fn resolveProviderOptionsForCapabilities(
     }
     resolved.fast = fast_mode and capabilities.supports_fast_mode;
     return resolved;
-}
-
-/// Ultrafast was a Vercel Gateway lane; no remaining provider offers it.
-pub fn resolveUltrafastProviderOptions(
-    capabilities: Capabilities,
-    effort: types.ReasoningEffort,
-    fast_mode: bool,
-    ultrafast_mode: bool,
-) error{UltrafastUnavailable}!ResolvedProviderOptions {
-    if (ultrafast_mode) return error.UltrafastUnavailable;
-    return resolveProviderOptionsForCapabilities(capabilities, effort, fast_mode);
 }

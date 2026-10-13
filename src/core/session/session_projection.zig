@@ -159,8 +159,7 @@ fn durablePreferencesEqual(
     return std.mem.eql(u8, left.model, right.model) and
         left.provider.same_authority(right.provider) and
         left.effort.eql(right.effort) and
-        left.fast_mode == right.fast_mode and
-        left.ultrafast_mode == right.ultrafast_mode;
+        left.fast_mode == right.fast_mode;
 }
 
 pub fn sha256(bytes: []const u8) Digest {

@@ -58,12 +58,6 @@ pub const Failure = struct {
             .http_status, .runtime => error.Unavailable,
         };
     }
-
-    pub fn allowsPublicFallback(self: Failure) bool {
-        if (self.category != .authentication) return false;
-        const status = self.http_status orelse return false;
-        return status == .unauthorized or status == .forbidden;
-    }
 };
 
 pub fn failureForHttpStatus(status: std.http.Status) Failure {
@@ -275,7 +269,6 @@ pub const ModelCatalogEntry = struct {
     has_reasoning: bool = false,
     reasoning_efforts: std.ArrayList(types.ReasoningEffort) = .empty,
     supports_fast_mode: bool = false,
-    supports_ultrafast_mode: bool = false,
     has_vision: bool = false,
     has_file_input: bool = false,
     has_web_search: bool = false,

@@ -51,12 +51,9 @@ pub const Settings = struct {
     first_call_tool_choice: ?types.ToolChoice = null,
     context: ?bool = null,
     fast_mode: ?bool = null,
-    ultrafast_mode: ?bool = null,
     fast_mode_model_bound: ?bool = null,
     /// Owned gateway provider slugs in preference order; null leaves routing
     /// to the gateway. Freed in deinit.
-    provider_order: ?[][]const u8 = null,
-    provider_strict: ?bool = null,
     slash_menu_categories: ?bool = null,
     collapse_tool_calls: ?bool = null,
     auto_upgrade: ?bool = null,
@@ -88,10 +85,6 @@ pub const Settings = struct {
         self.permission_rules.deinit(alloc);
         if (self.review_model) |value| alloc.free(value);
         if (self.theme) |value| alloc.free(value);
-        if (self.provider_order) |order| {
-            for (order) |slug| alloc.free(@constCast(slug));
-            alloc.free(order);
-        }
         self.* = .{};
     }
 };
@@ -128,7 +121,6 @@ pub const ConfigSources = struct {
     permission_mode: ConfigSource = .compiled_default,
     effort: ConfigSource = .compiled_default,
     fast_mode: ConfigSource = .compiled_default,
-    ultrafast_mode: ConfigSource = .compiled_default,
     fast_mode_model_bound: ConfigSource = .compiled_default,
     slash_menu_categories: ConfigSource = .compiled_default,
     collapse_tool_calls: ConfigSource = .compiled_default,
@@ -200,7 +192,6 @@ pub const ConfigDiagnosticCause = enum {
     invalid_context_limits,
     invalid_additional_directories,
     invalid_skill_symlink_authorities,
-    invalid_ultrafast_mode_override,
 };
 
 pub const ConfigDiagnostic = struct {
@@ -241,9 +232,6 @@ pub fn writeDiagnosticMetadata(writer: *std.Io.Writer, diagnostic: ConfigDiagnos
             .{max_skill_symlink_authorities},
         );
     }
-    if (diagnostic.cause == .invalid_ultrafast_mode_override) {
-        try writer.writeAll("; FX_ULTRAFAST must be a boolean value");
-    }
 }
 
 /// Upper bound on profile `skill_symlink_authorities` entries.
@@ -255,7 +243,6 @@ pub const DetailedSettings = struct {
     model_source: ?ModelSource = null,
     sources: ConfigSources = .{},
     /// Process-only override; null leaves the profile preference in effect.
-    ultrafast_mode_env_override: ?bool = null,
     permission_sources: PermissionSourceViews = .{},
     prompt_history_store_allowed: bool = true,
     additional_directories: ?[][]u8 = null,
@@ -575,28 +562,6 @@ fn loadMergedSettingsDetailedWithOptionalHome(
             ),
         };
     }
-    if (io_mod.getenv("FX_PROVIDER_ORDER")) |order_override| {
-        switch (parseProviderOrderList(alloc, order_override)) {
-            .ok => |maybe_order| {
-                if (maybe_order) |order| {
-                    if (settings.provider_order) |old| {
-                        for (old) |slug| alloc.free(@constCast(slug));
-                        alloc.free(old);
-                    }
-                    settings.provider_order = order;
-                }
-            },
-            .invalid => debug_trace.logf("config", "ignoring invalid FX_PROVIDER_ORDER value", .{}),
-        }
-    }
-    if (io_mod.getenv("FX_PROVIDER_STRICT")) |strict_override| {
-        const trimmed = std.mem.trim(u8, strict_override, " \t\r\n");
-        if (parseEnvBool(trimmed)) |strict| {
-            settings.provider_strict = strict;
-        } else if (trimmed.len > 0) {
-            debug_trace.logf("config", "ignoring invalid FX_PROVIDER_STRICT value", .{});
-        }
-    }
     if (io_mod.getenv("FX_REVIEW_MODEL")) |review_override| {
         const trimmed = std.mem.trim(u8, review_override, " \t\r\n");
         if (trimmed.len > 0) {
@@ -608,21 +573,11 @@ fn loadMergedSettingsDetailedWithOptionalHome(
             }
         }
     }
-    const ultrafast_mode_env_override = ultrafastModeEnvOverride() catch |err| blk: {
-        try diagnostics.append(alloc, .{
-            .layer = .user,
-            .cause = .invalid_ultrafast_mode_override,
-        });
-        debug_trace.logf("config", "invalid FX_ULTRAFAST value err={s}", .{@errorName(err)});
-        break :blk null;
-    };
-
     return .{
         .settings = settings,
         .diagnostics = try diagnostics.toOwnedSlice(alloc),
         .model_source = sources.models.get(model_provider.NameKey.fromProvider(settings.provider orelse .codex)),
         .sources = sources,
-        .ultrafast_mode_env_override = ultrafast_mode_env_override,
         .permission_sources = permission_sources,
         .prompt_history_store_allowed = prompt_history_store_allowed,
         .additional_directories = additional_directories,
@@ -634,61 +589,6 @@ const ParsedAdditionalDirectories = struct {
     canonical: [][]u8,
     sources: [][]u8,
 };
-
-pub const ProviderOrderParse = union(enum) {
-    /// Owned slice; null when the input held no slugs. Caller frees each slug
-    /// and the slice.
-    ok: ?[][]const u8,
-    invalid,
-};
-
-/// Parses a comma-separated gateway provider list ("azure, anthropic") into
-/// validated, deduplicated slugs. Caller owns the returned memory.
-pub fn parseProviderOrderList(alloc: Allocator, raw: []const u8) ProviderOrderParse {
-    const result = parseProviderOrderListInner(alloc, raw) catch return .invalid;
-    return .{ .ok = result };
-}
-
-fn parseProviderOrderListInner(alloc: Allocator, raw: []const u8) !?[][]const u8 {
-    var slugs: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (slugs.items) |slug| alloc.free(@constCast(slug));
-        slugs.deinit(alloc);
-    }
-    var tokenizer = std.mem.tokenizeScalar(u8, raw, ',');
-    while (tokenizer.next()) |token| {
-        const slug = std.mem.trim(u8, token, " \t\r\n");
-        if (slug.len == 0) continue;
-        if (!settings_store.validateProviderSlug(slug)) return error.InvalidProviderSlug;
-        if (slugs.items.len >= settings_store.max_provider_order_entries) return error.TooManyProviderSlugs;
-        for (slugs.items) |existing| {
-            if (std.mem.eql(u8, existing, slug)) return error.DuplicateProviderSlug;
-        }
-        const owned = try alloc.dupe(u8, slug);
-        errdefer alloc.free(@constCast(owned));
-        try slugs.append(alloc, owned);
-    }
-    if (slugs.items.len == 0) return null;
-    return try slugs.toOwnedSlice(alloc);
-}
-
-pub const UltrafastModeEnvError = error{InvalidUltrafastMode};
-
-/// Reads the process-only paid lane override using the repository's standard
-/// environment-boolean vocabulary. A malformed value cannot widen cost.
-pub fn ultrafastModeEnvOverride() UltrafastModeEnvError!?bool {
-    const raw = io_mod.getenv("FX_ULTRAFAST") orelse return null;
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    return parseEnvBool(trimmed) orelse error.InvalidUltrafastMode;
-}
-
-fn parseEnvBool(raw: []const u8) ?bool {
-    if (std.ascii.eqlIgnoreCase(raw, "1") or std.ascii.eqlIgnoreCase(raw, "true") or
-        std.ascii.eqlIgnoreCase(raw, "on") or std.ascii.eqlIgnoreCase(raw, "yes")) return true;
-    if (std.ascii.eqlIgnoreCase(raw, "0") or std.ascii.eqlIgnoreCase(raw, "false") or
-        std.ascii.eqlIgnoreCase(raw, "off") or std.ascii.eqlIgnoreCase(raw, "no")) return false;
-    return null;
-}
 
 fn parseAdditionalDirectories(
     alloc: Allocator,
@@ -742,7 +642,6 @@ fn hasLegacyWorkspacePreferences(root: std.json.Value) bool {
             "model",
             "effort",
             "fast_mode",
-            "ultrafast_mode",
             "fast_mode_model_bound",
             "slash_menu_categories",
             "collapse_tool_calls",
@@ -776,7 +675,6 @@ fn isProfileOnlySettingKey(key: []const u8) bool {
         "review_model",
         "effort",
         "fast_mode",
-        "ultrafast_mode",
         "fast_mode_model_bound",
         "slash_menu_categories",
         "collapse_tool_calls",
@@ -868,7 +766,6 @@ fn updateConfigSources(sources: *ConfigSources, settings: Settings, source: Conf
     if (settings.permission_mode != null) sources.permission_mode = source;
     if (settings.effort != null) sources.effort = source;
     if (settings.fast_mode != null) sources.fast_mode = source;
-    if (settings.ultrafast_mode != null) sources.ultrafast_mode = source;
     if (settings.fast_mode_model_bound != null) sources.fast_mode_model_bound = source;
     if (settings.slash_menu_categories != null) sources.slash_menu_categories = source;
     if (settings.collapse_tool_calls != null) sources.collapse_tool_calls = source;
@@ -1289,7 +1186,7 @@ fn parseSettingsValueForLayer(
         tolerate_non_object_user_containers,
         parse_workspace_statusline,
     );
-    try parseProjectSafeFields(&settings, alloc, root);
+    try parseProjectSafeFields(&settings, root);
 
     return settings;
 }
@@ -1380,12 +1277,6 @@ fn parseProfileOnlyFields(
         const value = fast_mode_value;
         if (value != .bool) return error.InvalidFastModeType;
         settings.fast_mode = value.bool;
-    }
-
-    if (root.object.get("ultrafast_mode")) |ultrafast_mode_value| {
-        const value = ultrafast_mode_value;
-        if (value != .bool) return error.InvalidUltrafastModeType;
-        settings.ultrafast_mode = value.bool;
     }
 
     if (root.object.get("fast_mode_model_bound")) |bound_value| {
@@ -1541,42 +1432,7 @@ fn pathHasDotDotComponent(path: []const u8) bool {
     return false;
 }
 
-fn parseProjectSafeFields(settings: *Settings, alloc: Allocator, root: std.json.Value) !void {
-    if (root.object.get("provider_order")) |order_value| {
-        if (order_value != .array) return error.InvalidProviderOrderType;
-        const items = order_value.array.items;
-        // An empty array explicitly clears an inherited routing list.
-        if (items.len > settings_store.max_provider_order_entries) {
-            return error.InvalidProviderOrderValue;
-        }
-        var order = try alloc.alloc([]const u8, items.len);
-        errdefer alloc.free(order);
-        var filled: usize = 0;
-        errdefer for (order[0..filled]) |slug| alloc.free(@constCast(slug));
-        for (items, 0..) |item, index| {
-            if (item != .string or !settings_store.validateProviderSlug(item.string)) {
-                return error.InvalidProviderOrderValue;
-            }
-            for (items[0..index]) |previous| {
-                if (previous == .string and std.mem.eql(u8, item.string, previous.string)) {
-                    return error.InvalidProviderOrderValue;
-                }
-            }
-            order[index] = try alloc.dupe(u8, item.string);
-            filled += 1;
-        }
-        if (settings.provider_order) |old| {
-            for (old) |slug| alloc.free(@constCast(slug));
-            alloc.free(old);
-        }
-        settings.provider_order = order;
-    }
-
-    if (root.object.get("provider_strict")) |strict_value| {
-        if (strict_value != .bool) return error.InvalidProviderStrictType;
-        settings.provider_strict = strict_value.bool;
-    }
-
+fn parseProjectSafeFields(settings: *Settings, root: std.json.Value) !void {
     if (root.object.get("max_agent_steps")) |max_agent_steps_value| {
         const value = max_agent_steps_value;
         if (value != .integer) return error.InvalidMaxAgentStepsType;
@@ -1615,17 +1471,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     if (incoming.first_call_tool_choice) |value| target.first_call_tool_choice = value;
     if (incoming.context) |value| target.context = value;
     if (incoming.fast_mode) |value| target.fast_mode = value;
-    if (incoming.ultrafast_mode) |value| target.ultrafast_mode = value;
     if (incoming.fast_mode_model_bound) |value| target.fast_mode_model_bound = value;
-    if (incoming.provider_order) |value| {
-        if (target.provider_order) |old| {
-            for (old) |slug| alloc.free(@constCast(slug));
-            alloc.free(old);
-        }
-        target.provider_order = value;
-        incoming.provider_order = null;
-    }
-    if (incoming.provider_strict) |value| target.provider_strict = value;
     if (incoming.slash_menu_categories) |value| target.slash_menu_categories = value;
     if (incoming.collapse_tool_calls) |value| target.collapse_tool_calls = value;
     if (incoming.session_titles) |value| target.session_titles = value;

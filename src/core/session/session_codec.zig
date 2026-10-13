@@ -19,7 +19,6 @@ pub const DurableSessionPreferences = struct {
     model: []u8,
     effort: types.ReasoningEffort,
     fast_mode: bool,
-    ultrafast_mode: bool = false,
 
     pub fn deinit(self: *DurableSessionPreferences, alloc: Allocator) void {
         alloc.free(self.model);
@@ -32,7 +31,6 @@ pub const DurableSessionPreferences = struct {
             .model = try alloc.dupe(u8, self.model),
             .effort = self.effort,
             .fast_mode = self.fast_mode,
-            .ultrafast_mode = self.ultrafast_mode,
         };
     }
 };
@@ -41,19 +39,10 @@ pub const DurableSessionPreferences = struct {
 pub fn parse_preferences(alloc: Allocator, value: std.json.Value) !DurableSessionPreferences {
     const raw = try requireObject(value);
     const legacy = raw.contains("connection_id") or raw.contains("model_id");
-    const has_ultrafast_mode = raw.contains("ultrafast_mode");
     const object = if (legacy)
-        if (has_ultrafast_mode)
-            try exactObject(value, &.{ "connection_id", "model_id", "effort", "fast_mode", "ultrafast_mode" })
-        else
-            try exactObject(value, &.{ "connection_id", "model_id", "effort", "fast_mode" })
+        try exactObject(value, &.{ "connection_id", "model_id", "effort", "fast_mode" })
     else if (raw.contains("provider"))
-        if (has_ultrafast_mode)
-            try exactObject(value, &.{ "provider", "model", "effort", "fast_mode", "ultrafast_mode" })
-        else
-            try exactObject(value, &.{ "provider", "model", "effort", "fast_mode" })
-    else if (has_ultrafast_mode)
-        try exactObject(value, &.{ "model", "effort", "fast_mode", "ultrafast_mode" })
+        try exactObject(value, &.{ "provider", "model", "effort", "fast_mode" })
     else
         try exactObject(value, &.{ "model", "effort", "fast_mode" });
     if (legacy or !object.contains("provider")) return error.InvalidDurableField;
@@ -62,8 +51,7 @@ pub fn parse_preferences(alloc: Allocator, value: std.json.Value) !DurableSessio
     try validateModel(model);
     const effort = types.ReasoningEffort.parse(try requireString(object, "effort")) orelse return error.InvalidDurableField;
     const fast_mode = try requireBool(object, "fast_mode");
-    const ultrafast_mode = if (has_ultrafast_mode) try requireBool(object, "ultrafast_mode") else false;
-    return .{ .provider = provider, .model = try alloc.dupe(u8, model), .effort = effort, .fast_mode = fast_mode, .ultrafast_mode = ultrafast_mode };
+    return .{ .provider = provider, .model = try alloc.dupe(u8, model), .effort = effort, .fast_mode = fast_mode };
 }
 
 pub const RecoveryToolState = enum {
@@ -107,8 +95,6 @@ pub const RecoveryCheckpoint = struct {
     authority: TurnAuthority,
     requested_fast_mode: bool,
     fast_mode: bool,
-    requested_ultrafast_mode: bool = false,
-    ultrafast_mode: bool = false,
     max_provider_attempts: usize,
     consumed_provider_attempts: usize,
     outstanding_reservation: bool = false,
@@ -152,8 +138,6 @@ pub const RecoveryCheckpoint = struct {
             .authority = authority,
             .requested_fast_mode = self.requested_fast_mode,
             .fast_mode = self.fast_mode,
-            .requested_ultrafast_mode = self.requested_ultrafast_mode,
-            .ultrafast_mode = self.ultrafast_mode,
             .max_provider_attempts = self.max_provider_attempts,
             .consumed_provider_attempts = self.consumed_provider_attempts,
             .outstanding_reservation = self.outstanding_reservation,
@@ -285,7 +269,6 @@ pub const SessionMetadata = struct {
     effort: []const u8,
     fast_mode: bool,
     /// Omitted when false so schema-v4 headers remain readable by old binaries.
-    ultrafast_mode: ?bool = null,
     title: ?[]const u8 = null,
     subagent_child: bool = false,
 };
@@ -847,9 +830,6 @@ fn writeState(writer: *std.Io.Writer, state: DurableSessionState) !void {
     try writer.print(",\"fast_mode\":{s}", .{
         if (state.preferences.fast_mode) "true" else "false",
     });
-    if (state.preferences.ultrafast_mode) {
-        try writer.writeAll(",\"ultrafast_mode\":true");
-    }
     try writer.writeAll(",\"provider\":");
     try std.json.Stringify.value(state.preferences.provider, .{}, writer);
     try writer.writeAll("},\"history\":[");
@@ -1019,15 +999,6 @@ pub fn writeRecoveryCheckpoint(writer: *std.Io.Writer, checkpoint: RecoveryCheck
         if (checkpoint.requested_fast_mode) "true" else "false",
         if (checkpoint.fast_mode) "true" else "false",
     });
-    // Old readers exact-match the v2 checkpoint keys. Keep the optional pair
-    // absent at its all-false default, but preserve both values once either
-    // reports an Ultra selection.
-    if (checkpoint.requested_ultrafast_mode or checkpoint.ultrafast_mode) {
-        try writer.print(",\"requested_ultrafast_mode\":{s},\"ultrafast_mode\":{s}", .{
-            if (checkpoint.requested_ultrafast_mode) "true" else "false",
-            if (checkpoint.ultrafast_mode) "true" else "false",
-        });
-    }
     try writer.print(",\"max_provider_attempts\":{d},\"consumed_provider_attempts\":{d},\"outstanding_reservation\":{s}}}", .{
         checkpoint.max_provider_attempts,
         checkpoint.consumed_provider_attempts,
@@ -1276,17 +1247,11 @@ pub fn parseRecoveryCheckpoint(alloc: Allocator, value: std.json.Value) !Recover
                 "cause",     "action",                "tool_state",                 "route_model",             "requested_fast_mode",
                 "fast_mode", "max_provider_attempts", "consumed_provider_attempts", "outstanding_reservation",
             }),
-        2 => if (raw_object.contains("requested_ultrafast_mode") or raw_object.contains("ultrafast_mode"))
-            try exactObject(value, &.{
-                "version",             "turn_id",   "user",                     "assistant_source", "execution",             "cause",                      "action",                  "tool_state", "authority",
-                "requested_fast_mode", "fast_mode", "requested_ultrafast_mode", "ultrafast_mode",   "max_provider_attempts", "consumed_provider_attempts", "outstanding_reservation",
-            })
-        else
-            try exactObject(value, &.{
-                "version",   "turn_id",               "user",                       "assistant_source",        "execution",
-                "cause",     "action",                "tool_state",                 "authority",               "requested_fast_mode",
-                "fast_mode", "max_provider_attempts", "consumed_provider_attempts", "outstanding_reservation",
-            }),
+        2 => try exactObject(value, &.{
+            "version",   "turn_id",               "user",                       "assistant_source",        "execution",
+            "cause",     "action",                "tool_state",                 "authority",               "requested_fast_mode",
+            "fast_mode", "max_provider_attempts", "consumed_provider_attempts", "outstanding_reservation",
+        }),
         else => return error.InvalidDurableField,
     };
     const user = try parseUserTurn(alloc, object.get("user") orelse return error.InvalidSessionFormat);
@@ -1330,8 +1295,6 @@ pub fn parseRecoveryCheckpoint(alloc: Allocator, value: std.json.Value) !Recover
         .authority = authority,
         .requested_fast_mode = try requireBool(object, "requested_fast_mode"),
         .fast_mode = try requireBool(object, "fast_mode"),
-        .requested_ultrafast_mode = if (object.contains("requested_ultrafast_mode")) try requireBool(object, "requested_ultrafast_mode") else false,
-        .ultrafast_mode = if (object.contains("ultrafast_mode")) try requireBool(object, "ultrafast_mode") else false,
         .max_provider_attempts = max_provider_attempts,
         .consumed_provider_attempts = consumed_provider_attempts,
         .outstanding_reservation = try requireBool(object, "outstanding_reservation"),

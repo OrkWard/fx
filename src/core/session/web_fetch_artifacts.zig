@@ -134,10 +134,6 @@ pub const Store = struct {
         self.file_count = file_count;
     }
 
-    fn writeWithHandleForTest(self: *Store, alloc: Allocator, handle: []const u8, mime_type: []const u8, bytes: []const u8) !Artifact {
-        return try self.writeWithOwnedHandle(alloc, try alloc.dupe(u8, handle), mime_type, bytes);
-    }
-
     fn writeWithOwnedHandle(self: *Store, alloc: Allocator, handle: []u8, mime_type: []const u8, bytes: []const u8) !Artifact {
         errdefer alloc.free(handle);
         try validateHandle(handle);
@@ -211,26 +207,6 @@ pub const Store = struct {
     fn pathForHandle(self: *const Store, alloc: Allocator, handle: []const u8) ![]u8 {
         try validateHandle(handle);
         return std.Io.Dir.path.join(alloc, &.{ self.dir, handle });
-    }
-
-    fn usedBytesForTest(self: *Store) usize {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        return self.used_bytes;
-    }
-
-    fn fileCountForTest(self: *Store) usize {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        return self.file_count;
-    }
-
-    fn reserveForTest(self: *Store, byte_count: usize) !void {
-        try self.reserve(byte_count);
-    }
-
-    fn rollbackForTest(self: *Store, byte_count: usize) void {
-        self.rollback(byte_count);
     }
 };
 

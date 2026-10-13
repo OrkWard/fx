@@ -620,10 +620,6 @@ pub fn SubmitRuntime(comptime App: type) type {
             );
         }
 
-        pub fn submitInput(app: *App, max_prompt_history: usize) !void {
-            try submit(app, max_prompt_history);
-        }
-
         pub fn submit(app: *App, max_prompt_history: usize) !void {
             if (comptime @hasField(App, "worker")) {
                 if (comptime @hasDecl(@TypeOf(app.worker), "compactionActivitySnapshot")) {

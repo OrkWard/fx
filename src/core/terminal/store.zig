@@ -2230,16 +2230,6 @@ pub const CloseCommitOutcome = union(enum) {
     indeterminate: anyerror,
 };
 
-pub const EventReplay = struct {
-    events: []DurableEvent,
-    next_event_id: u64,
-
-    pub fn deinit(self: *EventReplay, alloc: Allocator) void {
-        alloc.free(self.events);
-        self.* = undefined;
-    }
-};
-
 pub const Authorization = struct {
     actor: contracts.ActorRole,
     controls: contracts.AllowedControls,
@@ -2824,135 +2814,6 @@ pub const DurableSession = struct {
         std.debug.assert(self.record.journal_payload_bytes == retained_after);
     }
 
-    pub fn begin_raw_gap(self: *DurableSession, now_ms: i64) !contracts.RawGap {
-        const zio = io_mod.getIo();
-        self.profile.mutex.lockUncancelable(zio);
-        defer self.profile.mutex.unlock(zio);
-        if (!is_live(self.record.lifecycle)) return error.InvalidLifecycle;
-        const next_segment = std.math.add(
-            u64,
-            self.record.output_cursor.segment,
-            1,
-        ) catch return error.CapacityExceeded;
-        const next_cursor = contracts.RawCursor{
-            .segment = next_segment,
-            .offset = 0,
-        };
-        const collapse_previous_gap = self.record.raw_gap != null;
-        const gap = contracts.RawGap{
-            .missing_from = if (collapse_previous_gap)
-                self.record.available_from
-            else
-                self.record.output_cursor,
-            .available_from = next_cursor,
-        };
-        const previous_files = self.record.journal_files;
-        const expanded = try self.profile.alloc.alloc(
-            JournalFile,
-            if (collapse_previous_gap) 1 else previous_files.len + 1,
-        );
-        errdefer self.profile.alloc.free(expanded);
-        if (!collapse_previous_gap) {
-            @memcpy(expanded[0..previous_files.len], previous_files);
-        }
-        const next_file_id = std.math.add(
-            u64,
-            previous_files[previous_files.len - 1].file_id,
-            1,
-        ) catch return error.CapacityExceeded;
-        expanded[expanded.len - 1] = .{
-            .file_id = next_file_id,
-            .range = .{ .start = next_cursor, .end = next_cursor },
-            .payload_bytes = 0,
-            .checksum = contracts.checkpoint_checksum(""),
-        };
-        const name = try journal_name(
-            self.profile.alloc,
-            self.record.session_id,
-            next_file_id,
-        );
-        defer self.profile.alloc.free(name);
-        var journal = try (try self.state_capability()).createExclusiveFile(
-            self.profile.alloc,
-            .terminal_state,
-            name,
-        );
-        var journal_owned = true;
-        errdefer if (journal_owned) {
-            journal.deinit();
-            if (self.state_capability() catch null) |capability| {
-                capability.delete(.terminal_state, name) catch {};
-            }
-        };
-        try journal.sync();
-
-        const previous_cursor = self.record.output_cursor;
-        const previous_available = self.record.available_from;
-        const previous_gap = self.record.raw_gap;
-        const previous_exact = self.record.raw_replay_exact;
-        const previous_journal_bytes = self.record.journal_payload_bytes;
-        const previous_journal_cleanup = self.record.journal_cleanup_through;
-        const previous_recovery = self.record.screen_recovery;
-        const previous_checkpoint_bytes = self.record.checkpoint_payload_bytes;
-        const previous_checkpoint_generation = self.record.checkpoint_generation;
-        const previous_checkpoint_cleanup = self.record.checkpoint_cleanup_generation;
-        const previous_updated_at_ms = self.record.updated_at_ms;
-        self.record.journal_files = expanded;
-        self.record.output_cursor = next_cursor;
-        if (collapse_previous_gap) {
-            self.record.available_from = next_cursor;
-            self.record.journal_payload_bytes = 0;
-            self.record.journal_cleanup_through = @max(
-                self.record.journal_cleanup_through,
-                previous_files[previous_files.len - 1].file_id,
-            );
-        }
-        self.record.raw_gap = gap;
-        self.record.raw_replay_exact = false;
-        self.record.screen_recovery = .{ .unavailable = .raw_gap };
-        self.record.checkpoint_payload_bytes = 0;
-        self.record.checkpoint_generation = 0;
-        self.record.checkpoint_cleanup_generation = if (previous_checkpoint_generation == 0)
-            previous_checkpoint_cleanup
-        else
-            previous_checkpoint_generation;
-        self.record.updated_at_ms = now_ms;
-        save_record(
-            self.profile.alloc,
-            try self.state_capability(),
-            self.record,
-        ) catch |err| {
-            self.record.journal_files = previous_files;
-            self.record.output_cursor = previous_cursor;
-            self.record.available_from = previous_available;
-            self.record.raw_gap = previous_gap;
-            self.record.raw_replay_exact = previous_exact;
-            self.record.journal_payload_bytes = previous_journal_bytes;
-            self.record.journal_cleanup_through = previous_journal_cleanup;
-            self.record.screen_recovery = previous_recovery;
-            self.record.checkpoint_payload_bytes = previous_checkpoint_bytes;
-            self.record.checkpoint_generation = previous_checkpoint_generation;
-            self.record.checkpoint_cleanup_generation = previous_checkpoint_cleanup;
-            self.record.updated_at_ms = previous_updated_at_ms;
-            return err;
-        };
-        self.profile.alloc.free(previous_files);
-        if (self.journal) |*previous| previous.deinit();
-        self.journal = journal;
-        journal_owned = false;
-        self.retry_journal_cleanup() catch |err| debug_trace.logf(
-            "terminal_store",
-            "raw gap journal cleanup deferred id={s} err={s}",
-            .{ self.record.session_id, @errorName(err) },
-        );
-        self.retry_checkpoint_cleanup() catch |err| debug_trace.logf(
-            "terminal_store",
-            "raw gap checkpoint cleanup deferred id={s} err={s}",
-            .{ self.record.session_id, @errorName(err) },
-        );
-        return gap;
-    }
-
     fn append_journal_chunk(
         self: *DurableSession,
         bytes: []const u8,
@@ -3477,17 +3338,6 @@ pub const DurableSession = struct {
         );
     }
 
-    pub fn append_event(
-        self: *DurableSession,
-        kind: contracts.HostEvent,
-        now_ms: i64,
-    ) !u64 {
-        const zio = io_mod.getIo();
-        self.profile.mutex.lockUncancelable(zio);
-        defer self.profile.mutex.unlock(zio);
-        return self.append_event_locked(kind, now_ms);
-    }
-
     fn append_event_locked(
         self: *DurableSession,
         kind: contracts.HostEvent,
@@ -3622,46 +3472,6 @@ pub const DurableSession = struct {
         }
         self.record.event_cleanup_through = target;
         try save_record(self.profile.alloc, try self.state_capability(), self.record);
-    }
-
-    pub fn replay_events(
-        self: *DurableSession,
-        alloc: Allocator,
-        after_event_id: u64,
-        max_events: usize,
-    ) !EventReplay {
-        const zio = io_mod.getIo();
-        self.profile.mutex.lockUncancelable(zio);
-        defer self.profile.mutex.unlock(zio);
-        if (max_events == 0 or max_events > @as(usize, event_retention_limit)) {
-            return error.InvalidEventReplayLimit;
-        }
-        const requested = std.math.add(u64, after_event_id, 1) catch
-            return error.EventIdExhausted;
-        const retained_after = @max(
-            self.record.acknowledged_event_id,
-            self.record.event_gap_through,
-        );
-        var id = @max(
-            requested,
-            std.math.add(u64, retained_after, 1) catch
-                return error.EventIdExhausted,
-        );
-        var events: std.ArrayList(DurableEvent) = .empty;
-        errdefer events.deinit(alloc);
-        while (id < self.record.next_event_id and events.items.len < max_events) : (id += 1) {
-            const event = try load_event(
-                alloc,
-                try self.state_capability(),
-                self.record.session_id,
-                id,
-            );
-            try events.append(alloc, event);
-        }
-        return .{
-            .events = try events.toOwnedSlice(alloc),
-            .next_event_id = @min(id, self.record.next_event_id),
-        };
     }
 
     pub fn resize(
@@ -4258,17 +4068,6 @@ pub const DurableSession = struct {
             self.record.updated_at_ms = previous_updated_at_ms;
             return err;
         };
-    }
-
-    pub fn verify_claim(
-        self: *DurableSession,
-        claim: contracts.AuthorityClaim,
-        action: contracts.Action,
-    ) !void {
-        const zio = io_mod.getIo();
-        self.profile.mutex.lockUncancelable(zio);
-        defer self.profile.mutex.unlock(zio);
-        _ = try self.authorize_locked(claim, action);
     }
 
     pub fn authorize(

@@ -80,7 +80,6 @@ pub const Context = struct {
     account_id: ?[]const u8 = null,
     provider: model_provider.ProviderId = .codex,
     provider_capabilities: provider_set.Bundle.Capabilities = .{
-        .fx_search = true,
         .vision_fallback = true,
     },
     oauth_transport: oauth_transport.Provider = oauth_transport.unavailable_provider,
@@ -95,13 +94,10 @@ pub const Context = struct {
     current_turn_messages: []const ChatMessage = &.{},
     agent_step_limit: usize,
     fast_mode: bool = false,
-    ultrafast_mode: bool = false,
     effort: types.ReasoningEffort = .auto,
     /// Borrowed gateway provider routing inherited by subagent turns. Never
     /// applied to tool-internal provider requests (vision, web search), which
     /// keep gateway-default routing.
-    provider_order: []const []const u8 = &.{},
-    provider_strict: bool = false,
     first_call_tool_choice: types.ToolChoice = .auto,
     tool_registry: tool_dispatch.Registry = .{},
     subagent_host: ?*subagent_tool_host.Runtime = null,
@@ -146,10 +142,6 @@ pub const Context = struct {
     web_fetch_runtime: ?*web_fetch_runtime.Runtime = null,
     web_fetch_artifact_store: ?*web_fetch_artifacts.Store = null,
     web_fetch_artifact_error: ?anyerror = null,
-    web_search_runtime_ready: bool = false,
-    web_search_backend: ?tool_dispatch.WebSearchBackend = null,
-    web_search_progress_ctx: ?*anyopaque = null,
-    on_web_search_progress: ?tool_dispatch.WebSearchProgressFn = null,
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?tool_dispatch.WebFetchProgressFn = null,
     model_capability_resolver: ?model_capabilities.Resolver = null,
@@ -591,7 +583,6 @@ fn executeRunCommandBackend(
 const DispatchMetadata = struct {
     model_content_kind: tool_dispatch.ModelContentKind = .ordinary,
     inner_usage: ?types.ToolUsage = null,
-    web_search_completion: ?types.WebSearchCompletion = null,
     web_fetch_completion: ?types.WebFetchCompletion = null,
     subagent_completion: ?types.SubagentStatus = null,
     tool_result_memory: ?types.ToolResultMemory = null,
@@ -600,7 +591,6 @@ const DispatchMetadata = struct {
     fn attach(self: *DispatchMetadata, ctx: *tool_dispatch.DispatchContext) void {
         ctx.model_content_kind_sink = &self.model_content_kind;
         ctx.inner_usage_sink = &self.inner_usage;
-        ctx.web_search_completion_sink = &self.web_search_completion;
         ctx.web_fetch_completion_sink = &self.web_fetch_completion;
         ctx.tool_result_memory_sink = &self.tool_result_memory;
         ctx.command_result_json_sink = &self.command_result_json;
@@ -622,7 +612,6 @@ fn toolExecutionResultFromDispatch(
             .model_content_kind = metadata.model_content_kind,
             .model_output = result.body,
             .inner_usage = metadata.inner_usage,
-            .web_search_completion = metadata.web_search_completion,
             .web_fetch_completion = metadata.web_fetch_completion,
             .subagent_completion = metadata.subagent_completion,
             .tool_result_memory = memory,
@@ -632,7 +621,6 @@ fn toolExecutionResultFromDispatch(
             .status = .failure,
             .model_output = result.body,
             .inner_usage = metadata.inner_usage,
-            .web_search_completion = metadata.web_search_completion,
             .web_fetch_completion = metadata.web_fetch_completion,
             .subagent_completion = metadata.subagent_completion,
             .tool_result_memory = memory,
@@ -660,11 +648,9 @@ fn recordContextNoticeForDispatch(raw_ctx: ?*anyopaque, notice: []const u8) erro
 }
 
 fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchContext {
-    var capabilities = tool_dispatch.ToolCapabilities.for_host(
+    const capabilities = tool_dispatch.ToolCapabilities.for_host(
         host_capabilities.current(),
     );
-    capabilities.web_search_runtime_ready =
-        ctx.web_search_runtime_ready and ctx.web_search_backend != null;
     return .{
         .allocator = arena,
         .permission_mode = ctx.permission_mode,
@@ -703,9 +689,6 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         .web_fetch_artifact_store = ctx.web_fetch_artifact_store,
         .web_fetch_artifact_error = ctx.web_fetch_artifact_error,
         .tool_capabilities = capabilities,
-        .web_search_backend = ctx.web_search_backend,
-        .web_search_progress_ctx = ctx.web_search_progress_ctx,
-        .on_web_search_progress = ctx.on_web_search_progress,
         .web_fetch_progress_ctx = ctx.web_fetch_progress_ctx,
         .on_web_fetch_progress = ctx.on_web_fetch_progress,
     };
@@ -1444,7 +1427,6 @@ fn executeSubagentProvider(
             .model = ctx.model,
             .effort = ctx.effort,
             .fast_mode = ctx.fast_mode,
-            .ultrafast_mode = ctx.ultrafast_mode,
             .conversation_language = ctx.session.languageSnapshot(),
         },
         .max_result_bytes = ctx.max_tool_result_bytes,

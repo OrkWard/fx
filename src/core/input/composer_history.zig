@@ -348,24 +348,6 @@ pub const State = struct {
         return self.index;
     }
 
-    pub fn draftText(self: *const State) ?[]const u8 {
-        return (self.draftView() orelse return null).text;
-    }
-
-    pub fn entryText(self: *const State, entry_index: usize) ?[]const u8 {
-        return (self.viewEntry(entry_index) orelse return null).text;
-    }
-
-    pub fn viewEntry(self: *const State, entry_index: usize) ?EntryView {
-        if (entry_index >= self.entries.items.len) return null;
-        return self.entries.items[entry_index].view();
-    }
-
-    pub fn draftView(self: *const State) ?EntryView {
-        const draft = self.draft orelse return null;
-        return draft.view();
-    }
-
     pub fn record(
         self: *State,
         alloc: Allocator,

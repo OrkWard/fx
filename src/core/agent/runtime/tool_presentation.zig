@@ -1046,8 +1046,6 @@ pub fn finishExecutedToolStatus(
     };
     const summary_line = if (result.web_fetch_completion) |completion|
         try formatWebFetchCompletion(arena, base_line, completion)
-    else if (result.web_search_completion) |completion|
-        try formatWebSearchCompletion(arena, base_line, completion)
     else if (result.subagent_completion) |status|
         renderedSubagentSummary(hooks, arena, base_line, status)
     else
@@ -1283,13 +1281,6 @@ fn renderedSubagentSummary(
     const status_line = renderer.render(&buf, status);
     if (status_line.len == 0) return base;
     return arena.print("{s}\n  {s}", .{ base, status_line }) catch base;
-}
-
-fn formatWebSearchCompletion(arena: Allocator, base: []const u8, completion: types.WebSearchCompletion) ![]const u8 {
-    return arena.print(
-        "{s} \x1b[38;5;245m| {d} search{s} | {d}ms\x1b[0m",
-        .{ base, completion.searches, if (completion.searches == 1) "" else "es", completion.duration_ms },
-    );
 }
 
 fn formatWebFetchCompletion(arena: Allocator, base: []const u8, completion: types.WebFetchCompletion) ![]const u8 {

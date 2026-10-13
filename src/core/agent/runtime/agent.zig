@@ -116,31 +116,6 @@ pub const Agent = struct {
         }
         return copy;
     }
-
-    pub fn restoreHistory(
-        self: *Agent,
-        alloc: Allocator,
-        history: []const types.HistoryTurn,
-    ) Allocator.Error!void {
-        var replacement: std.ArrayList(types.HistoryTurn) = .empty;
-        errdefer {
-            for (replacement.items) |turn| types.freeHistoryTurn(alloc, turn);
-            replacement.deinit(alloc);
-        }
-        try replacement.ensureTotalCapacity(alloc, history.len);
-        for (history) |turn| {
-            replacement.appendAssumeCapacity(try types.dupeHistoryTurn(alloc, turn));
-        }
-
-        var previous = self.history;
-        self.history = replacement;
-        for (previous.items) |turn| types.freeHistoryTurn(alloc, turn);
-        previous.deinit(alloc);
-        // Replaced history no longer resembles the calibrated request.
-        self.request_token_calibration = null;
-        self.request_byte_limit = null;
-        self.fresh = false;
-    }
 };
 
 pub const RequestByteLimitState = struct {

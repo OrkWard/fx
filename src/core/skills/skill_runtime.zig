@@ -1406,11 +1406,6 @@ pub const SkillMenu = struct {
         self.setQuery(query_text);
     }
 
-    pub fn openFocused(self: *SkillMenu, items: []const Skill, filter: SkillMenuSourceFilter, index: usize) void {
-        self.beginOpenFocused(filter, index);
-        self.clamp(items);
-    }
-
     fn beginOpenFocused(self: *SkillMenu, filter: SkillMenuSourceFilter, index: usize) void {
         self.active = true;
         self.source_filter = filter;
@@ -1459,12 +1454,6 @@ pub const SkillMenu = struct {
             self.selected_index,
             max_rows,
         );
-        return true;
-    }
-
-    pub fn moveSourceFilter(self: *SkillMenu, items: []const Skill, delta: i32) bool {
-        if (!self.advanceSourceFilter(delta)) return false;
-        self.clamp(items);
         return true;
     }
 
@@ -2467,16 +2456,6 @@ pub const Runtime = struct {
         return true;
     }
 
-    pub fn prepareMenuIndex(self: *Runtime, alloc: Allocator) Allocator.Error!void {
-        try self.menu_index.rebuild(
-            alloc,
-            self.items,
-            self.menu.source_filter,
-            self.menu.query(),
-        );
-        self.menu_index_ready = true;
-    }
-
     fn rebuildPreparedMenuIndex(self: *Runtime) void {
         if (self.menu_index.actual_indices.capacity < self.items.len) {
             self.menu_index.actual_indices.clearRetainingCapacity();
@@ -2535,14 +2514,6 @@ pub const Runtime = struct {
 
     pub fn closeMenu(self: *Runtime) void {
         self.menu.close();
-    }
-
-    pub fn moveMenuSelection(self: *Runtime, delta: i32) bool {
-        return self.menu.moveVisibleRowsCount(
-            self.menuItemCount(),
-            delta,
-            skill_menu_max_visible_rows,
-        );
     }
 
     pub fn moveMenuSelectionVisibleRows(self: *Runtime, delta: i32, visible_rows: u16) bool {

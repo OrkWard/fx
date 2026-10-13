@@ -101,12 +101,6 @@ pub const Registry = struct {
     pending_revision: u64 = 0,
     closed: bool = false,
 
-    pub fn pendingRevision(self: *Registry) u64 {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        return self.pending_revision;
-    }
-
     pub fn firstPendingRequest(
         self: *Registry,
         alloc: Allocator,

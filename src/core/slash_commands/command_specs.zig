@@ -57,7 +57,6 @@ pub const SlashKind = enum {
     alias,
     paste,
     fast,
-    ultrafast,
     statusline,
     notifications,
     workspace,

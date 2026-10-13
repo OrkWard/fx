@@ -564,20 +564,6 @@ const ProjectionRowWalker = struct {
         return .{ .cols = @max(cols, 1), .build_checkpoint = build_checkpoint_ptr };
     }
 
-    fn initWindow(
-        alloc: Allocator,
-        cols: u16,
-        start_row: u32,
-        visible_rows: u16,
-        build_checkpoint_ptr: ?*BuildCheckpoint,
-    ) ProjectionRowWalker {
-        return initWindowAt(alloc, cols, start_row, visible_rows, .{
-            .row = 0,
-            .col = 1,
-            .row_has_bytes = false,
-        }, build_checkpoint_ptr);
-    }
-
     fn initWindowAt(
         alloc: Allocator,
         cols: u16,

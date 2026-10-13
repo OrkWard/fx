@@ -3,7 +3,6 @@ const skill_contract = @import("../skills/skill_contract.zig");
 const command_admission = @import("../permissions/command_admission.zig");
 const core_permissions = @import("../permissions/permissions.zig");
 const core_types = @import("../shared/types.zig");
-const debug_trace = @import("../shared/debug_trace.zig");
 const command_environment = @import("../execution/command_environment.zig");
 const file_mutation_contract = @import("file_mutation_contract.zig");
 const message = @import("../shared/message.zig");
@@ -16,14 +15,12 @@ const command_replay_store = @import("../session/command_replay_store.zig");
 const command_runner = @import("../execution/command_runner.zig");
 const managed_execution = @import("../execution/managed_execution.zig");
 const subagent_tool_provider = @import("../subagent/tool_provider.zig");
-const text_utils = @import("../shared/text_utils.zig");
 const web_fetch_runtime = @import("web_fetch_runtime.zig");
 const web_fetch_artifacts = @import("../session/web_fetch_artifacts.zig");
 const model_tool_schema = @import("model_tool_schema.zig");
 const host = @import("../hosts/host.zig");
 const tool_result_errors = @import("tool_result_errors.zig");
 const tool_result_limits = @import("tool_result_limits.zig");
-const web_search_contract = @import("web_search_contract.zig");
 const context_limits = @import("../config/context_limits.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const terminal_client_runtime = @import("../terminal/client.zig");
@@ -48,7 +45,6 @@ pub const default_max_read_file_bytes: usize = 50 * 1024;
 pub const default_max_read_file_lines: usize = 400;
 pub const default_max_read_file_line_len: usize = 2000;
 
-pub const web_search_unavailable_message = "web_search is unavailable: no local runtime with a configured Gateway transport policy is installed";
 pub const terminal_unavailable_message =
     "{\"error\":{\"tool\":\"shell\",\"code\":\"unsupported_host\",\"retryable\":false}}";
 const terminal_saved_session_required_message =
@@ -57,7 +53,6 @@ const terminal_saved_session_required_suggestion =
     "Use shell.run with tty=false, or rerun without --no-save.";
 
 pub const ToolCapabilities = struct {
-    web_search_runtime_ready: bool = false,
     terminal: host.TerminalSupport = .unsupported,
 
     pub fn for_host(host_capabilities: host.Capabilities) ToolCapabilities {
@@ -69,27 +64,7 @@ pub const ToolCapabilities = struct {
     }
 };
 
-pub const WebSearchProgressFn = *const fn (*anyopaque, []const u8, core_types.WebSearchProgress) void;
 pub const WebFetchProgressFn = *const fn (*anyopaque, []const u8, core_types.WebFetchProgress) void;
-
-pub const WebSearchBackendFn = *const fn (
-    *anyopaque,
-    DispatchContext,
-    web_search_contract.Request,
-) anyerror!web_search_contract.ExecutionOutput;
-
-pub const WebSearchBackend = struct {
-    ctx: *anyopaque,
-    execute_fn: WebSearchBackendFn,
-
-    pub fn execute(
-        self: WebSearchBackend,
-        ctx: DispatchContext,
-        request: web_search_contract.Request,
-    ) !web_search_contract.ExecutionOutput {
-        return self.execute_fn(self.ctx, ctx, request);
-    }
-};
 
 pub const VisionProviderFn = *const fn (
     ?*anyopaque,
@@ -247,17 +222,13 @@ pub const DispatchContext = struct {
     web_fetch_runtime: ?*web_fetch_runtime.Runtime = null,
     web_fetch_artifact_store: ?*web_fetch_artifacts.Store = null,
     web_fetch_artifact_error: ?anyerror = null,
-    web_search_backend: ?WebSearchBackend = null,
     tool_call_id: []const u8 = "",
     tool_call_name: []const u8 = "",
-    web_search_progress_ctx: ?*anyopaque = null,
-    on_web_search_progress: ?WebSearchProgressFn = null,
     web_fetch_progress_ctx: ?*anyopaque = null,
     on_web_fetch_progress: ?WebFetchProgressFn = null,
     context_notice_ctx: ?*anyopaque = null,
     on_context_notice: ?ContextNoticeSinkFn = null,
     inner_usage_sink: ?*?core_types.ToolUsage = null,
-    web_search_completion_sink: ?*?core_types.WebSearchCompletion = null,
     web_fetch_completion_sink: ?*?core_types.WebFetchCompletion = null,
     tool_result_memory_sink: ?*?core_types.ToolResultMemory = null,
     model_content_kind_sink: ?*ModelContentKind = null,
@@ -305,7 +276,6 @@ pub const ReadsOnlyFn = *const fn (ToolInput) bool;
 pub const IrreversibleFn = *const fn (ToolInput) bool;
 
 pub const ProviderAdvertisementError = std.mem.Allocator.Error || std.Io.Writer.Error || error{
-    InvalidWebSearchBackend,
     ConflictingDomainFilters,
     InvalidGatewayAdvertisement,
 };
@@ -342,7 +312,6 @@ pub const ExecutorKind = enum {
     write_file,
     edit_file,
     web_fetch,
-    web_search,
     run_command,
     terminal,
     skill,
@@ -603,7 +572,6 @@ pub const DispatchResult = struct {
     images: []core_types.ToolImage = &.{},
     status_detail: ?[]u8 = null,
     inner_usage: ?core_types.ToolUsage = null,
-    web_search_completion: ?core_types.WebSearchCompletion = null,
     web_fetch_completion: ?core_types.WebFetchCompletion = null,
     tool_result_memory: ?core_types.ToolResultMemory = null,
     command_result_json: ?[]const u8 = null,
@@ -700,10 +668,6 @@ pub fn localToolAvailabilityFailure(
     input: ToolInput,
 ) DispatchError!?[]u8 {
     return switch (tool.executor_kind) {
-        .web_search => if (ctx.tool_capabilities.web_search_runtime_ready)
-            null
-        else
-            try ctx.allocator.dupe(u8, web_search_unavailable_message),
         .terminal => if (tool.captured_command_fn != null and tool.captured_command_fn.?(input))
             null
         else if (tool.process_local_fn != null and
@@ -741,26 +705,4 @@ pub fn localToolAvailabilityFailureForCall(
 
 fn failure(body: []u8) DispatchResult {
     return .{ .status = .failure, .body = body };
-}
-
-pub fn traceDeniedWebSearch(ctx: debug_trace.TraceContext, call: message.ToolCall, reason: core_types.ToolPermissionDenialReason) void {
-    if (!core_permissions.isWebSearchToolName(call.name)) return;
-
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var parsed = std.json.parseFromSlice(std.json.Value, arena, call.arguments_json, .{}) catch {
-        debug_trace.eventf("permission", "web_search_denied", ctx, "call_id={s} tool_name={s} query=<invalid-json> reason={s}", .{ call.id, call.name, @tagName(reason) });
-        return;
-    };
-    defer parsed.deinit();
-    if (parsed.value != .object) return;
-    const query_value = parsed.value.object.get("query") orelse return;
-    if (query_value != .string) return;
-
-    const masked = text_utils.maskSecrets(arena, query_value.string) catch "<redaction-error>";
-    var preview_buf: [160]u8 = undefined;
-    const query_preview = debug_trace.terminalPreview(&preview_buf, masked);
-    debug_trace.eventf("permission", "web_search_denied", ctx, "call_id={s} tool_name={s} query={s} query_bytes={d} reason={s}", .{ call.id, call.name, query_preview, query_value.string.len, @tagName(reason) });
 }

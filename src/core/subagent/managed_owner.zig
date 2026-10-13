@@ -195,15 +195,6 @@ pub const Owner = struct {
         }
     }
 
-    pub fn hasRunningWork(self: *Owner) bool {
-        self.mutex.lockUncancelable(io_mod.getIo());
-        defer self.mutex.unlock(io_mod.getIo());
-        for (self.slots.items) |slot| {
-            if (slot.completion == .running) return true;
-        }
-        return false;
-    }
-
     pub fn hasRunningChild(self: *Owner, child_id: []const u8) bool {
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
@@ -733,7 +724,6 @@ fn turnPreferencesForDurable(
         .provider = preferences.provider,
         .model = preferences.model,
         .effort = preferences.effort,
-        .ultrafast_mode = preferences.ultrafast_mode,
     };
 }
 

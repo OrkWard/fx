@@ -6,7 +6,6 @@ const types = @import("../shared/types.zig");
 const tool_dispatch = @import("../tooling/tool_dispatch.zig");
 const model_tool_schema = @import("../tooling/model_tool_schema.zig");
 const model_provider = @import("../config/model_provider.zig");
-const credential_authority = @import("../auth/credential_authority.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -258,15 +257,6 @@ pub const FailureDiagnostics = struct {
     request_shape: ?[]u8 = null,
 };
 
-pub const DeferredUsageReference = struct {
-    provider: model_provider.ProviderId,
-    generation_id: []const u8,
-    scope: []const u8,
-    account_id: ?[]const u8 = null,
-    credential_source: types.CredentialSource,
-    credential_identity: ?credential_authority.Identity,
-};
-
 pub const UsageUnavailable = enum {
     unbilled,
     possibly_billed,
@@ -274,7 +264,6 @@ pub const UsageUnavailable = enum {
 
 pub const UsageOutcome = union(enum) {
     exact: model_provider.ProviderId,
-    deferred: DeferredUsageReference,
     unavailable: UsageUnavailable,
 };
 
@@ -299,7 +288,7 @@ pub const Result = union(enum) {
     completed: Completed,
     failed: Failure,
 
-    /// Returns a fully owned copy, including deferred usage and diagnostics.
+    /// Returns a fully owned copy, including diagnostics.
     /// The caller releases it with deinit using the same allocator.
     pub fn dupe(self: Result, alloc: Allocator) Allocator.Error!Result {
         switch (self) {
@@ -317,8 +306,6 @@ pub const Result = union(enum) {
             .completed => |completed| {
                 var copy = Result{ .completed = completed };
                 copy.completed.ownership = .owned;
-                copy.completed.usage = .{ .unavailable = .unbilled };
-                copy.completed.usage_ownership = .owned;
                 const dst = &copy.completed.completion;
                 const src = completed.completion;
                 const strings = .{ "content", "generation_id", "resolved_provider", "provider_failure_detail", "provider_state_json" };
@@ -335,12 +322,6 @@ pub const Result = union(enum) {
                     owned.model = try alloc.dupe(u8, billing.model);
                     dst.billing = owned;
                 }
-                // Publish the union only after its fallible payload is complete.
-                const usage: UsageOutcome = switch (completed.usage) {
-                    .deferred => |reference| .{ .deferred = try dupeUsageReference(alloc, reference) },
-                    else => completed.usage,
-                };
-                copy.completed.usage = usage;
                 return copy;
             },
         }
@@ -358,14 +339,6 @@ pub const Result = union(enum) {
                 types.freeToolCallSlice(alloc, @constCast(completed.completion.tool_calls));
                 if (completed.completion.provider_failure_detail) |detail| alloc.free(@constCast(detail));
                 if (completed.completion.provider_state_json) |state| alloc.free(@constCast(state));
-                if (completed.usage_ownership == .owned) switch (completed.usage) {
-                    .deferred => |reference| {
-                        alloc.free(reference.generation_id);
-                        alloc.free(reference.scope);
-                        if (reference.account_id) |value| alloc.free(value);
-                    },
-                    else => {},
-                };
             },
             .failed => |failure| if (failure.ownership == .owned) {
                 if (failure.detail) |detail| alloc.free(detail);
@@ -376,22 +349,6 @@ pub const Result = union(enum) {
         self.* = undefined;
     }
 };
-
-fn dupeUsageReference(alloc: Allocator, source: DeferredUsageReference) Allocator.Error!DeferredUsageReference {
-    const generation_id = try alloc.dupe(u8, source.generation_id);
-    errdefer alloc.free(generation_id);
-    const scope = try alloc.dupe(u8, source.scope);
-    errdefer alloc.free(scope);
-    const account_id = if (source.account_id) |value| try alloc.dupe(u8, value) else null;
-    return .{
-        .provider = source.provider,
-        .generation_id = generation_id,
-        .scope = scope,
-        .account_id = account_id,
-        .credential_source = source.credential_source,
-        .credential_identity = source.credential_identity,
-    };
-}
 
 pub inline fn failResult(err: anytype) @TypeOf(err)!Result {
     return @errorCast(failResultDynamic(err));

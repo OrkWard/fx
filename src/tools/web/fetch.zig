@@ -247,7 +247,7 @@ fn fetchFailureBody(alloc: Allocator, err: url_policy.Error, url: []const u8) to
         .tool_name = "web_fetch",
         .message = "web_fetch failed",
         .details = &details,
-        .suggestion = "Use web_fetch only for known public HTTP(S) URLs. Use gh for GitHub metadata and web_search for broad web research.",
+        .suggestion = "Use web_fetch only for known public HTTP(S) URLs. Use gh for GitHub metadata.",
     });
 }
 
@@ -263,7 +263,7 @@ fn transportFailureBody(alloc: Allocator, err: anyerror, url: []const u8) tool_d
         .tool_name = "web_fetch",
         .message = "web_fetch transport failed",
         .details = &details,
-        .suggestion = "Retry after checking the remote server's DNS, network, TLS, or HTTP response behavior. Use web_search when direct retrieval remains unavailable.",
+        .suggestion = "Retry after checking the remote server's DNS, network, TLS, or HTTP response behavior.",
     });
 }
 

@@ -32,7 +32,7 @@ const InlinePickerSuppression = union(enum) {
     }
 };
 
-pub const model_picker_speed_options = [_][]const u8{ "normal", "fast", "ultrafast" };
+pub const model_picker_speed_options = [_][]const u8{ "normal", "fast" };
 
 /// `/login` and `/setup` are aliases of `/provider`: all open the same
 /// columnar picker. Typed text keeps whichever spelling the user wrote;
@@ -288,7 +288,6 @@ pub const State = struct {
         model: []const u8,
         effort_index: usize,
         fast_mode: bool,
-        ultrafast_mode: bool,
         stage: ModelPickerStage,
     ) Allocator.Error!void {
         const stable_model = try alloc.dupe(u8, model);
@@ -300,7 +299,7 @@ pub const State = struct {
         self.model_picker_stage = stage;
         self.model_picker_effort_index = effort_index;
         self.model_picker_effort_window_start = 0;
-        self.model_picker_fast_index = if (ultrafast_mode) 2 else if (fast_mode) 1 else 0;
+        self.model_picker_fast_index = if (fast_mode) 1 else 0;
         self.model_picker_fast_window_start = 0;
     }
 
@@ -318,18 +317,6 @@ pub const State = struct {
 
     pub fn hasPendingModelPickerSelection(self: *const State) bool {
         return self.model_picker_pending_model.items.len > 0;
-    }
-
-    pub fn selectedModelPickerEffortIndex(self: *const State) usize {
-        return self.model_picker_effort_index;
-    }
-
-    pub fn selectedModelPickerSpeed(self: *const State) []const u8 {
-        return model_picker_speed_options[self.model_picker_fast_index % model_picker_speed_options.len];
-    }
-
-    pub fn selectedModelPickerFast(self: *const State) bool {
-        return std.mem.eql(u8, self.selectedModelPickerSpeed(), "fast");
     }
 };
 

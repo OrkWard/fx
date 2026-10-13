@@ -11,24 +11,12 @@ pub const State = struct {
         return self.ctrl_c_exit_armed_ms != null;
     }
 
-    pub fn ctrlCExitArmedAt(self: State) ?i64 {
-        return self.ctrl_c_exit_armed_ms;
-    }
-
     pub fn escapeClearArmed(self: State) bool {
         return self.escape_clear_armed_ms != null;
     }
 
-    pub fn escapeClearArmedAt(self: State) ?i64 {
-        return self.escape_clear_armed_ms;
-    }
-
     pub fn escapeInterruptArmed(self: State) bool {
         return self.escape_interrupt_armed_ms != null;
-    }
-
-    pub fn escapeInterruptArmedAt(self: State) ?i64 {
-        return self.escape_interrupt_armed_ms;
     }
 };
 

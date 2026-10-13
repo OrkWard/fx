@@ -85,10 +85,6 @@ pub const ResizeApprovalInterlock = struct {
     pub fn resizePending(self: *const ResizeApprovalInterlock) bool {
         return self.state.load(.acquire) & resize_pending_bit != 0;
     }
-
-    fn affirmativeClaimed(self: *const ResizeApprovalInterlock) bool {
-        return self.state.load(.acquire) & affirmative_claimed_bit != 0;
-    }
 };
 
 pub const RedrawMode = enum {

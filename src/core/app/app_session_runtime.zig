@@ -254,14 +254,12 @@ pub const SessionPreferencePatch = struct {
     model: ?[]const u8 = null,
     effort: ?types.ReasoningEffort = null,
     fast_mode: ?bool = null,
-    ultrafast_mode: ?bool = null,
 
     pub fn userSettingsPatch(self: SessionPreferencePatch) config_runtime.UserSettingsPatch {
         var patch = config_runtime.UserSettingsPatch{
             .provider = self.provider,
             .effort = self.effort,
             .fast_mode = self.fast_mode,
-            .ultrafast_mode = self.ultrafast_mode,
         };
         if (self.model) |model| patch.model_preference = .{
             .provider = self.provider orelse .codex,
@@ -1025,7 +1023,6 @@ pub const Persistence = struct {
     process_model_override: ?[]u8 = null,
     process_effort_override: ?types.ReasoningEffort = null,
     process_fast_override: ?bool = null,
-    process_ultrafast_override: ?bool = null,
     session_picker: SessionPicker = .{},
     session_picker_load: SessionPickerLoad = .{},
     session_picker_cache: SessionPickerCatalogCache = .{},
@@ -1042,7 +1039,7 @@ pub const Persistence = struct {
     /// in a static release-binary template.
     pub fn initInto(storage: *Persistence) void {
         comptime {
-            if (@typeInfo(Persistence).@"struct".field_names.len != 24) {
+            if (@typeInfo(Persistence).@"struct".field_names.len != 23) {
                 @compileError("update Persistence.initInto for the changed field set");
             }
         }
@@ -1059,7 +1056,6 @@ pub const Persistence = struct {
         storage.process_model_override = null;
         storage.process_effort_override = null;
         storage.process_fast_override = null;
-        storage.process_ultrafast_override = null;
         storage.session_picker = .{};
         storage.session_picker_load = .{};
         storage.session_picker_cache = .{};
@@ -1148,8 +1144,6 @@ pub fn Runtime(comptime App: type) type {
             effort: types.ReasoningEffort,
             fast_mode: bool,
             fast_mode_model_bound: bool,
-            configured_ultrafast_mode: bool,
-            ultrafast_process_override: ?bool,
             effort_process_override: ?types.ReasoningEffort,
             fast_process_override: ?bool,
             provider_process_override: ?model_provider.ProviderId,
@@ -1162,7 +1156,6 @@ pub fn Runtime(comptime App: type) type {
                     .model = @constCast(configured_model),
                     .effort = effort,
                     .fast_mode = fast_mode,
-                    .ultrafast_mode = configured_ultrafast_mode,
                 },
             );
             try replacePreferences(
@@ -1181,7 +1174,6 @@ pub fn Runtime(comptime App: type) type {
             }
             app.session_persistence.process_effort_override = effort_process_override;
             app.session_persistence.process_fast_override = fast_process_override;
-            app.session_persistence.process_ultrafast_override = ultrafast_process_override;
             app.session_persistence.process_provider_override = provider_process_override;
             // A provider override must pin the resolved model too, or a resume
             // would restore the session's model from a different provider.
@@ -1653,21 +1645,6 @@ pub fn Runtime(comptime App: type) type {
 
         pub fn startResumedSessionReconciliation(app: *App) void {
             if (comptime @hasDecl(App, "startModelCacheWarmup")) app.startModelCacheWarmup();
-            if (comptime !@hasField(App, "auth") or !provider_runtime.supported(App)) return;
-            if (comptime !@hasDecl(@TypeOf(app.auth), "credentialSource") or
-                !@hasDecl(@TypeOf(app.auth), "accountId") or
-                !@hasDecl(@TypeOf(app.session.usage), "replaceProviderReconciliationCredential")) return;
-
-            const source = app.auth.credentialSource() orelse return;
-            if (!model_provider.authorizesCredential(provider_runtime.provider(app), source)) return;
-            const credential = app.auth.apiKey() orelse return;
-            app.session.usage.replaceProviderReconciliationCredential(
-                app.alloc,
-                provider_runtime.provider(app),
-                source,
-                app.auth.accountId(),
-                credential,
-            );
         }
 
         pub fn resumeSelectedSession(app: *App) !bool {
@@ -1761,7 +1738,7 @@ pub fn Runtime(comptime App: type) type {
             display: *const session_display_metadata.DisplayMetadata,
             notice: ResumeNotice,
         ) !void {
-            var state = loaded_state;
+            const state = loaded_state;
             const previous_provider = provider_runtime.provider(app);
             if (comptime @hasField(App, "next_image_id")) {
                 app.next_image_id = try nextImageIdForResume(
@@ -1792,7 +1769,6 @@ pub fn Runtime(comptime App: type) type {
                 state.preferences,
             );
             try restoreRuntimePreferences(app, state.preferences);
-            normalizeRecoveryUltrafastForProcessOverride(app, &state);
 
             app.total_input_tokens = state.total_input_tokens;
             app.total_output_tokens = state.total_output_tokens;
@@ -2529,18 +2505,6 @@ pub fn Runtime(comptime App: type) type {
             };
         }
 
-        pub fn appendHistoryTurnForVisualEpoch(
-            app: *App,
-            turn: types.HistoryTurn,
-        ) !HistoryAppendOutcome {
-            return appendHistoryTurnWithPendingPresentation(
-                app,
-                turn,
-                .visual_epoch,
-                null,
-            );
-        }
-
         pub fn appendFinishedPromptForVisualEpoch(
             app: *App,
             finished: types.FinishedPrompt,
@@ -2840,15 +2804,10 @@ pub fn Runtime(comptime App: type) type {
             else
                 return result;
             if (result.session_error != null) return result;
-            const durable_ultrafast_mode = durableUltrafastEventDelta(
-                loaded.state.preferences.ultrafast_mode,
-                patch.ultrafast_mode,
-            );
             if (patch.model == null and
                 patch.provider == null and
                 patch.effort == null and
-                patch.fast_mode == null and
-                durable_ultrafast_mode == null)
+                patch.fast_mode == null)
             {
                 return result;
             }
@@ -2862,7 +2821,6 @@ pub fn Runtime(comptime App: type) type {
                     .provider = patch.provider,
                     .effort = patch.effort,
                     .fast_mode = patch.fast_mode,
-                    .ultrafast_mode = durable_ultrafast_mode,
                 } },
                 io_mod.milliTimestamp(),
             ) catch |err| {
@@ -3997,13 +3955,6 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
-        fn replayHistory(app: *App, history: []const types.HistoryTurn) !void {
-            var sink = LiveHistorySink(App){ .app = app };
-            var labels = HistoricalSessionLabels{ .workspace_root = app.workspace_root };
-            defer labels.deinit(app.alloc);
-            return replayHistoryToSink(app, &sink, history, &labels);
-        }
-
         fn replayHistoryToSink(
             app: *App,
             sink: anytype,
@@ -4073,31 +4024,6 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
-        /// Replay canonical session turns into a detached presentation using
-        /// the exact same tool, message, markdown, diff, and command-output
-        /// adapters as ordinary session resume.
-        pub fn appendHistoryToDetachedProjection(
-            app: *App,
-            projection: anytype,
-            history: []const types.HistoryTurn,
-            has_prior_turns: *bool,
-        ) !void {
-            var labels = HistoricalSessionLabels{ .workspace_root = app.workspace_root };
-            defer labels.deinit(app.alloc);
-            var sink = DetachedHistorySink(@TypeOf(projection.*)){
-                .app = app,
-                .projection = projection,
-                .labels = &labels,
-            };
-            return replayHistoryToSinkIncremental(
-                app,
-                &sink,
-                history,
-                has_prior_turns,
-                &labels,
-            );
-        }
-
         fn writeCancelledCommandPresentation(
             app: *App,
             sink: anytype,
@@ -4126,13 +4052,6 @@ pub fn Runtime(comptime App: type) type {
                 presentation.command_artifact_handle,
                 replayed_output,
             );
-        }
-
-        fn writeExecutionHistory(app: *App, execution: types.ExecutionMemory) !void {
-            var sink = LiveHistorySink(App){ .app = app };
-            var labels = HistoricalSessionLabels{ .workspace_root = app.workspace_root };
-            defer labels.deinit(app.alloc);
-            return writeExecutionHistoryToSink(app, &sink, execution, &labels);
         }
 
         fn writeExecutionHistoryToSink(
@@ -4779,11 +4698,6 @@ pub fn Runtime(comptime App: type) type {
             };
         }
 
-        fn writeAssistantHistoryMarkdown(app: *App, text: []const u8) !void {
-            var sink = LiveHistorySink(App){ .app = app };
-            return writeAssistantHistoryMarkdownToSink(app, &sink, text);
-        }
-
         fn writeAssistantHistoryMarkdownToSink(
             app: *App,
             sink: anytype,
@@ -4829,7 +4743,6 @@ pub fn Runtime(comptime App: type) type {
             const handoff_intent = app.session_persistence.resume_handoff_intent;
             app.session_persistence.resume_handoff_intent = .none;
             if (comptime @hasField(@TypeOf(app.session), "usage")) {
-                app.session.usage.cancelReconciliation();
                 app.session.usage.finishProfilePublicationsBeforeShutdown();
                 app.session.usage.configureCheckpointSink(null);
             }
@@ -5124,34 +5037,6 @@ pub fn Runtime(comptime App: type) type {
             };
         }
 
-        fn normalizeRecoveryUltrafastForProcessOverride(
-            app: *App,
-            resumed: *session_codec.DurableSessionState,
-        ) void {
-            const process_override = app.session_persistence.process_ultrafast_override;
-            const local_changed = if (resumed.recovery_checkpoint) |*checkpoint|
-                suppressRecoveryUltrafast(checkpoint, process_override)
-            else
-                false;
-
-            app.session_persistence.write_mutex.lockUncancelable(io_mod.getIo());
-            defer app.session_persistence.write_mutex.unlock(io_mod.getIo());
-            const durable_changed = if (app.session_persistence.writable) |*loaded|
-                if (loaded.state.recovery_checkpoint) |*checkpoint|
-                    suppressRecoveryUltrafast(checkpoint, process_override)
-                else
-                    false
-            else
-                false;
-            if (local_changed or durable_changed) {
-                debug_trace.logf(
-                    "session",
-                    "event=recovery_ultrafast_suppressed reason=explicit_process_disable",
-                    .{},
-                );
-            }
-        }
-
         fn restoreRuntimePreferences(
             app: *App,
             preferences: session_codec.DurableSessionPreferences,
@@ -5187,10 +5072,6 @@ pub fn Runtime(comptime App: type) type {
             // stored preferences for this launch, without rewriting them.
             const effective_effort = app.session_persistence.process_effort_override orelse preferences.effort;
             const effective_fast_mode = app.session_persistence.process_fast_override orelse preferences.fast_mode;
-            const effective_ultrafast_mode = resolveUltrafastMode(
-                preferences.ultrafast_mode,
-                app.session_persistence.process_ultrafast_override,
-            );
             app.effort = effective_effort;
             app.fast_mode = effective_fast_mode;
             app.session_persistence.fast_mode_model_bound = if (app.session_persistence.process_fast_override != null)
@@ -5199,7 +5080,6 @@ pub fn Runtime(comptime App: type) type {
                 fast_mode_model_bound;
             app.worker.syncQueuedPromptEffort(effective_effort);
             app.worker.syncQueuedPromptFastMode(effective_fast_mode);
-            app.worker.syncQueuedPromptUltrafastMode(effective_ultrafast_mode);
         }
 
         pub fn fastModeModelBound(app: *const App) bool {
@@ -5303,28 +5183,6 @@ fn replacePreferences(
     target.* = replacement;
 }
 
-/// The old durable event schema exact-matches preference keys. Omit only an
-/// idempotent default-off patch; a stored true must receive an explicit false.
-fn durableUltrafastEventDelta(stored: bool, requested: ?bool) ?bool {
-    const value = requested orelse return null;
-    return if (!value and !stored) null else value;
-}
-
-fn resolveUltrafastMode(preference: bool, process_override: ?bool) bool {
-    return process_override orelse preference;
-}
-
-fn suppressRecoveryUltrafast(
-    checkpoint: *session_codec.RecoveryCheckpoint,
-    process_override: ?bool,
-) bool {
-    if (process_override != false) return false;
-    const changed = checkpoint.requested_ultrafast_mode or checkpoint.ultrafast_mode;
-    checkpoint.requested_ultrafast_mode = false;
-    checkpoint.ultrafast_mode = false;
-    return changed;
-}
-
 fn restoredFastModeModelBound(
     current_bound: bool,
     configured: ?session_codec.DurableSessionPreferences,
@@ -5351,6 +5209,5 @@ fn applyPreferencePatch(
     }
     if (patch.effort) |effort| current.effort = effort;
     if (patch.fast_mode) |fast_mode| current.fast_mode = fast_mode;
-    if (patch.ultrafast_mode) |ultrafast_mode| current.ultrafast_mode = ultrafast_mode;
     target.* = current;
 }
