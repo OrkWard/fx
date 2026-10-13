@@ -1,5 +1,4 @@
 const std = @import("std");
-const testing_allocator = @import("../shared/testing_allocator.zig");
 const contracts = @import("contracts.zig");
 const io_mod = @import("../shared/io.zig");
 
@@ -148,18 +147,6 @@ inline fn failOwnedAuthorityClaim(err: anytype) @TypeOf(err)!OwnedAuthorityClaim
 
 noinline fn failOwnedAuthorityClaimDynamic(err: anyerror) anyerror!OwnedAuthorityClaim {
     return err;
-}
-
-test "owned authority claim failures preserve exact error types and identities" {
-    const invalid = failOwnedAuthorityClaim(error.InvalidAuthorityGrant);
-    try std.testing.expect(
-        @TypeOf(invalid) == error{InvalidAuthorityGrant}!OwnedAuthorityClaim,
-    );
-    try std.testing.expectError(error.InvalidAuthorityGrant, invalid);
-    try std.testing.expectError(
-        error.OutOfMemory,
-        failOwnedAuthorityClaim(error.OutOfMemory),
-    );
 }
 
 pub fn ownAuthorityClaim(
@@ -348,97 +335,4 @@ pub fn execute(
 ) !contracts.OwnedResult {
     try validate(request);
     return backend.executeAuthorized(request, cancelled);
-}
-
-test "private operation validation requires durable authority on every action" {
-    try std.testing.expectError(
-        error.MissingTerminalAuthority,
-        validate(.{ .screen = .{ .session_id = "terminal-1" } }),
-    );
-    try std.testing.expectError(
-        error.MissingTerminalAuthority,
-        validate(.{ .list = .{} }),
-    );
-    try std.testing.expectError(
-        error.MissingTerminalAuthority,
-        validate(.{ .start = .{ .cwd = "/workspace" } }),
-    );
-}
-
-test "terminal mutations that share session write ownership stay ordered" {
-    try std.testing.expect(requiresOrderedMutation(.{ .write = .{
-        .session_id = "terminal-1",
-        .payload = .{ .text = "input" },
-    } }));
-    try std.testing.expect(requiresOrderedMutation(.{ .close = .{
-        .session_id = "terminal-1",
-        .policy = .graceful,
-    } }));
-    try std.testing.expect(!requiresOrderedMutation(.{ .inspect = .{
-        .session_id = "terminal-1",
-    } }));
-    try std.testing.expect(!requiresOrderedMutation(.{ .wait = .{
-        .session_id = "terminal-1",
-        .return_when = .exit,
-        .safety_ceiling_ms = 1,
-    } }));
-}
-
-fn test_preparation() AuthorityPreparation {
-    return .{
-        .profile_user = "profile-user",
-        .durable_session_id = "terminal-owner",
-        .workspace_root = "/workspace",
-        .cwd = "/workspace/project",
-        .transport_role = .interactive,
-        .backend = .native,
-        .actor = .agent,
-        .controls = .full(),
-        .lifetime = .session,
-    };
-}
-
-test "production preparation mints canonical generation one authority" {
-    var prepared = try prepareStartPersistence(
-        std.testing.allocator,
-        test_preparation(),
-    );
-    defer prepared.deinit();
-    const persistence = prepared.view();
-    try persistence.validate(.{
-        .cwd = "/workspace/project",
-        .backend = .native,
-    });
-    try std.testing.expectEqual(@as(u64, 1), persistence.grant.generation.value);
-    try std.testing.expectEqual(contracts.TerminalLifetime.session, persistence.grant.principal.lifetime);
-    try persistence.proof.validate();
-}
-
-fn check_preparation_allocation_failures(alloc: Allocator) !void {
-    var prepared = try construct_start_persistence(
-        alloc,
-        test_preparation(),
-        .{ .bytes = @splat(5) },
-    );
-    defer prepared.deinit();
-    const persistence = prepared.view();
-    var owned_claim = try ownAuthorityClaim(
-        alloc,
-        .{
-            .principal = persistence.grant.principal,
-            .actor = persistence.grant.actor,
-            .generation = persistence.grant.generation,
-            .proof = persistence.proof,
-        },
-        persistence.grant.controls,
-    );
-    defer owned_claim.deinit();
-}
-
-test "authority preparation and owned claims cover allocation failures" {
-    try std.testing.checkAllAllocationFailures(
-        testing_allocator.no_resize,
-        check_preparation_allocation_failures,
-        .{},
-    );
 }

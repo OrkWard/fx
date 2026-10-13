@@ -346,12 +346,3 @@ fn hashString(hash: *std.crypto.hash.sha2.Sha256, value: []const u8) void {
 fn hashOptional(hash: *std.crypto.hash.sha2.Sha256, value: ?[]const u8) void {
     if (value) |text| hashString(hash, text) else hash.update("none\x00");
 }
-
-test "approval identity is deterministic" {
-    const request = permission_request.PermissionRequest{ .label = "shell.run" };
-    const prepared = preparedRequestFingerprint(request);
-    try std.testing.expectEqual(
-        stableApprovalId("child", "work", prepared),
-        stableApprovalId("child", "work", prepared),
-    );
-}

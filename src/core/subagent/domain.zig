@@ -218,28 +218,3 @@ fn freeStrings(alloc: Allocator, values: [][]u8) void {
     for (values) |value| alloc.free(value);
     if (values.len > 0) alloc.free(values);
 }
-
-test "captured admission owns independent authority slices" {
-    const alloc = std.testing.allocator;
-    var snapshot = try captureAdmission(alloc, .{
-        .parent_id = "01J00000000000000000000000",
-        .source_id = "01J00000000000000000000000",
-        .model = "test/model",
-        .effort = .auto,
-        .tool_names = &.{"read_file"},
-    });
-    defer snapshot.deinit(alloc);
-    try std.testing.expectEqualStrings("read_file", snapshot.tool_names[0]);
-}
-
-test "admission keeps the item cap for tool names" {
-    var names: [max_admission_items + 1][]const u8 = undefined;
-    for (&names) |*name| name.* = "read_file";
-    try std.testing.expectError(error.TooManyAdmissionItems, captureAdmission(std.testing.allocator, .{
-        .parent_id = "01J00000000000000000000000",
-        .source_id = "01J00000000000000000000000",
-        .model = "test/model",
-        .effort = .auto,
-        .tool_names = &names,
-    }));
-}

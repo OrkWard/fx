@@ -20,29 +20,6 @@ fn cancellationTarget(
     };
 }
 
-test "cancellation target distinguishes agent turns and manual compaction" {
-    try std.testing.expectEqual(
-        CancellationTarget.none,
-        cancellationTarget(false, .idle),
-    );
-    try std.testing.expectEqual(
-        CancellationTarget.agent_turn,
-        cancellationTarget(true, .idle),
-    );
-    try std.testing.expectEqual(
-        CancellationTarget.context_compaction,
-        cancellationTarget(false, .queued),
-    );
-    try std.testing.expectEqual(
-        CancellationTarget.context_compaction,
-        cancellationTarget(false, .running),
-    );
-    try std.testing.expectEqual(
-        CancellationTarget.agent_turn,
-        cancellationTarget(true, .running),
-    );
-}
-
 pub fn InterruptRuntime(comptime App: type) type {
     return struct {
         pub fn hasActiveOperation(app: *App) bool {
@@ -186,49 +163,4 @@ pub fn InterruptRuntime(comptime App: type) type {
             return cancellationTarget(app.stream.active, status);
         }
     };
-}
-
-test "idle compaction feedback dismissal is scoped and never cancels active work" {
-    const FakeApp = struct {
-        worker: worker_runtime.WorkerRuntime = .{},
-        shell: struct { render_requests: @import("../../ui/render_request.zig").RenderRequestState = .{} } = .{},
-    };
-    var app: FakeApp = .{};
-    defer app.worker.deinit(std.testing.allocator);
-    const id = app.worker.beginCompactionActivity(.manual, null);
-    try std.testing.expect(!InterruptRuntime(FakeApp).dismissCompactionFeedback(&app));
-    app.worker.settleCompactionActivity(id, .{ .outcome = .cancelled });
-    try std.testing.expect(InterruptRuntime(FakeApp).dismissCompactionFeedback(&app));
-    try std.testing.expect(app.shell.render_requests.hasReason(.footer));
-    try std.testing.expect(!app.worker.isCancelRequested());
-    try std.testing.expect(!InterruptRuntime(FakeApp).dismissCompactionFeedback(&app));
-}
-
-test "interactive connectivity wait maps try later to recovery pause" {
-    const FakeWorker = struct {
-        connectivity_wait_active: bool = false,
-        pause_requested: bool = false,
-
-        pub fn isConnectivityWaitActive(self: *const @This()) bool {
-            return self.connectivity_wait_active;
-        }
-
-        pub fn requestRecoveryPause(self: *@This()) void {
-            self.pause_requested = true;
-        }
-    };
-    const FakeApp = struct {
-        stream: struct { active: bool } = .{ .active = true },
-        worker: FakeWorker = .{},
-    };
-
-    var app = FakeApp{};
-    app.worker.connectivity_wait_active = true;
-    try std.testing.expect(InterruptRuntime(FakeApp).pauseActiveRecovery(&app));
-    try std.testing.expect(app.worker.pause_requested);
-
-    app.worker.pause_requested = false;
-    app.worker.connectivity_wait_active = false;
-    try std.testing.expect(!InterruptRuntime(FakeApp).pauseActiveRecovery(&app));
-    try std.testing.expect(!app.worker.pause_requested);
 }

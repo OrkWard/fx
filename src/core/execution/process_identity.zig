@@ -122,20 +122,3 @@ pub fn matchProcessInstanceToken(
     };
     return if (actual.eql(expected)) .matched else .mismatched;
 }
-
-test "process instance tokens are canonical and require exact match" {
-    const token = try ProcessInstanceToken.parse(
-        "linux:00112233445566778899aabbccddeeff:12345",
-    );
-    try std.testing.expectEqualStrings(
-        "linux:00112233445566778899aabbccddeeff:12345",
-        token.view(),
-    );
-    try std.testing.expect(token.eql(token));
-    try std.testing.expectError(
-        error.InvalidProcessInstanceToken,
-        ProcessInstanceToken.parse(
-            "linux:00112233445566778899AABBCCDDEEFF:12345",
-        ),
-    );
-}

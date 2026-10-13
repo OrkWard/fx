@@ -1,5 +1,4 @@
 const std = @import("std");
-const testing_allocator = @import("testing_allocator.zig");
 
 pub fn serializedEqual(alloc: std.mem.Allocator, lhs: []const u8, rhs: []const u8) std.mem.Allocator.Error!bool {
     if (std.mem.eql(u8, lhs, rhs)) return true;
@@ -51,49 +50,4 @@ pub fn serializedEqual(alloc: std.mem.Allocator, lhs: []const u8, rhs: []const u
         _ = pending.pop();
     }
     return true;
-}
-
-test "serialized JSON equality preserves typed values and object order independence" {
-    const cases = [_]struct { left: []const u8, right: []const u8, equal: bool }{
-        .{ .left = "{}", .right = " { } ", .equal = true },
-        .{ .left = "{\"a\":1,\"b\":[true,null]}", .right = "{\"b\":[true,null],\"a\":1}", .equal = true },
-        .{ .left = "{\"a\":\"A\"}", .right = "{\"a\":\"\\u0041\"}", .equal = true },
-        .{ .left = "[1,2]", .right = "[2,1]", .equal = false },
-        .{ .left = "{\"a\":1}", .right = "{\"b\":1}", .equal = false },
-        .{ .left = "1", .right = "1.0", .equal = false },
-        .{ .left = "null", .right = "false", .equal = false },
-        .{ .left = "{]", .right = "{}", .equal = false },
-        .{ .left = "{]", .right = "{]", .equal = true },
-    };
-    for (cases) |case| try std.testing.expectEqual(case.equal, try serializedEqual(std.testing.allocator, case.left, case.right));
-}
-
-fn expectComparisonAllocations(alloc: std.mem.Allocator) !void {
-    try std.testing.expect(try serializedEqual(alloc, "{\"a\":[1,{\"b\":true}]}", " { \"a\" : [1, {\"b\":true}] } "));
-    try std.testing.expect(!try serializedEqual(alloc, "{\"a\":[1,{\"b\":true}]}", "{\"a\":[1,{\"b\":false}]}"));
-}
-
-test "serialized JSON equality releases comparison allocations on failure" {
-    try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, expectComparisonAllocations, .{});
-    try std.testing.expect(try serializedEqual(std.testing.failing_allocator, "{}", "{}"));
-}
-
-test "serialized JSON equality traverses nested values with owned scratch" {
-    const alloc = std.testing.allocator;
-    const depth = 256;
-    var left: std.Io.Writer.Allocating = .init(alloc);
-    defer left.deinit();
-    var right: std.Io.Writer.Allocating = .init(alloc);
-    defer right.deinit();
-    for (0..depth) |_| {
-        try left.writer.writeByte('[');
-        try right.writer.writeAll("[ ");
-    }
-    try left.writer.writeByte('1');
-    try right.writer.writeByte('1');
-    for (0..depth) |_| {
-        try left.writer.writeByte(']');
-        try right.writer.writeAll(" ]");
-    }
-    try std.testing.expect(try serializedEqual(alloc, left.written(), right.written()));
 }

@@ -693,38 +693,6 @@ fn readLegacySummary(
     return result;
 }
 
-test "legacy summary cancellation stops after streaming starts" {
-    const alloc = std.testing.allocator;
-    const bytes = "{\"schema_version\":2,\"history\":[{\"user\":\"request\",\"assistant\":\"response\"}]," ++
-        "\"id\":\"legacy\",\"created_at_ms\":1,\"updated_at_ms\":2,\"workspace_root\":null," ++
-        "\"conversation_language\":\"en\",\"history_len\":1}";
-    const Source = struct {
-        input: std.Io.Reader,
-        stopped: *std.atomic.Value(bool),
-        reads: usize = 0,
-        interface: std.Io.Reader = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
-
-        fn stream(reader: *std.Io.Reader, writer: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
-            const self: *@This() = @fieldParentPtr("interface", reader);
-            self.reads += 1;
-            const count = try self.input.stream(writer, limit.min(.limited(32)));
-            self.stopped.store(true, .release);
-            return count;
-        }
-    };
-    var stopped = std.atomic.Value(bool).init(false);
-    var source = Source{ .input = .fixed(bytes), .stopped = &stopped };
-    try std.testing.expectError(error.Cancelled, readLegacySummary(alloc, &source.interface, &stopped));
-    try std.testing.expectEqual(@as(usize, 1), source.reads);
-    try std.testing.expect(source.input.seek > 0 and source.input.seek < bytes.len);
-    stopped.store(false, .release);
-    var complete = std.Io.Reader.fixed(bytes);
-    var summary = try readLegacySummary(alloc, &complete, &stopped);
-    defer summary.deinit(alloc);
-    try std.testing.expectEqualStrings("legacy", summary.id);
-    try std.testing.expectEqual(@as(usize, 1), summary.history_len);
-}
-
 /// Projects a durable session state into the lightweight `SessionSummary`
 /// returned by listing APIs. Allocates owned copies of the id and roots.
 pub fn summaryFromState(

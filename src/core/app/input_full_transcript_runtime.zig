@@ -4,11 +4,7 @@ const app_render_runtime = @import("app_render_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const input_action = @import("../input/input_action.zig");
 const transcript_presentation = @import("../output/transcript_presentation.zig");
-const types = @import("../shared/types.zig");
-const interaction_state = @import("../../ui/footer/interaction_state.zig");
 const approval_prompt = @import("../permissions/approval_prompt.zig");
-const shell_runtime = @import("../../ui/shell_runtime.zig");
-const transcript_runtime = @import("../../ui/transcript/runtime.zig");
 
 pub fn Runtime(comptime App: type) type {
     return struct {

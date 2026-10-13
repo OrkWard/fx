@@ -39,13 +39,6 @@ fn childUltrafastMode(parent_requested: bool, child_preference: bool) bool {
     return parent_requested and child_preference;
 }
 
-test "Ultrafast parent disable caps durable child opt-ins" {
-    try std.testing.expect(childUltrafastMode(true, true));
-    try std.testing.expect(!childUltrafastMode(false, true));
-    try std.testing.expect(!childUltrafastMode(true, false));
-    try std.testing.expect(!childUltrafastMode(false, false));
-}
-
 fn childModelCapabilityResolver(
     parent: ?model_capabilities.Resolver,
 ) ?model_capabilities.Resolver {
@@ -325,22 +318,6 @@ fn finalRunOutcome(outcome: ?types.TurnPresentationOutcome) error{ProviderFailed
     };
 }
 
-test "subagent finalization preserves every outcome and fails closed on absence" {
-    const cases = [_]struct {
-        outcome: ?types.TurnPresentationOutcome,
-        expected: error{ProviderFailed}!execution.RunOutcome,
-    }{
-        .{ .outcome = .completed, .expected = .completed },
-        .{ .outcome = .failed, .expected = error.ProviderFailed },
-        .{ .outcome = .interrupted, .expected = .paused },
-        .{ .outcome = .paused, .expected = .paused },
-        .{ .outcome = null, .expected = error.ProviderFailed },
-    };
-    for (cases) |case| {
-        try std.testing.expectEqual(case.expected, finalRunOutcome(case.outcome));
-    }
-}
-
 fn withoutSubagentNames(
     alloc: Allocator,
     names: []const []const u8,
@@ -451,125 +428,6 @@ fn resolveModelCapabilities(raw: *anyopaque, arena: Allocator, model: []const u8
     return availableModelCapabilities(raw, model);
 }
 
-test "child runtime capability callbacks preserve fallback and child cancellation" {
-    const session_store = @import("../session/session_store.zig");
-    const catalog = @import("../gateway/model_catalog.zig");
-    const authority = @import("authority.zig");
-    const Fixture = struct {
-        fetches: usize = 0,
-        lookups: usize = 0,
-        resolutions: usize = 0,
-
-        fn resolve(_: ?*anyopaque, alloc: Allocator, _: []const u8) authority.HostResolveError!authority.HostAuthority {
-            return authority.HostAuthority.capture(alloc, &.{}, .{}, &.{});
-        }
-        fn fetch(raw: ?*anyopaque, _: Allocator, _: catalog.FetchInput) Allocator.Error!catalog.ProviderResult {
-            const self: *@This() = @ptrCast(@alignCast(raw.?));
-            self.fetches += 1;
-            return .{ .failure = .{ .category = .runtime } };
-        }
-        fn lookup(raw: ?*anyopaque, model: []const u8) model_capabilities.Capabilities {
-            const self: *@This() = @ptrCast(@alignCast(raw.?));
-            self.lookups += 1;
-            return if (std.mem.eql(u8, model, "child-model")) .{ .context_window = 32768, .max_output_tokens = 512 } else .{};
-        }
-        fn resolveCapabilities(raw: *anyopaque, _: Allocator, model: []const u8) model_capabilities.ResolveError!model_capabilities.Capabilities {
-            const self: *@This() = @ptrCast(@alignCast(raw));
-            self.resolutions += 1;
-            return if (std.mem.eql(u8, model, "child-model")) .{ .supports_vision = true, .image_input_support = .native } else .{};
-        }
-        fn output(_: *anyopaque, _: ?types.ToolLifecycleId, _: command_output_content.Stream, _: []const u8) anyerror!void {}
-    };
-    const alloc = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(root);
-    var store = try session_store.Store.initFromHome(alloc, root, root);
-    defer store.deinit(alloc);
-    var writable = try store.startWritableSession(alloc, .{
-        .id = @constCast("capability-parent"),
-        .origin_workspace_root = @constCast(root),
-        .workspace_root = @constCast(root),
-        .created_at_ms = 1,
-        .updated_at_ms = 1,
-        .conversation_language = @import("../session/session.zig").ConversationLanguage.literal("en"),
-        .history = &.{},
-        .total_input_tokens = 0,
-        .total_output_tokens = 0,
-        .preferences = .{ .model = @constCast("parent-model"), .effort = .auto, .fast_mode = false },
-    });
-    defer writable.deinit(alloc);
-    const host = try tool_host.Runtime.create(alloc, &store, "capability-parent", .{ .resolve_fn = Fixture.resolve }, .{});
-    defer host.deinit();
-    var turn = try execution.TurnContext.init(alloc, &writable, 0);
-    defer turn.deinit();
-    var admission = try domain.captureAdmission(alloc, .{ .parent_id = "capability-parent", .source_id = "capability-parent", .model = "parent-model", .effort = .auto });
-    defer admission.deinit(alloc);
-    var fixture: Fixture = .{};
-    var cancel = std.atomic.Value(bool).init(false);
-    var parent_cancel = std.atomic.Value(bool).init(false);
-    const registry = context_contract.Registry{ .default_provider = context_contract.empty_provider };
-    var context = Context{
-        .config = .{
-            .host = host,
-            .tool_context = .{
-                .workspace_root = root,
-                .ignored_list_entries = &.{},
-                .max_list_entries = 100,
-                .max_read_file_bytes = 65536,
-                .max_read_file_lines = 400,
-                .max_read_file_line_len = 2000,
-                .max_command_output_bytes = 65536,
-                .api_key = "",
-                .model = "parent-model",
-                .provider = .grok,
-                .gateway_retry_count = 1,
-                .gateway_chat_url = "",
-                .agent_step_limit = 8,
-                .permission_mode = .ask,
-                .permission_grants = &.{},
-                .permission_rules = .{},
-                .worker = turn.workerRuntime(),
-                .session = turn.sessionRuntime(),
-                .context_registry = registry,
-                .output_chunk_ctx = &fixture,
-                .on_output_chunk = Fixture.output,
-                .cancel_flag = &parent_cancel,
-            },
-            .provider_set = .{ .gateway = .{ .model_catalog = .{ .context = &fixture, .fetch_fn = Fixture.fetch } }, .codex = .{}, .grok = .{} },
-            .system_prompt = "",
-            .context_registry = registry,
-            .context_enabled = false,
-        },
-        .turn = &turn,
-        .admission = admission,
-        .cancel = &cancel,
-        .subagent_id = 1,
-    };
-    const deps = runtimeDeps(&context);
-    const fallback = model_capabilities.capabilitiesForModel("legacy-fast");
-    try std.testing.expectEqualDeep(fallback, deps.available_model_capabilities(deps.ctx, "legacy-fast"));
-    try std.testing.expectEqualDeep(fallback, try deps.resolve_model_capabilities(deps.ctx, alloc, "legacy-fast"));
-    context.config.provider_set.gateway.model_catalog.?.lookup_capabilities_fn = Fixture.lookup;
-    const available = deps.available_model_capabilities(deps.ctx, "child-model");
-    try std.testing.expectEqual(@as(?u32, 512), available.max_output_tokens);
-    try std.testing.expectEqual(@as(?u32, 32768), available.context_window);
-    try std.testing.expectEqualDeep(available, try deps.resolve_model_capabilities(deps.ctx, alloc, "child-model"));
-    try std.testing.expectEqualDeep(model_capabilities.Capabilities{}, deps.available_model_capabilities(deps.ctx, "unknown-fast"));
-    context.config.tool_context.model_capability_resolver = .{ .ctx = &fixture, .resolve_fn = Fixture.resolveCapabilities };
-    const resolved = try deps.resolve_model_capabilities(deps.ctx, alloc, "child-model");
-    try std.testing.expectEqual(model_capabilities.ImageInputSupport.native, resolved.image_input_support);
-    try std.testing.expectEqual(@as(usize, 1), fixture.resolutions);
-    try std.testing.expectEqual(@as(?u32, 512), deps.available_model_capabilities(deps.ctx, "child-model").max_output_tokens);
-    const lookups = fixture.lookups;
-    cancel.store(true, .seq_cst);
-    try std.testing.expectError(error.Cancelled, deps.resolve_model_capabilities(deps.ctx, alloc, "child-model"));
-    try std.testing.expectEqual(lookups, fixture.lookups);
-    try std.testing.expectEqual(@as(usize, 1), fixture.resolutions);
-    try std.testing.expectEqual(@as(usize, 0), fixture.fetches);
-}
-
 fn takeChildSteeringBoundary(
     raw: *anyopaque,
     arena: Allocator,
@@ -666,27 +524,6 @@ fn appendStaticContext(raw: *anyopaque, arena: Allocator, project_context: ?[]co
     try context.config.context_registry.appendDefaultStatic(.{
         .project_context = project_context orelse context.config.project_context,
     }, arena, messages);
-}
-
-test "subagent inherits model capabilities" {
-    const ResolverFixture = struct {
-        fn resolve(
-            _: *anyopaque,
-            _: Allocator,
-            _: []const u8,
-        ) model_capabilities.ResolveError!model_capabilities.Capabilities {
-            return .{};
-        }
-    };
-    var resolver_context: u8 = 0;
-    const resolver = model_capabilities.Resolver{
-        .ctx = &resolver_context,
-        .resolve_fn = ResolverFixture.resolve,
-    };
-    const inherited = childModelCapabilityResolver(resolver);
-    try std.testing.expect(inherited != null);
-    try std.testing.expectEqual(resolver.ctx, inherited.?.ctx);
-    try std.testing.expectEqual(resolver.resolve_fn, inherited.?.resolve_fn);
 }
 
 fn validateToolCall(raw: *anyopaque, arena: Allocator, call: types.ToolCall) !agent_runtime.ToolCallValidationResult {

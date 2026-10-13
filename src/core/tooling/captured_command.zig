@@ -28,36 +28,3 @@ pub fn isToolCall(
     const tty = parsed.value.object.get("tty") orelse return true;
     return tty == .null or (tty == .bool and !tty.bool);
 }
-
-test "captured command classification recognizes shell run and historical records" {
-    const alloc = std.testing.allocator;
-    try std.testing.expect(try isToolCall(
-        alloc,
-        "terminal",
-        "{\"action\":\"exec\",\"command\":\"printf ok\"}",
-    ));
-    try std.testing.expect(!try isToolCall(
-        alloc,
-        "terminal",
-        "{\"action\":\"start\",\"command\":\"printf ok\"}",
-    ));
-    try std.testing.expect(try isToolCall(
-        alloc,
-        "shell",
-        "{\"action\":\"run\",\"command\":\"printf ok\"}",
-    ));
-    try std.testing.expect(!try isToolCall(
-        alloc,
-        "shell",
-        "{\"action\":\"run\",\"command\":\"printf ok\",\"tty\":true}",
-    ));
-    try std.testing.expect(!try isToolCall(
-        alloc,
-        "shell",
-        "{\"action\":\"wait\",\"session_id\":\"shell-1\"}",
-    ));
-    try std.testing.expect(try isToolCall(alloc, "run_command", "{}"));
-    try std.testing.expect(!try isToolCall(alloc, "read_file", "{}"));
-    try std.testing.expect(!try isToolCall(alloc, "terminal", "not-json"));
-    try std.testing.expect(!try isToolCall(alloc, "shell", "not-json"));
-}

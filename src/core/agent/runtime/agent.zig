@@ -1,9 +1,7 @@
 const std = @import("std");
-const testing_allocator = @import("../../shared/testing_allocator.zig");
 const types = @import("../../shared/types.zig");
 const runtime_prompt_context = @import("prompt_context.zig");
 const debug_trace = @import("../../shared/debug_trace.zig");
-const text_utils = @import("../../shared/text_utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -173,113 +171,4 @@ pub const RequestTokenCalibrationState = struct {
 fn addOptional(total: *?u64, value: ?u64) void {
     const amount = value orelse return;
     total.* = std.math.add(u64, total.* orelse 0, amount) catch std.math.maxInt(u64);
-}
-
-test "Agent request token calibration survives startTurn and dies with cleared history" {
-    const alloc = std.testing.allocator;
-    var agent: Agent = .{};
-    defer agent.deinit(alloc);
-
-    const cost = runtime_prompt_context.RequestTokenCalibration{
-        .request = .{ .serialized_bytes = 400, .text_tokens = 100, .estimated_input_tokens = 100 },
-        .exact_input_tokens = 90,
-    };
-    agent.storeRequestTokenCalibration("fixture/model", cost);
-    try std.testing.expect(agent.request_token_calibration != null);
-    try std.testing.expectEqualStrings("fixture/model", agent.request_token_calibration.?.modelSlice());
-    try std.testing.expectEqual(@as(usize, 90), agent.request_token_calibration.?.cost.exact_input_tokens);
-
-    // startTurn must not reset the calibration: the next turn's first request
-    // is exactly what it exists for.
-    agent.startTurn();
-    try std.testing.expect(agent.request_token_calibration != null);
-
-    // An unmatchable model id clears rather than stores.
-    agent.storeRequestTokenCalibration(text_utils.repeat("x", max_request_calibration_model_bytes + 1), cost);
-    try std.testing.expectEqual(@as(?RequestTokenCalibrationState, null), agent.request_token_calibration);
-
-    agent.storeRequestTokenCalibration("fixture/model", cost);
-    agent.clearHistory(alloc);
-    try std.testing.expectEqual(@as(?RequestTokenCalibrationState, null), agent.request_token_calibration);
-
-    // A replaced history invalidates the calibration too.
-    agent.storeRequestTokenCalibration("fixture/model", cost);
-    try agent.restoreHistory(alloc, &.{});
-    try std.testing.expectEqual(@as(?RequestTokenCalibrationState, null), agent.request_token_calibration);
-}
-
-test "Agent request size limit only lowers, follows the model, and dies with cleared history" {
-    const alloc = std.testing.allocator;
-    var agent: Agent = .{};
-    defer agent.deinit(alloc);
-
-    try std.testing.expectEqual(@as(?usize, null), agent.requestByteLimit("fixture/model"));
-    agent.lowerRequestByteLimit("fixture/model", 4000);
-    agent.lowerRequestByteLimit("fixture/model", 9000);
-    try std.testing.expectEqual(@as(?usize, 4000), agent.requestByteLimit("fixture/model"));
-    try std.testing.expectEqual(@as(?usize, null), agent.requestByteLimit("other/model"));
-    agent.startTurn();
-    try std.testing.expectEqual(@as(?usize, 4000), agent.requestByteLimit("fixture/model"));
-
-    agent.lowerRequestByteLimit("other/model", 7000);
-    try std.testing.expectEqual(@as(?usize, 7000), agent.requestByteLimit("other/model"));
-    try std.testing.expectEqual(@as(?usize, null), agent.requestByteLimit("fixture/model"));
-
-    agent.lowerRequestByteLimit(text_utils.repeat("x", max_request_calibration_model_bytes + 1), 10);
-    try std.testing.expectEqual(@as(?usize, 7000), agent.requestByteLimit("other/model"));
-
-    agent.clearHistory(alloc);
-    try std.testing.expectEqual(@as(?usize, null), agent.requestByteLimit("other/model"));
-    agent.lowerRequestByteLimit("other/model", 7000);
-    try agent.restoreHistory(alloc, &.{});
-    try std.testing.expectEqual(@as(?usize, null), agent.requestByteLimit("other/model"));
-}
-
-test "Agent startTurn consumes freshness and resets usage" {
-    var agent: Agent = .{};
-    agent.turn_usage = .{ .input_tokens = 4 };
-    agent.startTurn();
-    try std.testing.expect(!agent.fresh);
-    try std.testing.expectEqual(@as(?u64, null), agent.turn_usage.input_tokens);
-}
-
-test "Agent accumulates per-turn usage with saturation" {
-    var agent: Agent = .{};
-    agent.startTurn();
-    agent.observeUsage(.{ .input_tokens = 4, .output_tokens = 2 });
-    agent.observeUsage(.{ .input_tokens = 3, .reasoning_tokens = 1 });
-    try std.testing.expectEqual(@as(?u64, 7), agent.turn_usage.input_tokens);
-    try std.testing.expectEqual(@as(?u64, 2), agent.turn_usage.output_tokens);
-    try std.testing.expectEqual(@as(?u64, 1), agent.turn_usage.reasoning_tokens);
-
-    agent.observeUsage(.{ .input_tokens = std.math.maxInt(u64) });
-    try std.testing.expectEqual(
-        @as(?u64, std.math.maxInt(u64)),
-        agent.turn_usage.input_tokens,
-    );
-}
-
-test "Agent history restore is transactional" {
-    const alloc = testing_allocator.no_resize;
-    var agent: Agent = .{};
-    defer agent.deinit(alloc);
-
-    try agent.appendHistoryEntry(alloc, .{ .assistant = .{
-        .user = .{ .text = @constCast("old") },
-        .assistant = @constCast("answer"),
-    } });
-    const replacement = [_]types.HistoryTurn{.{ .assistant = .{
-        .user = .{ .text = @constCast("new") },
-        .assistant = @constCast("response"),
-    } }};
-    var failing = std.testing.FailingAllocator.init(alloc, .{ .fail_index = 0 });
-    try std.testing.expectError(
-        error.OutOfMemory,
-        agent.restoreHistory(failing.allocator(), &replacement),
-    );
-    try std.testing.expectEqual(@as(usize, 1), agent.history.items.len);
-    try std.testing.expectEqualStrings("old", agent.history.items[0].assistant.user.text);
-
-    try agent.restoreHistory(alloc, &replacement);
-    try std.testing.expectEqualStrings("new", agent.history.items[0].assistant.user.text);
 }

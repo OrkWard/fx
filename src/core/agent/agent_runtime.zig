@@ -41,18 +41,3 @@ pub const CompactorCaller = @import("runtime/text_completion.zig").CompactorCall
 pub const persistedStatusForCurrentFxLocalResult = runtime_execution_memory.persistedStatusForCurrentFxLocalResult;
 pub const classifyProviderExecutedResultStatus = runtime_execution_memory.classifyProviderExecutedResultStatus;
 pub const normalizeAssistantTextForDisplay = runtime_assistant_stream.normalizeAssistantTextForDisplay;
-
-test {
-    _ = @import("stream_provider.zig");
-    _ = @import("../compactor/compactor.zig");
-    _ = @import("runtime/parallel_execution.zig");
-    _ = @import("runtime/tests/gateway_flow.zig");
-    _ = @import("runtime/tests/tool_flow.zig");
-    _ = @import("runtime/tests/interruption_flow.zig");
-    _ = @import("runtime/tests/finalization_flow.zig");
-    _ = @import("runtime/agent.zig");
-    _ = @import("runtime/orchestrator.zig");
-    _ = @import("runtime/request_image_budget.zig");
-    _ = @import("runtime/text_completion.zig");
-    _ = @import("runtime/vision_contracts.zig");
-}

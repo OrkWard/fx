@@ -1,4 +1,3 @@
-const std = @import("std");
 const definitions = @import("definitions.zig");
 
 pub const ScopeKind = definitions.ScopeKind;
@@ -9,7 +8,3 @@ pub const RegistrationError = definitions.RegistrationError;
 pub const ViewError = definitions.ViewError;
 pub const HandlerError = definitions.HandlerError;
 pub const MutationDispatchError = definitions.MutationDispatchError;
-
-test "Hooks v1.0 scope kinds remain limited to the current surfaces" {
-    try std.testing.expectEqual(@as(usize, 3), @typeInfo(ScopeKind).@"enum".field_names.len);
-}

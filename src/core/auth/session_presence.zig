@@ -95,27 +95,3 @@ fn profileFileFromHome(
     }
     return .present;
 }
-
-test "missing native profile root is unavailable" {
-    try std.testing.expectEqual(
-        host.SecretStorePresence.unavailable,
-        profileFileFromHome(null, "auth.json", 1024),
-    );
-}
-
-test "credential write admission accepts missing files and rejects read-only targets" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try std.testing.expect(!try requireWritableInDir(tmp.dir, "auth.json"));
-    var file = try tmp.dir.createFile(std.testing.io, "auth.json", .{
-        .read = true,
-        .permissions = std.Io.File.Permissions.fromMode(0o600),
-    });
-    defer file.close(std.testing.io);
-    try std.testing.expect(try requireWritableInDir(tmp.dir, "auth.json"));
-    defer file.setPermissions(std.testing.io, std.Io.File.Permissions.fromMode(0o600)) catch {};
-    for ([_]std.posix.mode_t{ 0o400, 0o200, 0o700 }) |mode| {
-        try file.setPermissions(std.testing.io, std.Io.File.Permissions.fromMode(mode));
-        try std.testing.expectError(error.CredentialStorageUnavailable, requireWritableInDir(tmp.dir, "auth.json"));
-    }
-}

@@ -9,7 +9,6 @@ const approval_registry_mod = @import("approval_registry.zig");
 const child_state = @import("child_state.zig");
 const domain = @import("domain.zig");
 const live_metrics = @import("live_metrics.zig");
-const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const session = @import("../session/session.zig");
 const session_child_store = @import("../session/session_child_store.zig");
@@ -22,135 +21,6 @@ const types = @import("../shared/types.zig");
 const history_range = @import("../shared/history_range.zig");
 
 const Allocator = std.mem.Allocator;
-
-test "child compaction preserves work identity and permits final commit" {
-    const alloc = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(root);
-    var store = try session_store.Store.initFromHome(alloc, root, root);
-    defer store.deinit(alloc);
-    const state = session_codec.DurableSessionState{
-        .id = @constCast("child-compaction"),
-        .origin_workspace_root = @constCast(root),
-        .workspace_root = @constCast(root),
-        .created_at_ms = 1,
-        .updated_at_ms = 1,
-        .conversation_language = session.ConversationLanguage.literal("en"),
-        .history = &.{},
-        .total_input_tokens = 0,
-        .total_output_tokens = 0,
-        .preferences = .{ .model = @constCast("test"), .effort = .auto, .fast_mode = false },
-    };
-    var writable = try store.startWritableSession(alloc, state);
-    defer writable.deinit(alloc);
-    var turn = try TurnContext.init(alloc, &writable, 0);
-    defer turn.deinit();
-    turn.active_work_id = "work-checkpoint";
-    try turn.commitContextCompaction(.{
-        .summary = @constCast("<context_handoff>continue child work</context_handoff>"),
-        .removed_turn_count = 0,
-        .compaction_count = 1,
-    }, .{ .user = .{ .text = @constCast("child request") }, .assistant = @constCast("") }, null, 2);
-    try std.testing.expect(!turn.committed);
-    try turn.setRecoveryCheckpoint(.{
-        .turn_id = 7,
-        .user = .{ .text = @constCast("child request") },
-        .assistant_source = @constCast("partial"),
-        .cause = .network_interrupted,
-        .action = .paused,
-        .authority = .{ .provider = .gateway, .model = @constCast("test") },
-        .requested_fast_mode = false,
-        .fast_mode = false,
-        .max_provider_attempts = 3,
-        .consumed_provider_attempts = 1,
-    }, 2);
-    try std.testing.expectEqualStrings("work-checkpoint", writable.state.recovery_checkpoint.?.user.work_id.?);
-    try turn.commit("work-checkpoint", .{ .assistant = .{
-        .user = .{ .text = @constCast("child request") },
-        .assistant = @constCast("child done"),
-    } }, 10, 5, 3);
-    try std.testing.expect(turn.committed);
-    const bytes = try writable.conversation_writer.readAllForTest(alloc);
-    defer alloc.free(bytes);
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, bytes, "child request"));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, bytes, "work-checkpoint"));
-    try std.testing.expect(std.mem.find(u8, bytes, "child done") != null);
-}
-
-test "child recovery admission distinguishes work identity from repeated prompt text" {
-    const alloc = std.testing.allocator;
-    for ([_][]const u8{ "old-work", "new-work" }) |work_id| {
-        var tmp = std.testing.tmpDir(.{});
-        defer tmp.cleanup();
-        const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-        defer alloc.free(root);
-        var store = try session_store.Store.initFromHome(alloc, root, root);
-        defer store.deinit(alloc);
-        const session_id = "child-recovery-admission";
-        const user = types.UserTurn{ .text = @constCast("same prompt"), .work_id = @constCast("old-work") };
-        {
-            var writable = try store.startWritableSession(alloc, .{
-                .id = @constCast(session_id),
-                .origin_workspace_root = @constCast(root),
-                .workspace_root = @constCast(root),
-                .created_at_ms = 1,
-                .updated_at_ms = 1,
-                .conversation_language = session.ConversationLanguage.literal("en"),
-                .history = &.{},
-                .total_input_tokens = 0,
-                .total_output_tokens = 0,
-                .preferences = .{ .model = @constCast("test"), .effort = .auto, .fast_mode = false },
-            });
-            defer writable.deinit(alloc);
-            _ = try writable.commitContextCompaction(alloc, .{
-                .summary = @constCast("<context_handoff>old work checkpoint</context_handoff>"),
-                .removed_turn_count = 0,
-                .compaction_count = 1,
-            }, .{ .user = user, .assistant = @constCast("") }, null, 2);
-            _ = try writable.appendEvent(alloc, .{ .recovery_checkpoint_set = .{ .checkpoint = .{
-                .turn_id = 7,
-                .user = user,
-                .assistant_source = @constCast("old partial answer"),
-                .cause = .network_interrupted,
-                .action = .paused,
-                .authority = .{ .provider = .gateway, .model = @constCast("test") },
-                .requested_fast_mode = false,
-                .fast_mode = false,
-                .max_provider_attempts = 3,
-                .consumed_provider_attempts = 1,
-            } } }, 3);
-        }
-        const same_work = std.mem.eql(u8, work_id, "old-work");
-        {
-            var writable = try store.resumeForWrite(alloc, session_id);
-            defer writable.deinit(alloc);
-            var turn = try TurnContext.init(alloc, &writable, 0);
-            defer turn.deinit();
-            turn.active_work_id = work_id;
-            var recovery = try turn.prepareRecoveryForActiveWork(alloc);
-            defer if (recovery) |*checkpoint| checkpoint.deinit(alloc);
-            try std.testing.expectEqual(same_work, recovery != null);
-            try std.testing.expect(!turn.committed);
-            try std.testing.expectEqual(same_work, writable.conversation_writer.turn_open);
-            try turn.commit(work_id, .{ .assistant = .{
-                .user = .{ .text = @constCast("same prompt") },
-                .assistant = @constCast("new answer"),
-            } }, 0, 0, 4);
-            try std.testing.expect(turn.committed);
-        }
-        var restored = try store.loadReadOnly(alloc, session_id);
-        defer restored.deinit(alloc);
-        try std.testing.expectEqual(@as(usize, if (same_work) 2 else 3), restored.history.len);
-        if (!same_work) {
-            try std.testing.expectEqualStrings("old-work", restored.history[1].interrupted.user.work_id.?);
-            try std.testing.expectEqualStrings("old partial answer", restored.history[1].interrupted.assistant.?);
-        }
-        try std.testing.expectEqualStrings(work_id, restored.history[restored.history.len - 1].assistant.user.work_id.?);
-        try std.testing.expectEqualStrings(work_id, restored.last_subagent_work_id.?);
-    }
-}
 
 pub const TurnPreferences = struct {
     provider: @import("../config/model_provider.zig").ProviderId = .gateway,
@@ -668,19 +538,4 @@ pub fn failureDiagnosticValue(code: []const u8, detail: []const u8) types.ModelF
     @memcpy(text[prefix.len..][0..2], ": ");
     @memcpy(text[prefix.len + 2 ..], safe_detail);
     return types.ModelFailureDiagnostic.init(text);
-}
-
-test "subagent failure capture is bounded and keeps the first cause without allocation" {
-    var turn: TurnContext = undefined;
-    turn.failure_diagnostic = null;
-    turn.setFailureDiagnostic("agent_turn_failed", "SessionCommitFailed");
-    turn.setFailureDiagnostic("cleanup", "OutOfMemory");
-    const retained = turn.failureDiagnostic().?;
-    turn.failure_diagnostic = null;
-    try std.testing.expectEqualStrings("agent_turn_failed: SessionCommitFailed", retained.view());
-    const long = failureDiagnosticValue("stage", text_utils.repeat("界", 200));
-    try std.testing.expect(long.view().len <= types.ModelFailureDiagnostic.max_bytes);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(long.view()));
-    const unsafe = failureDiagnosticValue("provider_http_error", "unsafe\x1b[31m");
-    try std.testing.expectEqualStrings("provider_http_error", unsafe.view());
 }

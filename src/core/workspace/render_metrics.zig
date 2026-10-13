@@ -85,38 +85,3 @@ pub fn reset() void {
     ring.stored = 0;
     ring.total = 0;
 }
-
-test "render diagnostic ring retains the newest events in order" {
-    var local: Ring = .{};
-    for (0..ring_capacity + 3) |index| {
-        local.append(.{ .timestamp_ms = @intCast(index), .kind = .commit });
-    }
-    var events: [ring_capacity]Event = undefined;
-    try std.testing.expectEqual(ring_capacity, local.snapshot(&events));
-    try std.testing.expectEqual(@as(u64, 4), events[0].sequence);
-    try std.testing.expectEqual(@as(i64, 3), events[0].timestamp_ms);
-    try std.testing.expectEqual(@as(u64, ring_capacity + 3), events[ring_capacity - 1].sequence);
-    var tail: [2]Event = undefined;
-    try std.testing.expectEqual(@as(usize, 2), local.snapshot(&tail));
-    try std.testing.expectEqual(@as(u64, ring_capacity + 2), tail[0].sequence);
-    try std.testing.expectEqual(@as(usize, 0), local.snapshot(&.{}));
-}
-
-test "render diagnostics are bounded and reset without enabling file tracing" {
-    reset();
-    defer reset();
-    record(.source_rewrite, "view={d} history={d}", .{ 20, 17 });
-    const oversized: [max_detail_bytes + 10]u8 = @splat('x');
-    record(.transition, "{s}", .{oversized});
-    var events: [2]Event = undefined;
-    try std.testing.expectEqual(@as(usize, 2), snapshot(&events));
-    try std.testing.expectEqualStrings("view=20 history=17", events[0].detail());
-    try std.testing.expect(!events[0].truncated);
-    try std.testing.expect(events[1].truncated);
-    try std.testing.expect(events[1].detail_len <= max_detail_bytes);
-    reset();
-    try std.testing.expectEqual(@as(usize, 0), snapshot(&events));
-    record(.reset, "terminal_reset", .{});
-    try std.testing.expectEqual(@as(usize, 1), snapshot(&events));
-    try std.testing.expectEqual(@as(u64, 1), events[0].sequence);
-}

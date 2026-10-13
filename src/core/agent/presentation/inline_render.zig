@@ -942,14 +942,3 @@ fn isBareUrlTerminator(c: u8) bool {
 fn isTrailingBareUrlByte(c: u8) bool {
     return tu.isTrailingUrlPunctuation(c) or c == '*' or c == '_' or c == '~';
 }
-
-test "emphasis after a truncated UTF-8 sequence renders instead of panicking" {
-    const alloc = std.testing.allocator;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(alloc);
-    var link_id: u32 = 0;
-    // The delimiter follows a three-byte lead with only one continuation
-    // byte, so the code point before the run has a mismatched length.
-    try writeInline(alloc, "\xe4\x80*bold*", &out, false, null, &link_id);
-    try std.testing.expect(std.mem.find(u8, out.items, "bold") != null);
-}

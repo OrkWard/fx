@@ -1,5 +1,4 @@
 const std = @import("std");
-const lifecycle_hooks = @import("../../hooks/hooks.zig");
 const types = @import("../../shared/types.zig");
 const debug_trace = @import("../../shared/debug_trace.zig");
 const execution_memory_helpers = @import("../execution_memory.zig");

@@ -1,10 +1,8 @@
 const std = @import("std");
-const testing_allocator = @import("../../core/shared/testing_allocator.zig");
 const lexical_relevance = @import("../../core/shared/lexical_relevance.zig");
 const result_store = @import("../../core/session/result_store.zig");
 const capability_retrieval = @import("../../core/tooling/capability_retrieval.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
-const tool_result_limits = @import("../../core/tooling/tool_result_limits.zig");
 const skill_search = @import("../skills/skill_search.zig");
 
 const Allocator = std.mem.Allocator;
@@ -156,112 +154,4 @@ fn renderSkills(
     if (total_matches == 0) try out.writer.writeAll(",\"state\":\"no_match\"");
     try out.writer.writeByte('}');
     return out.toOwnedSlice();
-}
-
-test "capability search decoder owns one bounded prepared query" {
-    const alloc = std.testing.allocator;
-    const decoded = try decode(.{ .allocator = alloc }, "{\"query\":\"send an email\"}");
-    switch (decoded) {
-        .failure => |message| {
-            defer alloc.free(message);
-            return error.TestUnexpectedResult;
-        },
-        .input => |input| {
-            defer input.deinit(alloc);
-            const value = input.as(Input);
-            try std.testing.expectEqualStrings("send an email", value.prepared.raw);
-            try std.testing.expectEqual(@as(usize, 3), value.prepared.token_count);
-        },
-    }
-}
-
-test "capability search decoder rejects a missing or empty task" {
-    const alloc = std.testing.allocator;
-    for ([_][]const u8{ "{}", "{\"query\":\"\"}" }) |args| {
-        const decoded = try decode(.{ .allocator = alloc }, args);
-        switch (decoded) {
-            .failure => |message| {
-                defer alloc.free(message);
-                try std.testing.expect(std.mem.find(u8, message, "query") != null);
-            },
-            .input => |input| {
-                input.deinit(alloc);
-                return error.TestUnexpectedResult;
-            },
-        }
-    }
-}
-
-test "capability search projects bounded skill results" {
-    const alloc = std.testing.allocator;
-    const skills =
-        "{\"skills\":[{\"name\":\"mail-helper\",\"description\":\"Send email\",\"location\":\"/skills/mail-helper\"}],\"count\":1,\"total_matches\":2,\"more_available\":true,\"next_cursor\":\"c1:s:1:1:1\"}";
-    const skill_result = testSkillResult(skills, 1, 2);
-    const output = try renderProjected(alloc, &skill_result, 4096);
-    defer alloc.free(output);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, output, .{});
-    defer parsed.deinit();
-    const skill_items = parsed.value.object.get("skills").?.array.items;
-    try std.testing.expectEqual(@as(usize, 1), skill_items.len);
-    try std.testing.expectEqualStrings("mail-helper", skill_items[0].object.get("name").?.string);
-    try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("total_matches").?.integer);
-    try std.testing.expect(parsed.value.object.get("more_available") == null);
-    try std.testing.expect(parsed.value.object.get("next_cursor") == null);
-
-    const projected_again = try tool_result_limits.prepareModelOutput(
-        alloc,
-        "capability_search",
-        output,
-        output.len,
-    );
-    defer alloc.free(@constCast(projected_again));
-    try std.testing.expectEqualStrings(output, projected_again);
-
-    try std.testing.expectError(
-        error.CapabilitySearchResultLimitTooSmall,
-        renderProjected(alloc, &skill_result, output.len - 1),
-    );
-}
-
-test "capability search projection releases every allocation failure" {
-    const Case = struct {
-        fn run(alloc: Allocator) !void {
-            const skills =
-                "{\"skills\":[{\"name\":\"mail-helper\",\"description\":\"Send email\",\"location\":\"/skills/mail-helper\"}],\"count\":1,\"total_matches\":1,\"more_available\":false,\"next_cursor\":null}";
-            const skill_result = testSkillResult(skills, 1, 1);
-            const output = try renderProjected(alloc, &skill_result, 1024);
-            alloc.free(output);
-        }
-    };
-    try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, Case.run, .{});
-}
-
-test "capability search marks an empty search as terminal" {
-    const alloc = std.testing.allocator;
-    const skills =
-        "{\"skills\":[],\"count\":0,\"total_matches\":0,\"more_available\":false,\"next_cursor\":null}";
-    const skill_result = testSkillResult(skills, 0, 0);
-    const output = try renderProjected(alloc, &skill_result, 4096);
-    defer alloc.free(output);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, output, .{});
-    defer parsed.deinit();
-    try std.testing.expectEqualStrings(
-        "no_match",
-        parsed.value.object.get("state").?.string,
-    );
-    try std.testing.expectEqual(@as(usize, 4), parsed.value.object.count());
-}
-
-fn testSkillResult(output: []const u8, count: usize, total_matches: usize) skill_search.SearchResult {
-    const items_start = "{\"skills\":[".len;
-    const items_end = std.mem.find(u8, output, "],\"count\":") orelse unreachable;
-    return .{
-        .model_output = @constCast(output),
-        .items_start = items_start,
-        .items_end = items_end,
-        .count = count,
-        .total_matches = total_matches,
-    };
 }

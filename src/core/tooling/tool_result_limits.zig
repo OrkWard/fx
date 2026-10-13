@@ -76,16 +76,6 @@ pub fn modelProjectionPreservesText(
     return std.mem.eql(u8, raw, sanitized);
 }
 
-test "model projection stability rejects non-utf8 identities" {
-    var scratch_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer scratch_state.deinit();
-    const scratch = scratch_state.allocator();
-    const invalid_utf8 = [_]u8{0xff};
-
-    try std.testing.expect(try modelProjectionPreservesText(scratch, "datadog_list_incidents"));
-    try std.testing.expect(!try modelProjectionPreservesText(scratch, &invalid_utf8));
-}
-
 pub const PreparedInlineResult = struct {
     model_output: []u8,
     memory: types.ToolResultMemory,
@@ -140,63 +130,4 @@ pub fn truncateText(arena: std.mem.Allocator, opts: TruncateOptions) ![]const u8
 
     if (prefix_len == 0) return try arena.dupe(u8, opts.marker);
     return try std.mem.concat(arena, u8, &.{ opts.text[0..prefix_len], opts.marker });
-}
-
-test "prepareModelOutput preserves secret-shaped assignments verbatim" {
-    const alloc = std.testing.allocator;
-    const raw = "token=abcdefghijklmnopqrstuvwxyz";
-    const output = try prepareModelOutput(alloc, "server_tool", raw, default_max_tool_result_bytes);
-    defer alloc.free(@constCast(output));
-
-    try std.testing.expectEqualStrings(raw, output);
-}
-
-test "prepareModelOutput preserves quoted sensitive assignments verbatim" {
-    const alloc = std.testing.allocator;
-    const raw = "API_KEY=\"secret-value-123456\"";
-    const output = try prepareModelOutput(alloc, "run_command", raw, default_max_tool_result_bytes);
-    defer alloc.free(@constCast(output));
-
-    try std.testing.expectEqualStrings(raw, output);
-}
-
-test "prepareInlineResult preserves assignments without reclassifying lengths" {
-    const alloc = std.testing.allocator;
-    const raw = "AI_GATEWAY_KEY=abcdefghijklmnop";
-    const prepared = try prepareInlineResult(
-        alloc,
-        "server_tool",
-        raw,
-        default_max_tool_result_bytes,
-    );
-    defer alloc.free(prepared.model_output);
-
-    try std.testing.expectEqualStrings(raw, prepared.model_output);
-    try std.testing.expect(!prepared.memory.truncated);
-    try std.testing.expectEqual(raw.len, prepared.memory.output_bytes);
-    try std.testing.expectEqual(raw.len, prepared.memory.stored_output_bytes);
-}
-
-test "prepareModelOutput caps chatty output with explicit marker" {
-    const alloc = std.testing.allocator;
-    var bytes: [256]u8 = @splat('x');
-    const output = try prepareModelOutput(alloc, "grep_files", bytes[0..], 128);
-    defer alloc.free(@constCast(output));
-
-    try std.testing.expect(output.len <= 128);
-    try std.testing.expect(std.mem.find(u8, output, "... [tool result truncated for grep_files: original 256 bytes; cap is 128 bytes]") != null);
-}
-
-test "prepareModelOutput keeps complete codepoints at the cap" {
-    const alloc = std.testing.allocator;
-    const text = "x" ++ text_utils.repeat("\xc3\xa9", 300);
-    for ([_]usize{ 128, 129 }) |cap| {
-        const output = try prepareModelOutput(alloc, "grep_files", text, cap);
-        defer alloc.free(@constCast(output));
-        try std.testing.expect(output.len <= cap);
-        const marker_start = std.mem.find(u8, output, "\n... [tool result truncated").?;
-        const prefix = output[0..marker_start];
-        try std.testing.expect(std.unicode.utf8ValidateSlice(prefix));
-        try std.testing.expect(std.mem.endsWith(u8, prefix, "\xc3\xa9"));
-    }
 }

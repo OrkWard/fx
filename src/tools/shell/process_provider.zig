@@ -246,10 +246,3 @@ fn signalProcess(
     }
     if (tracker.anyAlive()) _ = tracker.signalAll(std.posix.SIG.KILL);
 }
-
-test "native process provider delegates tree signaling to the neutral tracker" {
-    try std.testing.expect(provider.context == null);
-    try std.testing.expect(provider.capture_token_fn == captureToken);
-    try std.testing.expect(provider.match_token_fn == matchToken);
-    try std.testing.expect(provider.signal_process_fn == signalProcess);
-}

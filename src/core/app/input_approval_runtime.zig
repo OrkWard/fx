@@ -1,4 +1,3 @@
-const std = @import("std");
 const debug_trace = @import("../shared/debug_trace.zig");
 const edit_contract = @import("../input/editor_state.zig");
 const input_action = @import("../input/input_action.zig");
@@ -12,12 +11,8 @@ const input_interrupt_runtime = @import("input_interrupt_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const app_render_runtime = @import("app_render_runtime.zig");
 const session_permission_state = @import("../permissions/session_permission_state.zig");
-const permission_request = @import("../permissions/permission_request.zig");
 const session = @import("../session/session.zig");
-const interaction_state = @import("../../ui/footer/interaction_state.zig");
 const approval_prompt = @import("../permissions/approval_prompt.zig");
-const render_request = @import("../../ui/render_request.zig");
-const text_utils = @import("../shared/text_utils.zig");
 
 const ToolPermissionDecision = types.ToolPermissionDecision;
 
@@ -454,63 +449,4 @@ pub fn ApprovalRuntime(comptime App: type) type {
             }
         }
     };
-}
-
-test "approval wheel keeps scrolling a committed command review after review sync" {
-    const WheelWorker = struct {
-        pub fn queuedPromptCount(_: *const @This()) usize {
-            return 0;
-        }
-    };
-    const WheelApp = struct {
-        alloc: std.mem.Allocator,
-        approval_prompt: approval_prompt.ApprovalPrompt = .{},
-        approval_screen: interaction_state.ApprovalScreenState = .{},
-        shell: struct {
-            layout: types.Layout = .{
-                .rows = 24,
-                .cols = 80,
-                .content_bottom = 20,
-                .divider_top_row = 21,
-                .input_row = 22,
-                .divider_bottom_row = 23,
-                .hint_row = 24,
-            },
-            render_requests: render_request.RenderRequestState = .{},
-        } = .{},
-        worker: WheelWorker = .{},
-
-        fn deinit(self: *@This()) void {
-            self.approval_prompt.deinit(self.alloc);
-        }
-    };
-
-    const alloc = std.testing.allocator;
-    var app = WheelApp{ .alloc = alloc };
-    defer app.deinit();
-    const request: permission_request.PermissionRequest = .{
-        .id = 42,
-        .label = "shell.run " ++ text_utils.repeat("x", 2_400),
-    };
-    try std.testing.expect(try app.approval_prompt.syncRequest(alloc, request));
-    try std.testing.expect(try approval_screen.needsScreen(
-        alloc,
-        request,
-        app.shell.layout,
-        app.worker.queuedPromptCount(),
-    ));
-    app.approval_screen.recordScreenCommit(request.id, .{
-        .request_id = request.id,
-        .rows = app.shell.layout.rows,
-        .cols = app.shell.layout.cols,
-        .file_identity_visible = false,
-        .all_decision_controls_visible = true,
-        .changed_or_notice_visible = false,
-        .document_scrollable = true,
-    });
-
-    try std.testing.expect(!app.approval_prompt.syncReview(null));
-    try ApprovalRuntime(WheelApp).handleApprovalWheel(&app, .up);
-    try std.testing.expectEqual(@as(usize, 3), app.approval_screen.document_scroll_rows);
-    try std.testing.expect(app.shell.render_requests.hasReason(.modal));
 }

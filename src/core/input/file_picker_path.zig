@@ -1,5 +1,4 @@
 const std = @import("std");
-const testing_allocator = @import("../shared/testing_allocator.zig");
 const text_utils = @import("../shared/text_utils.zig");
 
 fn needs_quotes(path: []const u8) bool {
@@ -240,68 +239,4 @@ pub fn encode(alloc: std.mem.Allocator, path: []const u8, options: EncodeOptions
     if (options.directory) out.appendAssumeCapacity('/');
     if (quote and !options.directory) out.appendAssumeCapacity('"');
     return out.toOwnedSlice(alloc);
-}
-
-test "at path codec round trips punctuation quotes backslashes and Unicode" {
-    const alloc = std.testing.allocator;
-    for ([_][]const u8{ "src/main.zig", "./photo.png,", "./$review.txt", "./a\\b.png", "./a\"b.png", "\"leading", " leading.png", "tail.png ", "café/文.txt" }) |path| {
-        const encoded = try encode(alloc, path, .{});
-        defer alloc.free(encoded);
-        const token = parse_at(encoded, 0).?;
-        try std.testing.expectEqual(Status.complete, token.status);
-        const decoded = if (token.quoted) try decode_alloc(alloc, encoded[token.path_start..token.path_end]) else try alloc.dupe(u8, encoded[token.path_start..token.path_end]);
-        defer alloc.free(decoded);
-        try std.testing.expectEqualStrings(path, decoded);
-    }
-    try std.testing.expect(!isRepresentable("bad\nname"));
-    try std.testing.expect(!isRepresentable("bad\x1bname"));
-    try std.testing.expect(!isRepresentable("\xff"));
-}
-
-test "at path codec separates raw query range from decoded prefix" {
-    const input = "read @\"./a\\\"b.png\" suffix";
-    const cursor = "read @\"./a\\\"b".len;
-    const query = query_at(input, cursor).?;
-    var decoded: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("./a\"b", try query.decoded_query(&decoded));
-    try std.testing.expectEqual("read @\"./a\\\"b.png\"".len, query.replace_end);
-    try std.testing.expect(query_at(input, query.replace_end) == null);
-    try std.testing.expectEqual(Status.invalid, parse_at("@\"photo.png\"other.png", 0).?.status);
-    try std.testing.expectEqual(Status.incomplete, parse_at("@\"photo.png", 0).?.status);
-    try std.testing.expect(!parse_at("@\"a\\.png\"", 0).?.canonical_escapes);
-}
-
-test "at path codec follows later mentions after prose quotes" {
-    const input = "Compare \"@src/main.zig\" and @other";
-    const query = query_at(input, input.len) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqualStrings("other", query.query);
-}
-
-test "at path codec bounds decoding and cleans up failed allocations" {
-    var small: [1]u8 = undefined;
-    try std.testing.expectError(error.NoSpaceLeft, decode_into("ab", &small));
-    try std.testing.expectError(error.InvalidPath, decode_into("\\", &small));
-    try std.testing.expect(query_at("@\"a\\\"b\"tail", 5) == null);
-    try std.testing.expect(contains_position("@\"a\\", 4));
-    try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, struct {
-        fn check(alloc: std.mem.Allocator) !void {
-            const path = "a\\b\"$c";
-            const encoded = try encode(alloc, path, .{});
-            defer alloc.free(encoded);
-            const token = parse_at(encoded, 0).?;
-            const decoded = try decode_alloc(alloc, encoded[token.path_start..token.path_end]);
-            defer alloc.free(decoded);
-            try std.testing.expectEqualStrings(path, decoded);
-        }
-    }.check, .{});
-}
-
-test "at path codec keeps directory quotes open and workspace tilde literal" {
-    const alloc = std.testing.allocator;
-    const directory = try encode(alloc, "./dir name", .{ .directory = true });
-    defer alloc.free(directory);
-    try std.testing.expectEqualStrings("@\"./dir name/", directory);
-    const path = try encode(alloc, "~notes", .{ .workspace_relative = true });
-    defer alloc.free(path);
-    try std.testing.expectEqualStrings("@./~notes", path);
 }

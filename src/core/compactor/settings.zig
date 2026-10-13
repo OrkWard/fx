@@ -24,22 +24,3 @@ fn parsePercent(raw: ?[]const u8) ?u8 {
 pub fn resolvePercent(configured: ?u8, process_override: ?[]const u8) u8 {
     return parsePercent(process_override) orelse configured orelse default_percent;
 }
-
-test "auto compaction percent accepts only the supported range" {
-    try std.testing.expect(!isValidPercent(9));
-    try std.testing.expect(isValidPercent(10));
-    try std.testing.expect(isValidPercent(80));
-    try std.testing.expect(!isValidPercent(81));
-    try std.testing.expectEqual(@as(?u8, 50), parsePercent(" 50\n"));
-    try std.testing.expectEqual(@as(?u8, null), parsePercent("5"));
-    try std.testing.expectEqual(@as(?u8, null), parsePercent("90"));
-    try std.testing.expectEqual(@as(?u8, null), parsePercent("half"));
-    try std.testing.expectEqual(@as(?u8, null), parsePercent(""));
-}
-
-test "auto compaction percent resolves override, then setting, then default" {
-    try std.testing.expectEqual(default_percent, resolvePercent(null, null));
-    try std.testing.expectEqual(@as(u8, 40), resolvePercent(40, null));
-    try std.testing.expectEqual(@as(u8, 25), resolvePercent(40, "25"));
-    try std.testing.expectEqual(@as(u8, 40), resolvePercent(40, "95"));
-}

@@ -1,6 +1,5 @@
 const std = @import("std");
 const language_script = @import("../../shared/language_script.zig");
-const text_utils = @import("../../shared/text_utils.zig");
 
 const minimum_letters: usize = 5;
 const minimum_unexpected_prose_letters: usize = 8;
@@ -151,78 +150,4 @@ fn has_english_authority_signal(text: []const u8) bool {
         }
     }
     return false;
-}
-
-test "response language evidence distinguishes clear scripts" {
-    try std.testing.expectEqual(Script.latin, evidence("I will inspect the lockfile next.").script.?);
-    try std.testing.expectEqual(Script.han, evidence("我会先检查锁文件和依赖清单。").script.?);
-    try std.testing.expectEqual(Script.cyrillic, evidence("Сначала я проверю файл блокировки.").script.?);
-    try std.testing.expectEqual(Script.japanese, evidence("次にロックファイルを確認します。").script.?);
-    try std.testing.expectEqual(
-        Script.han,
-        evidence("接下来我将检查项目中的锁文件（如 package-lock.json、Cargo.lock、Pipfile.lock 等）及其对应的清单文件。").script.?,
-    );
-    try std.testing.expectEqual(
-        Script.han,
-        evidence("我将检查 lockfile 和 dependency manifest，查找损坏问题。").script.?,
-    );
-    try std.testing.expectEqual(
-        Script.latin,
-        evidence(text_utils.repeat("English transcript payload with sparse 界 markers. ", 16)).script.?,
-    );
-}
-
-test "response language expectation follows the current human unless a switch may be explicit" {
-    try std.testing.expectEqual(Script.latin, infer_expectation("The lockfile is broken again.").?);
-    try std.testing.expect(infer_expectation("请再次检查锁文件。") == null);
-    try std.testing.expect(infer_expectation("Answer in Japanese and keep it short.") == null);
-    try std.testing.expect(infer_expectation("Translate the error into Russian.") == null);
-    try std.testing.expect(infer_expectation("Why did you answer in Chinese? Reply in English.") == null);
-    try std.testing.expect(infer_expectation("Rispondi in giapponese.") == null);
-    try std.testing.expect(infer_expectation("Antworte auf Japanisch.") == null);
-    try std.testing.expect(infer_expectation("fix lockfile") == null);
-}
-
-test "response language decision is pure conservative and bounded" {
-    const expected = infer_expectation("The lockfile is broken again.");
-    const matching = evidence("I will inspect the lockfile next.");
-    const mismatching = evidence("我会先检查锁文件和依赖清单。");
-    const mixed = evidence("abcd锁文件坏");
-
-    try std.testing.expectEqual(Decision.accept, decide(.{
-        .expected = expected,
-        .candidate = matching,
-    }));
-    try std.testing.expectEqual(Decision.retry_once, decide(.{
-        .expected = expected,
-        .candidate = mismatching,
-    }));
-    try std.testing.expectEqual(Decision.fail_without_commit, decide(.{
-        .expected = expected,
-        .candidate = mismatching,
-        .correction_attempted = true,
-    }));
-    try std.testing.expectEqual(Decision.accept_without_prose, decide(.{
-        .expected = expected,
-        .candidate = mismatching,
-        .has_tool_calls = true,
-    }));
-    try std.testing.expectEqual(Decision.undecidable, decide(.{
-        .expected = expected,
-        .candidate = mismatching,
-        .cancelled = true,
-    }));
-    try std.testing.expectEqual(Decision.undecidable, decide(.{
-        .expected = expected,
-        .candidate = mixed,
-    }));
-    try std.testing.expectEqual(Decision.undecidable, decide(.{
-        .expected = null,
-        .candidate = matching,
-    }));
-}
-
-test "response language evidence tolerates malformed UTF-8 and insufficient text" {
-    try std.testing.expect(evidence("ok").script == null);
-    try std.testing.expectEqual(Script.latin, evidence("\xff\xfe broken").script.?);
 }

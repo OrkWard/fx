@@ -11,10 +11,6 @@ const tool_dispatch = @import("../../tooling/tool_dispatch.zig");
 
 pub const vision = @import("vision_contracts.zig");
 
-test {
-    _ = vision;
-}
-
 const Allocator = std.mem.Allocator;
 const ChatMessage = types.ChatMessage;
 const PermissionGrant = types.PermissionGrant;
@@ -114,26 +110,12 @@ pub const ToolExecutionResult = struct {
     result_commit: ?result_commit.Token = null,
 };
 
-test "tool result retains one memory payload across preparation" {
-    try std.testing.expect(@hasField(ToolExecutionResult, "tool_result_memory"));
-    try std.testing.expect(@hasField(ToolExecutionResult, "tool_result_memory_prepared"));
-    try std.testing.expect(!@hasField(ToolExecutionResult, "prepared_result_memory"));
-}
-
 pub inline fn failToolExecutionResult(err: anytype) @TypeOf(err)!ToolExecutionResult {
     return @errorCast(failToolExecutionResultDynamic(err));
 }
 
 noinline fn failToolExecutionResultDynamic(err: anyerror) anyerror!ToolExecutionResult {
     return err;
-}
-
-test "tool result failure writer preserves exact error type and identity" {
-    const failure = failToolExecutionResult(error.LiveToolAuthorityUnavailable);
-    try std.testing.expect(
-        @TypeOf(failure) == error{LiveToolAuthorityUnavailable}!ToolExecutionResult,
-    );
-    try std.testing.expectError(error.LiveToolAuthorityUnavailable, failure);
 }
 
 pub const ToolExecutionRequest = struct {

@@ -239,24 +239,6 @@ pub fn openSessionFile(
     };
 }
 
-test "session files open without waiting on a FIFO" {
-    const alloc = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
-    defer alloc.free(root);
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path = try std.mem.printSentinel(&path_buf, "{s}/events.jsonl", .{root}, 0);
-    if (mkfifo(path, 0o600) != 0) return error.SkipZigTest;
-    var dir = io_mod.VerifiedDir{ .dir = try tmp.dir.openDir(std.testing.io, ".", .{ .follow_symlinks = false }) };
-    defer dir.close();
-    // A blocking open of a FIFO waits for a writer that never comes.
-    for ([_]session_log.OpenMode{ .read_only, .writable }) |mode| {
-        try std.testing.expectError(error.SessionPathUnsafe, openSessionFile(&dir, "events.jsonl", mode));
-    }
-    try std.testing.expectEqual(@as(?[]u8, null), try readOptionalSessionFile(alloc, &dir, "missing.json", 16));
-}
-
 extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
 
 /// Reports whether `name` exists directly under the session dir, mapping

@@ -10,7 +10,6 @@ const workspace_access = @import("../../workspace/workspace_access.zig");
 const model_response_recovery = @import("model_response_recovery.zig");
 const provider_set = @import("../../gateway/provider_set.zig");
 const model_tool_schema = @import("../../tooling/model_tool_schema.zig");
-const stream_provider = @import("../stream_provider.zig");
 
 const ReasoningEffort = types.ReasoningEffort;
 

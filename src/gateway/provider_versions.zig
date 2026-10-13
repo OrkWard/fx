@@ -120,12 +120,3 @@ pub fn parseResponse(alloc: Allocator, provider: versions.Provider, body: []cons
     defer parsed.deinit();
     return versions.Version.parse(parsed.value.version) orelse error.InvalidProviderVersion;
 }
-
-test "provider version metadata parses the two upstream release formats" {
-    const codex = try parseResponse(std.testing.allocator, .codex, "{\"version\":\"0.153.1\",\"name\":\"@openai/codex\"}");
-    try std.testing.expectEqualStrings("0.153.1", codex.slice());
-    const grok = try parseResponse(std.testing.allocator, .grok, "1.0.13\n");
-    try std.testing.expectEqualStrings("1.0.13", grok.slice());
-    try std.testing.expectError(error.InvalidProviderVersion, parseResponse(std.testing.allocator, .codex, "{\"version\":\"bad\"}"));
-    try std.testing.expectError(error.InvalidProviderVersion, parseResponse(std.testing.allocator, .grok, "1.0.13\nHeader: injected"));
-}

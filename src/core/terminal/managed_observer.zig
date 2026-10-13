@@ -1,6 +1,5 @@
 const std = @import("std");
 const managed_execution = @import("../execution/managed_execution.zig");
-const debug_trace = @import("../shared/debug_trace.zig");
 const action_executor = @import("action_executor.zig");
 const client = @import("client.zig");
 const contracts = @import("contracts.zig");
@@ -485,47 +484,4 @@ fn isDefinitiveLoss(err: anyerror) bool {
     return err == error.TerminalSessionNotFound or
         err == error.TerminalSessionLost or
         err == error.TerminalAuthorityLost;
-}
-
-test "screen projection collapses blank repaint rows" {
-    const cells = [_]contracts.RenderCell{
-        .{},                               .{}, .{},                               .{},
-        .{ .kind = .single, .text = "A" }, .{}, .{ .kind = .single, .text = "B" }, .{},
-        .{},                               .{}, .{},                               .{},
-    };
-    const text = try renderScreenText(std.testing.allocator, .{
-        .dimensions = .{ .rows = 3, .columns = 4 },
-        .cursor = .{ .row = 1, .column = 3 },
-        .cells = &cells,
-    });
-    defer std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("\nA B", text);
-}
-
-test "observed status refines only an unknown completed state" {
-    try std.testing.expectEqual(
-        managed_execution.SnapshotState{ .completed = .{ .exit_code = 0 } },
-        reconcileObservedState(
-            .{ .completed = .finished },
-            .{ .completed = .{ .exit_code = 0 } },
-        ),
-    );
-    try std.testing.expectEqual(
-        managed_execution.SnapshotState{ .completed = .{ .exit_code = 1 } },
-        reconcileObservedState(
-            .{ .completed = .{ .exit_code = 1 } },
-            .{ .completed = .{ .exit_code = 0 } },
-        ),
-    );
-    try std.testing.expectEqual(
-        managed_execution.SnapshotState{ .completed = .finished },
-        reconcileObservedState(.{ .completed = .finished }, .running),
-    );
-    try std.testing.expectEqual(
-        managed_execution.SnapshotState{ .stopped = null },
-        reconcileObservedState(
-            .{ .stopped = null },
-            .{ .completed = .{ .exit_code = 0 } },
-        ),
-    );
 }

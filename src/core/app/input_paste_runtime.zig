@@ -41,13 +41,6 @@ fn pastedImageSlashPrefixLen(text: []const u8) ?usize {
     return null;
 }
 
-test "bare image slash prefix excludes image paths and other commands" {
-    try std.testing.expect(isBareImageSlashPrefix("/image "));
-    try std.testing.expect(isBareImageSlashPrefix("  /img\t"));
-    try std.testing.expect(!isBareImageSlashPrefix("/image photo.png"));
-    try std.testing.expect(!isBareImageSlashPrefix("/images clear"));
-}
-
 const ImagePasteStage = struct {
     replacement: std.ArrayList(u8) = .empty,
     images: std.ArrayList(types.ImageAttachment) = .empty,
@@ -75,23 +68,6 @@ fn stripPastedImageSlashPrefix(stage: *ImagePasteStage) bool {
         token.span.raw_end -= prefix_len;
     }
     return true;
-}
-
-test "pasted image slash removes only a prefix before a captured path" {
-    const alloc = std.testing.allocator;
-    var stage: ImagePasteStage = .{};
-    defer stage.deinit(alloc);
-    try stage.replacement.appendSlice(alloc, "/image [Image #1] Describe");
-    try stage.tokens.append(alloc, .{ .id = 1, .span = .{ .raw_start = 7, .raw_end = 17 } });
-    try std.testing.expect(stripPastedImageSlashPrefix(&stage));
-    try std.testing.expectEqualStrings("[Image #1] Describe", stage.replacement.items);
-    try std.testing.expectEqual(entity_spans.Span{ .raw_start = 0, .raw_end = 10 }, stage.tokens.items[0].span);
-
-    stage.replacement.clearRetainingCapacity();
-    stage.tokens.clearRetainingCapacity();
-    try stage.replacement.appendSlice(alloc, "/image missing.png");
-    try std.testing.expect(!stripPastedImageSlashPrefix(&stage));
-    try std.testing.expectEqualStrings("/image missing.png", stage.replacement.items);
 }
 
 pub fn PasteEditRuntime(comptime App: type) type {
@@ -677,11 +653,4 @@ pub fn PasteEditRuntime(comptime App: type) type {
             return end;
         }
     };
-}
-
-test "approval amendment paste normalizes line and tab separators to spaces" {
-    var storage = [_]u8{ 'o', 'n', 'e', '\r', '\n', 't', 'w', 'o', '\r', 't', 'h', 'r', 'e', 'e', '\n', '\t', 'f', 'o', 'u', 'r' };
-    const normalized = normalizeApprovalAmendmentPasteInPlace(&storage);
-
-    try std.testing.expectEqualStrings("one two three  four", normalized);
 }

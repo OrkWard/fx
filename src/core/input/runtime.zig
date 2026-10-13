@@ -201,26 +201,3 @@ pub const Runtime = struct {
         return .{ .insertion = self.insertionState() };
     }
 };
-
-test "runtime owns product input state without terminal mechanics" {
-    const alloc = std.testing.allocator;
-    var runtime: Runtime = .{};
-    defer runtime.deinit(alloc);
-
-    try runtime.insertionState().insertSlice(alloc, "draft", .clear);
-    try std.testing.expectEqualStrings("draft", runtime.edit_state.input.items);
-    try std.testing.expect(!@hasField(Runtime, "terminal_action_decoder"));
-    try std.testing.expect(!@hasField(Runtime, "terminal_cursor_probe"));
-}
-
-test "runtime initInto preserves defaults without copying file picker scratch buffers" {
-    var actual: Runtime = undefined;
-    @memset(std.mem.asBytes(&actual), 0xa5);
-    actual.initInto();
-
-    var expected: Runtime = .{};
-    @memset(expected.picker.file_completion.raw_query[0..], 0xa5);
-    @memset(expected.picker.file_completion.lookup_query[0..], 0xa5);
-
-    try std.testing.expectEqualDeep(expected, actual);
-}

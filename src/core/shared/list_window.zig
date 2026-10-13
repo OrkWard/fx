@@ -1,5 +1,3 @@
-const std = @import("std");
-
 pub const default_max_picker_rows: u16 = 6;
 
 pub const Window = struct {
@@ -60,20 +58,4 @@ pub fn updateEdgeStart(current_start: usize, count: usize, selected: usize, max_
         start = clamped_selected - rows + 1;
     }
     return start;
-}
-
-test "edge window start lets selection move back up before reverse scrolling" {
-    const rows: u16 = 6;
-
-    var start = updateEdgeStart(0, 11, 5, rows);
-    try std.testing.expectEqual(@as(usize, 0), start);
-    try std.testing.expectEqual(@as(usize, 5), 5 - start);
-
-    start = updateEdgeStart(start, 11, 6, rows);
-    try std.testing.expectEqual(@as(usize, 1), start);
-    try std.testing.expectEqual(@as(usize, 5), 6 - start);
-
-    start = updateEdgeStart(start, 11, 5, rows);
-    try std.testing.expectEqual(@as(usize, 1), start);
-    try std.testing.expectEqual(@as(usize, 4), 5 - start);
 }

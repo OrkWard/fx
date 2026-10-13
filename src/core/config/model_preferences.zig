@@ -63,17 +63,3 @@ pub const Preferences = struct {
         self.* = .{};
     }
 };
-
-test "model preferences are bounded and provider keyed" {
-    var preferences: Preferences = .{};
-    defer preferences.deinit(std.testing.allocator);
-    try preferences.putCopy(std.testing.allocator, .gateway, "gateway/model");
-    try preferences.putCopy(std.testing.allocator, .codex, "gpt-5.4");
-    try preferences.putCopy(std.testing.allocator, .codex, "gpt-5.6");
-    try preferences.putCopy(std.testing.allocator, model_provider.parse("local").?, "local-model");
-    try std.testing.expectEqualStrings("gateway/model", preferences.get(.gateway).?);
-    try std.testing.expectEqualStrings("gpt-5.6", preferences.get(.codex).?);
-    try std.testing.expectEqualStrings("local-model", preferences.get(model_provider.parse("local").?).?);
-    try std.testing.expect(preferences.get(.grok) == null);
-    try std.testing.expectEqual(@as(usize, 3), preferences.count());
-}

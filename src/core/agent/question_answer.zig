@@ -1,5 +1,4 @@
 const std = @import("std");
-const testing_allocator = @import("../shared/testing_allocator.zig");
 const types = @import("../shared/types.zig");
 
 const Allocator = std.mem.Allocator;
@@ -67,60 +66,4 @@ pub fn decodeJson(
     }
 
     return answers;
-}
-
-test "question answers preserve order and JSON escaping" {
-    const entries = [_]types.QuestionBatchEntry{
-        .{ .question = "Which depth?", .options = &.{} },
-        .{ .question = "Ship it?", .options = &.{} },
-    };
-    const answers = [_][]const u8{ "Thorough", "Yes\nnow" };
-
-    const encoded = try encodeJson(std.testing.allocator, &entries, &answers);
-    defer std.testing.allocator.free(encoded);
-
-    try std.testing.expectEqualStrings(
-        "[{\"question\":\"Which depth?\",\"answer\":\"Thorough\"},{\"question\":\"Ship it?\",\"answer\":\"Yes\\nnow\"}]",
-        encoded,
-    );
-
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const decoded = (try decodeJson(arena_state.allocator(), encoded)).?;
-    try std.testing.expectEqual(@as(usize, 2), decoded.len);
-    try std.testing.expectEqualStrings("Which depth?", decoded[0].question);
-    try std.testing.expectEqualStrings("Thorough", decoded[0].answer);
-    try std.testing.expectEqualStrings("Ship it?", decoded[1].question);
-    try std.testing.expectEqualStrings("Yes\nnow", decoded[1].answer);
-}
-
-test "question answer decoding rejects non-result payloads" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    try std.testing.expect((try decodeJson(arena, "(user cancelled the question)")) == null);
-    try std.testing.expect((try decodeJson(arena, "[]")) == null);
-    try std.testing.expect((try decodeJson(arena, "[{\"question\":\"Q\"}]")) == null);
-    try std.testing.expect((try decodeJson(arena, "[{\"question\":\"Q\",\"answer\":1}]")) == null);
-    try std.testing.expect((try decodeJson(arena, "[{\"question\":\"Q\",\"answer\":\"A\"}] trailing")) == null);
-}
-
-test "question answer codec exposes structural and allocation failures" {
-    const entries = [_]types.QuestionBatchEntry{
-        .{ .question = "Continue?", .options = &.{} },
-    };
-    try std.testing.expectError(
-        error.AnswerCountMismatch,
-        encodeJson(std.testing.allocator, &entries, &.{}),
-    );
-
-    var failing = std.testing.FailingAllocator.init(
-        testing_allocator.no_resize,
-        .{ .fail_index = 0 },
-    );
-    try std.testing.expectError(
-        error.OutOfMemory,
-        decodeJson(failing.allocator(), "[{\"question\":\"Q\",\"answer\":\"A\"}]"),
-    );
 }

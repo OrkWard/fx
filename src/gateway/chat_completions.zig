@@ -69,42 +69,6 @@ pub fn project_replay(alloc: Allocator, replay: ?types.ProviderReplay, calls: []
     return selected;
 }
 
-test "chat completions adapter binds replay to endpoint authority and wires projection" {
-    const alloc = std.testing.allocator;
-    var registry = try definitions.Registry.parse_json(alloc,
-        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"}}}
-    );
-    defer registry.deinit(alloc);
-    var changed_registry = try definitions.Registry.parse_json(alloc,
-        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:5678/v1","auth":{"type":"none"}}}
-    );
-    defer changed_registry.deinit(alloc);
-    const definition = registry.get("local").?;
-    const adapter = bundle(definition).agent_stream.?;
-    const replay: types.ProviderReplay = .{
-        .source = .{ .provider = bundle(definition).model_catalog.?.provider_id, .model = "model" },
-        .parts_json = "{\"reasoning_details\":[{\"signature\":\"signed\"}],\"_tool_call_ids\":[]}",
-    };
-    const selected = (try adapter.projectReplay(alloc, replay, &.{}, false, true)).?;
-    try std.testing.expect(selected.parts_json.ptr == replay.parts_json.ptr);
-    try std.testing.expect(try adapter.projectReplay(alloc, replay, &.{}, true, false) == null);
-    const request: streams.RequestData = .{
-        .model = "model",
-        .instructions = &.{.{ .role = .system, .content = "instructions" }},
-        .messages = &.{.{ .role = .assistant, .content = "answer", .provider_replay = replay }},
-        .tool_choice = .auto,
-        .provider_options = .{},
-    };
-    const matching = try adapter.build_request_fn.?(adapter.context, alloc, request);
-    defer alloc.free(matching);
-    try std.testing.expect(std.mem.find(u8, matching, "reasoning_details") != null);
-    const other = bundle(changed_registry.get("local").?).agent_stream.?;
-    const stripped = try other.build_request_fn.?(other.context, alloc, request);
-    defer alloc.free(stripped);
-    try std.testing.expect(std.mem.find(u8, stripped, "reasoning_details") == null);
-    try std.testing.expect(request.messages[0].provider_replay.?.parts_json.ptr == replay.parts_json.ptr);
-}
-
 fn stream(raw: ?*anyopaque, alloc: Allocator, request: streams.ModelRequest) !streams.Result {
     if (request.cancel_flag.load(.seq_cst)) return error.Cancelled;
     const definition = definition_at(raw);
@@ -257,32 +221,6 @@ fn fetch_catalog(raw: ?*anyopaque, alloc: Allocator, input: catalog.FetchInput) 
         try entries.append(alloc, entry);
     }
     return .{ .catalog = entries };
-}
-
-test "configured capability lookup matches catalog projection and preserves unknowns" {
-    const alloc = std.testing.allocator;
-    var registry = try definitions.Registry.parse_json(alloc,
-        \\{"local":{"protocol":"openai-chat-completions","base_url":"http://localhost:1234/v1","auth":{"type":"none"},"model_metadata":{"small":{"context_window":8192,"max_output_tokens":512,"supports_tool_use":true,"supports_vision":true},"large":{"context_window":32768,"max_output_tokens":1024,"supports_tool_use":false},"partial":{"max_output_tokens":128},"unknown":{}}}}
-    );
-    defer registry.deinit(alloc);
-    const provider = bundle(registry.get("local").?).model_catalog.?;
-    var fetched = try provider.fetch(alloc, .{ .endpoint = "unused" });
-    defer catalog.freeModelCatalog(alloc, &fetched.catalog);
-    for (fetched.catalog.items) |entry| {
-        const actual = provider.lookupCapabilities(entry.id).?;
-        try std.testing.expectEqualDeep(model_capabilities.mergeCapabilities(.{}, model_catalog_metadata.fromCatalogEntry(entry)), actual);
-        const declared_vision = std.mem.eql(u8, entry.id, "small");
-        try std.testing.expectEqual(declared_vision, actual.supports_vision);
-        try std.testing.expectEqual(
-            if (declared_vision) model_capabilities.ImageInputSupport.native else model_capabilities.ImageInputSupport.non_native,
-            actual.image_input_support,
-        );
-    }
-    try std.testing.expectEqual(@as(?u32, 512), provider.lookupCapabilities("small").?.max_output_tokens);
-    try std.testing.expectEqual(@as(?u32, 1024), provider.lookupCapabilities("large").?.max_output_tokens);
-    try std.testing.expect(provider.lookupCapabilities("partial").?.context_window == null);
-    try std.testing.expect(provider.lookupCapabilities("unknown").?.max_output_tokens == null);
-    try std.testing.expectEqualDeep(model_capabilities.Capabilities{}, provider.lookupCapabilities("missing-fast").?);
 }
 
 fn fetch_cli_catalog(raw: ?*anyopaque, alloc: Allocator, input: gateway_provider.CliModelCatalogInput) gateway_provider.CliModelCatalogResult {

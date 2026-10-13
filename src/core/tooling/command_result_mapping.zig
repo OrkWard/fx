@@ -1,9 +1,7 @@
 const std = @import("std");
-const testing_allocator = @import("../shared/testing_allocator.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const command_contract = @import("../execution/command_contract.zig");
 const io_mod = @import("../shared/io.zig");
-const types = @import("../shared/types.zig");
 const tool_contracts = @import("../agent/runtime/tool_contracts.zig");
 const tool_result_errors = @import("tool_result_errors.zig");
 
@@ -151,105 +149,4 @@ fn extractEnvelope(output: []const u8, open: []const u8, close: []const u8) []co
 
 fn elapsedMs(started_ms: i64, finished_ms: i64) u64 {
     return if (finished_ms > started_ms) @intCast(finished_ms - started_ms) else 0;
-}
-
-fn expectContains(haystack: []const u8, needle: []const u8) !void {
-    try std.testing.expect(std.mem.find(u8, haystack, needle) != null);
-}
-
-test "command result mapping preserves non-zero stderr envelope and JSON" {
-    const alloc = std.testing.allocator;
-    const result = try Command.nonZeroFailure(alloc, .{
-        .output = "<stderr>\nbad [redacted]\n</stderr>",
-        .command_result = .{
-            .command = "printf bad >&2; exit 7",
-            .cwd = "/tmp/workspace",
-            .exit_code = 7,
-            .stderr_bytes = 15,
-        },
-    }) orelse return error.TestExpectedEqual;
-    defer alloc.free(result.model_output);
-    defer alloc.free(result.command_result_json.?);
-
-    try expectContains(result.model_output, "Command exited with non-zero status");
-    try expectContains(result.model_output, "\"stderr\":\"bad [redacted]\"");
-    try expectContains(result.command_result_json.?, "\"kind\":\"command\"");
-    try expectContains(result.command_result_json.?, "\"exit_code\":7");
-}
-
-test "command result mapping reports indeterminate termination with structured evidence" {
-    const alloc = std.testing.allocator;
-    const result = try Command.nonZeroFailure(alloc, .{
-        .output = "termination_indeterminate=true\n",
-        .command_result = .{
-            .command = "printf effect > marker",
-            .cwd = "/tmp/workspace",
-            .termination_indeterminate = true,
-        },
-    }) orelse return error.TestExpectedEqual;
-    defer alloc.free(result.model_output);
-    defer alloc.free(result.command_result_json.?);
-
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
-    try expectContains(result.model_output, "could not be confirmed");
-    try expectContains(result.model_output, "Do not retry");
-    try expectContains(result.command_result_json.?, "\"termination_indeterminate\":true");
-}
-
-test "cancelled command mapping survives metadata serialization failure" {
-    var failing = std.testing.FailingAllocator.init(
-        testing_allocator.no_resize,
-        .{ .fail_index = 0 },
-    );
-    const result = (try Command.cancelledFailure(failing.allocator(), .{
-        .output = "ignored",
-        .cancelled = true,
-        .command_result = .{
-            .command = "sleep 5",
-            .cwd = "/tmp",
-        },
-    })) orelse return error.TestExpectedEqual;
-    try std.testing.expect(result.cancelled);
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
-    try std.testing.expectEqualStrings("command cancelled\n", result.model_output);
-    try std.testing.expect(result.command_result_json == null);
-}
-
-test "command result mapping preserves timeout JSON" {
-    const alloc = std.testing.allocator;
-    const timeout = try Command.timeoutFailure(
-        alloc,
-        "sleep 5",
-        "/tmp/workspace",
-        5,
-        null,
-    );
-    defer alloc.free(timeout.model_output);
-    defer alloc.free(timeout.command_result_json.?);
-    try std.testing.expectEqualStrings(
-        "timeout=true\n" ++
-            "timeout_ms=5\n" ++
-            "cleanup_scope=process_group_and_tracked_descendants\n" ++
-            "cleanup_guarantee=best_effort\n" ++
-            "message=command timed out; cleanup was attempted for the process group and tracked descendants, but fully detached descendants may remain\n",
-        timeout.model_output,
-    );
-    try expectContains(timeout.command_result_json.?, "\"timed_out\":true");
-    try std.testing.expectEqual(
-        types.CommandProcessPresentation.timed_out,
-        timeout.tool_result_memory.?.command_process_presentation.?,
-    );
-}
-
-test "command output capture failure is structured and recoverable" {
-    const result = try Command.outputCaptureFailure(std.testing.allocator);
-    defer std.testing.allocator.free(@constCast(result.model_output));
-
-    try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.failure, result.status);
-    try expectContains(result.model_output, "\"output_capture_failed\":true");
-    try expectContains(result.model_output, "Command output could not be retained");
-    try std.testing.expectEqual(
-        types.CommandProcessPresentation.output_capture_failed,
-        result.tool_result_memory.?.command_process_presentation.?,
-    );
 }

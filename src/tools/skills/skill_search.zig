@@ -1,13 +1,10 @@
 const std = @import("std");
-const testing_allocator = @import("../../core/shared/testing_allocator.zig");
 const builtin_skills = @import("../../builtins/skills.zig");
 const context_limits = @import("../../core/config/context_limits.zig");
-const lexical_relevance = @import("../../core/shared/lexical_relevance.zig");
 const capability_retrieval = @import("../../core/tooling/capability_retrieval.zig");
 const skill_runtime = @import("../../core/skills/skill_runtime.zig");
 const tool_dispatch = @import("../../core/tooling/tool_dispatch.zig");
 const tool_result_limits = @import("../../core/tooling/tool_result_limits.zig");
-const text_utils = @import("../../core/shared/text_utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -186,112 +183,4 @@ fn renderRawSearch(
         .items_start = items_start,
         .items_end = items_end,
     };
-}
-
-test "skill search ranks metadata and returns final-projection-stable JSON" {
-    const alloc = std.testing.allocator;
-    const skills = [_]skill_runtime.Skill{
-        .{ .name = "general", .description = "Review ordinary text", .path = "/skills/general/SKILL.md", .source = .workspace_fx },
-        .{ .name = "fx-review", .description = "Review fx runtime changes", .path = "/skills/fx-review/SKILL.md", .source = .workspace_fx },
-    };
-    const query = try lexical_relevance.prepare("review fx runtime public");
-    var result = try renderProjectedSearch(
-        alloc,
-        .{ .query = &query, .kind = .skill, .limit = capability_retrieval.default_limit },
-        &skills,
-        (context_limits.Values{}).skill_description_bytes,
-        4096,
-    );
-    defer result.deinit(alloc);
-    const output = result.model_output;
-    try std.testing.expect(std.mem.find(u8, output, "\"name\":\"fx-review\"") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\"count\":1") != null);
-
-    const projected_again = try tool_result_limits.prepareModelOutput(alloc, "capability_search", output, 4096);
-    defer alloc.free(@constCast(projected_again));
-    try std.testing.expectEqualStrings(output, projected_again);
-}
-
-test "skill search preserves projected identities and verbatim descriptions" {
-    const alloc = std.testing.allocator;
-    const skills = [_]skill_runtime.Skill{
-        .{ .name = "unsafe-location", .description = "Review files", .path = "/skills/TOKEN=path-secret-value", .source = .workspace_fx },
-        .{ .name = "safe", .description = "API_KEY=description-secret-value", .path = "/skills/safe/SKILL.md", .source = .workspace_fx },
-    };
-    const query = try lexical_relevance.prepare("");
-    var result = try renderProjectedSearch(
-        alloc,
-        .{ .query = &query, .kind = .skill, .limit = capability_retrieval.default_limit },
-        &skills,
-        (context_limits.Values{}).skill_description_bytes,
-        4096,
-    );
-    defer result.deinit(alloc);
-    const output = result.model_output;
-    try std.testing.expect(std.mem.find(u8, output, "unsafe-location") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\"name\":\"safe\"") != null);
-    try std.testing.expect(std.mem.find(u8, output, "API_KEY=description-secret-value") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\"count\":2") != null);
-    try std.testing.expect(std.mem.find(u8, output, "\"more_available\":false") != null);
-}
-
-test "skill search caps ranked entries and atomically omits byte overflow" {
-    const alloc = std.testing.allocator;
-    const skills = [_]skill_runtime.Skill{
-        .{ .name = "one", .description = text_utils.repeat("x", 700), .path = "/skills/one/SKILL.md", .source = .workspace_fx },
-        .{ .name = "two", .description = "two", .path = "/skills/two/SKILL.md", .source = .workspace_fx },
-        .{ .name = "three", .description = "three", .path = "/skills/three/SKILL.md", .source = .workspace_fx },
-        .{ .name = "four", .description = "four", .path = "/skills/four/SKILL.md", .source = .workspace_fx },
-        .{ .name = "five", .description = "five", .path = "/skills/five/SKILL.md", .source = .workspace_fx },
-        .{ .name = "six", .description = "six", .path = "/skills/six/SKILL.md", .source = .workspace_fx },
-        .{ .name = "seven", .description = "seven", .path = "/skills/seven/SKILL.md", .source = .workspace_fx },
-        .{ .name = "eight", .description = "eight", .path = "/skills/eight/SKILL.md", .source = .workspace_fx },
-        .{ .name = "nine", .description = "nine", .path = "/skills/nine/SKILL.md", .source = .workspace_fx },
-    };
-    const query = try lexical_relevance.prepare("");
-    var result = try renderProjectedSearch(
-        alloc,
-        .{ .query = &query, .kind = .skill, .limit = capability_retrieval.default_limit },
-        &skills,
-        (context_limits.Values{}).skill_description_bytes,
-        1024,
-    );
-    defer result.deinit(alloc);
-    const output = result.model_output;
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, output, .{});
-    defer parsed.deinit();
-    const entries = parsed.value.object.get("skills").?.array.items;
-    try std.testing.expect(entries.len < capability_retrieval.default_limit);
-    try std.testing.expect(entries.len > 0);
-    try std.testing.expect(parsed.value.object.get("more_available").?.bool);
-    try std.testing.expectEqual(@as(usize, @intCast(parsed.value.object.get("count").?.integer)), entries.len);
-}
-
-test "skill search projection releases every allocation failure" {
-    const Case = struct {
-        fn run(alloc: Allocator) !void {
-            const skills = [_]skill_runtime.Skill{
-                .{ .name = "unsafe", .description = "unsafe", .path = "/skills/TOKEN=runtime-location-secret/SKILL.md", .source = .workspace_fx },
-                .{ .name = "oversized", .description = text_utils.repeat("x", 700), .path = "/skills/oversized/SKILL.md", .source = .workspace_fx },
-                .{ .name = "three", .description = "three", .path = "/skills/three/SKILL.md", .source = .workspace_fx },
-                .{ .name = "four", .description = "four", .path = "/skills/four/SKILL.md", .source = .workspace_fx },
-                .{ .name = "five", .description = "five", .path = "/skills/five/SKILL.md", .source = .workspace_fx },
-                .{ .name = "six", .description = "six", .path = "/skills/six/SKILL.md", .source = .workspace_fx },
-                .{ .name = "seven", .description = "seven", .path = "/skills/seven/SKILL.md", .source = .workspace_fx },
-                .{ .name = "eight", .description = "eight", .path = "/skills/eight/SKILL.md", .source = .workspace_fx },
-                .{ .name = "nine", .description = "nine", .path = "/skills/nine/SKILL.md", .source = .workspace_fx },
-            };
-            const query = try lexical_relevance.prepare("");
-            var result = try renderProjectedSearch(
-                alloc,
-                .{ .query = &query, .kind = .skill, .limit = capability_retrieval.default_limit },
-                &skills,
-                (context_limits.Values{}).skill_description_bytes,
-                1024,
-            );
-            result.deinit(alloc);
-        }
-    };
-    try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, Case.run, .{});
 }

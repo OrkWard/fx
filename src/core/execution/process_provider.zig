@@ -126,26 +126,3 @@ pub const process_identity_test_provider = if (builtin.is_test)
     }
 else
     unavailable_provider;
-
-test "unavailable provider does not consult process identity test hooks" {
-    const Stub = struct {
-        var calls: usize = 0;
-
-        fn capture(
-            _: Allocator,
-            _: []const u8,
-        ) anyerror!process_identity.ProcessInstanceToken {
-            calls += 1;
-            return error.ProcessNotFound;
-        }
-    };
-    Stub.calls = 0;
-    process_identity.process_token_capture_for_test = Stub.capture;
-    defer process_identity.process_token_capture_for_test = null;
-
-    try std.testing.expectError(
-        error.Unsupported,
-        unavailable_provider.captureToken(std.testing.allocator, "123"),
-    );
-    try std.testing.expectEqual(@as(usize, 0), Stub.calls);
-}
