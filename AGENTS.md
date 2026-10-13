@@ -303,11 +303,9 @@ After the focused checks pass, create a clean checkpoint commit, push the non-`m
 * `.github/workflows/binary-size.yml` builds each release target on its native runner, reports the size change, and smoke-tests every target's binary. See **Binary Size Observability**.
 * `.github/workflows/bench.yml` enforces the startup latency budget. See **Benchmarks**.
 
-Linux jobs install Zig through `.github/actions/setup-zig`, which restores the Zig cache that runs on `main` save with `.github/actions/save-zig-cache`. Pull requests never save a Zig cache through these actions, so they cannot push `main`'s entries out of the repository's cache quota. The PGSO workflow keeps its own cache through `.github/actions/setup-pgso`.
+Linux jobs install Zig through `.github/actions/setup-zig`, which restores the Zig cache that runs on `main` save with `.github/actions/save-zig-cache`. Pull requests never save a Zig cache through these actions, so they cannot push `main`'s entries out of the repository's cache quota.
 
 macOS runs only when a change can behave differently there. `.github/workflows/macos.yml` uses `scripts/detect-macos-need.sh` to check the diff. The macOS arm64 unit tests and the E2E files in `tests/e2e/macos-platform-tests.json` run when the change touches a Zig file with a macOS, BSD, or Linux code path, `build.zig`, the macOS signing script, a listed E2E file, a shared E2E helper that reads the platform, or the macOS checks themselves. A Linux-only branch counts because macOS takes its other path; a Windows-only branch does not. The listed E2E files run in two weighted shards that share one macOS build. If the detector cannot read the change, the `macOS arm64` check fails instead of passing. To request macOS for any other change, add the `ci:macos` label or run `gh workflow run macos.yml --ref <branch>`. The label needs triage access and the dispatch needs write access, so an outside contributor asks in the PR and a maintainer starts the run. When the change does not need macOS, the `macOS arm64` check passes without starting a macOS runner. Every E2E file that branches on `process.platform` or `platform()` being `darwin` or `linux` must appear in `tests/e2e/macos-platform-tests.json`, and `tests/e2e/ci-shards.test.ts` enforces that.
-
-The macOS arm64 PGSO workflow runs on a pull request only when the PGSO pipeline changes: `scripts/pgso/` other than `corpus.json`, the `setup-pgso` action, or `.github/workflows/pgso-macos-arm64.yml`. To qualify any other change, run `gh workflow run pgso-macos-arm64.yml --ref <branch>`. The stable release always runs it.
 
 Live model evals need credentials and are not deterministic, so they run only on request.
 
@@ -430,7 +428,7 @@ To prepare a release:
 3. Write the changelog entry in `CHANGELOG.md` at the top, under a new `## <version>` heading, wrapped in `<!-- release:start -->` and `<!-- release:end -->` markers. Remove the markers from the previous release entry so only the new release has them.
 4. Open a PR and merge to `main`
 
-When the PR merges, CI compares the version tag to what exists in git. If the tag is missing, it cross-compiles all platform binaries, creates the git tag, and publishes a GitHub Release with the binaries attached. The release body is extracted from the content between the `<!-- release:start -->` and `<!-- release:end -->` markers in `CHANGELOG.md`.
+This fork has no release workflow. Tag and build release binaries by hand with `zig build -Doptimize=ReleaseSafe`.
 
 ### Writing the changelog
 

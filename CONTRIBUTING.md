@@ -45,7 +45,7 @@ macOS checks run only when a change can behave differently on macOS: a Zig file 
 
 Do not mark the draft PR ready until `Build & Test`, `E2E (deterministic)`, `Shellcheck`, `Startup Latency`, `macOS arm64`, and the final ship gate have succeeded for the exact current commit. A result from an older commit does not count. Live model evals are separate from this gate because they require credentials and are not deterministic.
 
-Changes to the PGSO pipeline also run the native macOS arm64 PGSO candidate workflow: `scripts/pgso/` other than `corpus.json`, the `setup-pgso` action, or the PGSO workflow. Run it on any other branch with `gh workflow run pgso-macos-arm64.yml --ref <branch>`. That lane produces retained size, behavior, and performance evidence but does not alter any release artifact or update channel. Its pinned toolchain, local reproduction command, corpus exclusions, and failure rules are documented in [`scripts/pgso/README.md`](scripts/pgso/README.md).
+The PGSO pipeline runs locally; its pinned toolchain, local reproduction command, corpus exclusions, and failure rules are documented in [`scripts/pgso/README.md`](scripts/pgso/README.md).
 
 Every pull request also receives informational ReleaseSafe binary-size
 comparisons for Linux x86_64, Linux arm64, macOS x86_64, and macOS arm64. Each
@@ -288,40 +288,7 @@ Check in the golden file and wire a regression test that re-runs `fx replay` in 
 
 ## Releases
 
-Releases are triggered automatically when the version in `src/main.zig` changes on `main`:
-
-1. Edit `pub const version = "X.Y.Z";` in `src/main.zig`
-2. Merge to `main`
-3. The release workflow checks if `vX.Y.Z` tag exists; if not, it builds four platform binaries, creates the git tag, and publishes a GitHub Release with the binaries attached
-
-The install script and `fx upgrade` fetch binaries from `releases.fx.sh`, backed by the public Vercel Blob CDN. No authentication or external CLI tools are required. The release workflow also publishes binaries to the CDN and updates `latest.txt` automatically.
-
-After CI passes for a push to `main`, the dev release workflow publishes commit-addressed binaries and then updates `dev.json`. Dogfooders opt in with `fx upgrade --channel dev`; the choice is stored in their user settings and applies to manual upgrades, automatic upgrades, and the `ctrl+g` handoff. `fx upgrade --channel stable` returns to tagged releases. Dev publishing does not create tags or GitHub Releases.
-
-Release notes are public product copy. Describe user-visible behavior, always spell the product `fx`, and omit contributor attribution, tracker references, repository or website work, delivery infrastructure, CI and test details, branch history, and implementation-only refactors. Use commits and pull requests as research evidence only. Changelog formatting and release-marker rules live in `AGENTS.md`.
-
-Do not create tags manually. The workflow owns tag creation.
-
-### Validate release artifacts without publishing
-
-Run **Actions > Release** on `main` with `validate_only` enabled. This builds
-all four release targets, runs macOS arm64 PGSO qualification, and uses the
-existing `apple-signing` approval to notarize both macOS targets. It does not
-create a tag, publish a GitHub Release, upload to the CDN, or change a channel.
-
-The arm64 validation retains both 4 KiB and 16 KiB signature variants of the
-same PGSO payload for comparison. Intel retains 4 KiB signatures. Download the
-workflow artifacts for matched signed-binary performance checks; notarization
-and smoke checks alone do not establish performance equivalence. Normal release
-runs keep the existing signing default.
-
-To compare the retained signatures on an isolated runner, run **Actions >
-Benchmarks** with `signed_run` set to the successful main validation run ID.
-This mode downloads already-notarized binaries and does not access Apple
-credentials. It records two alternating startup cohorts, an identical-control
-status calibration, and a separate native image-flow memory screen. Review the
-retained measurements before changing release signing defaults; successful
-measurement is not performance approval.
+This fork has no release workflow. Build release binaries locally with `zig build -Doptimize=ReleaseSafe`.
 
 ## Benchmarks
 

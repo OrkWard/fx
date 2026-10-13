@@ -156,33 +156,7 @@ Generated binaries, bitcode, objects, profiles, caches, measurements, and logs a
 
 The driver also streams operational progress to the invoking terminal or GitHub Actions log. Every stage announces its start and terminal status with elapsed time, every child command announces its start and terminal status, and child stdout and stderr remain visible while the process runs. A silent child emits a heartbeat every 30 seconds. JSON evidence normally retains at most the last 1,048,576 characters from each output stream per command. The candidate symbol census permits 8,388,608 characters and rejects truncated output. Records include total character counts and truncation status; no environment variables are printed.
 
-To compare a qualified PR merge with its exact main parent, or a qualified
-manual branch head with its exact main ancestor, dispatch the
-**Benchmarks** workflow on the comparison branch with `pgso_control_artifact`
-and `pgso_candidate_artifact` set to the two qualified aggregate artifact IDs.
-The main control may come from the dedicated PGSO workflow or the Release
-workflow that invokes it. Release runs keep their aggregate evidence for 90
-days, so the last release can serve as the control. Both artifacts must have completed qualification.
-The candidate must come from the dedicated PGSO workflow. For source-only PRs,
-run that workflow manually on the PR branch. Its manifest source must match the
-run head, and GitHub's immutable SHA comparison must prove that exact control
-is both the base and merge base, with no behind commits and a complete nonempty
-ahead commit list ending at the candidate. Missing or truncated ancestry is
-rejected. The manual candidate branch cannot be `main`.
-Leave `signed_run` empty. The native macOS arm64 job downloads those immutable
-artifacts without rebuilding them, checks their run/source relationships and
-binary hashes, then measures normal and recovered no-history requests. It runs
-identical-control calibration before paired memory and latency comparisons,
-rejects uncalibrated or resolved-regression results, and retains raw evidence.
-These checks supplement the production PGSO gate; they do not replace it or
-prove performance for every workload. Legacy aggregate names are accepted only
-from a first-attempt run; attempt-qualified names must match the run attempt.
-
 Corpus scenarios inherit only a small operating-system environment allowlist. Credentials, live-test flags, tracing settings, and repository dotenv files are excluded unless a value is explicitly declared in the versioned corpus. The runner temporarily installs the assigned artifact at `zig-out/bin/fx` for E2E compatibility, then restores the prior file (or prior absence) after success, failure, timeout, or cancellation.
 
-The native workflow uploads bounded phase evidence rather than caches or
-intermediate compiler objects. Pull requests and manual runs have read-only
-repository permissions and do not change release, dev-channel, CDN, tag, or
-GitHub Release state. The stable release workflow may call the same gate with
-release packaging enabled; only the candidate copied by the successful final
-aggregate is packaged as `fx-macos-aarch64.tar.gz`.
+The pipeline keeps bounded phase evidence rather than caches or intermediate
+compiler objects.
