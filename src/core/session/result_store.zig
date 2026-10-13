@@ -1675,40 +1675,6 @@ test "managed result handles authenticate stored content" {
     ));
 }
 
-test "stored tool image source refs round trip without reading the host source" {
-    const alloc = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDirPath(io_mod.getIo(), "images");
-    const path = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "images");
-    defer alloc.free(path);
-    var capability = try session_child_store.SessionChildCapability.initLegacyRoute(alloc, path, .tool_results, .writable);
-    defer capability.deinit();
-    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP0cAAAAASUVORK5CYII=";
-    const originals = [_]types.ToolImage{
-        .{ .data = @constCast(png), .mime_type = @constCast("image/png"), .source_ref = @constCast("host:original") },
-        .{ .data = @constCast(""), .mime_type = @constCast("image/jpeg"), .source_ref = @constCast("/unavailable/host/source") },
-    };
-    const handle = try storeToolImages(alloc, &capability, "recover", "host_image", &originals);
-    defer alloc.free(handle);
-    const loaded = try loadToolImages(alloc, &capability, handle);
-    defer types.freeToolImages(alloc, loaded);
-    try std.testing.expectEqual(@as(usize, 2), loaded.len);
-    try std.testing.expectEqualStrings(png, loaded[0].data);
-    try std.testing.expectEqualStrings("host:original", loaded[0].source_ref.?);
-    try std.testing.expectEqualStrings("", loaded[1].data);
-    try std.testing.expectEqualStrings("/unavailable/host/source", loaded[1].source_ref.?);
-    try std.testing.expectError(error.InvalidSourceRef, storeToolImages(alloc, &capability, "bad", "host_image", &.{.{
-        .data = @constCast(""),
-        .mime_type = @constCast("image/png"),
-        .source_ref = @constCast("bad\nref"),
-    }}));
-    try std.testing.expectError(error.InvalidImage, storeToolImages(alloc, &capability, "empty", "host_image", &.{.{
-        .data = @constCast(""),
-        .mime_type = @constCast("image/png"),
-    }}));
-}
-
 test "stored tool images round trip and reject changed artifacts" {
     const alloc = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

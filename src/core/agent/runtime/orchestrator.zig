@@ -10850,7 +10850,6 @@ fn processQueuedPromptLoop(
                     .tool_failure => break :fresh false,
                     // A host tool reuses a reserved mutation name; it has no
                     // builtin mutation targets to keep fresh.
-                    .not_file_mutation => break :fresh false,
                     .prepared => |prepared| {
                         prepared_file_mutation = prepared;
                         break :fresh preparedFileMutationTargetMatches(

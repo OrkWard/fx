@@ -1206,7 +1206,6 @@ test "preserved external file denial stops equivalent retry before effects or di
         },
     )) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer first.deinit(arena);
@@ -1223,7 +1222,6 @@ test "preserved external file denial stops equivalent retry before effects or di
         },
     )) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer retry.deinit(arena);
@@ -1240,7 +1238,6 @@ test "preserved external file denial stops equivalent retry before effects or di
         },
     )) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer changed.deinit(arena);

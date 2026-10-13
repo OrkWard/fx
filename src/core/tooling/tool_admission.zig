@@ -303,19 +303,11 @@ fn hashIdentityField(value: []const u8) types.ContentHash {
 pub const FileMutationPreparation = union(enum) {
     prepared: PreparedFileMutationCall,
     tool_failure: []const u8,
-    /// The name matches the file-mutation contract but the registered tool is
-    /// a host-supplied executor (e.g. an embedder's own `write_file`), so the
-    /// builtin mutation contract does not apply and the caller must fall back
-    /// to ordinary dispatch.
-    not_file_mutation,
 };
 
 const FileMutationDecodeResult = union(enum) {
     input: file_mutation_contract.FileMutationInput,
     failure: []const u8,
-    /// Registered, but executed by the host rather than the builtin file
-    /// mutation implementation.
-    not_file_mutation,
 };
 
 var file_mutation_decode_count: usize = 0;
@@ -385,7 +377,6 @@ pub fn prepareFileMutationCall(
         call,
     )) {
         .failure => |reason| return .{ .tool_failure = reason },
-        .not_file_mutation => return .not_file_mutation,
         .input => |value| value,
     };
     var input_owned = true;
@@ -586,7 +577,6 @@ pub fn preflightFileMutation(
         .tool_failure => |reason| return .{ .tool_failure = reason },
         // The preflight contract only exists for the builtin file mutations;
         // a host tool that reused the name cannot be preflighted through it.
-        .not_file_mutation => return .{ .tool_failure = "file mutation preflight is unavailable for host tools" },
         .prepared => |value| value,
     };
     defer prepared.deinit(arena);
@@ -2234,7 +2224,6 @@ pub fn preparePermissionStateAction(
         .prepared => |prepared| prepared,
         // A host tool that reuses a reserved name never reaches this site
         // through the file-mutation contract; treat it as unpreparable.
-        .not_file_mutation => return error.PermissionStatePreparationFailed,
         .tool_failure => return error.PermissionStatePreparationFailed,
     };
     defer prepared_call.deinit(arena);
@@ -3035,7 +3024,6 @@ test "prepared file mutation admission decodes and resolves exactly once without
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer prepared.deinit(arena);
@@ -3101,7 +3089,6 @@ test "external file action identity is canonical across call IDs and distinguish
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer first.deinit(arena);
@@ -3114,7 +3101,6 @@ test "external file action identity is canonical across call IDs and distinguish
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer equivalent.deinit(arena);
@@ -3127,7 +3113,6 @@ test "external file action identity is canonical across call IDs and distinguish
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer changed.deinit(arena);
@@ -3174,7 +3159,6 @@ test "prepared file mutation rejects a changed call without decoding or resolvin
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer prepared.deinit(arena);
@@ -3240,7 +3224,6 @@ test "file mutation preparation returns semantic failures before permission eval
     });
     const reason = switch (missing_edit) {
         .tool_failure => |value| value,
-        .not_file_mutation => return error.TestExpectedToolFailure,
         .prepared => return error.TestExpectedToolFailure,
     };
     try std.testing.expectEqualStrings(
@@ -3261,7 +3244,6 @@ fn checkFileMutationPreparationAllocationFailures(alloc: Allocator, workspace: [
         .workspace_root = workspace,
     })) {
         .tool_failure => return error.TestExpectedPreparedFileMutation,
-        .not_file_mutation => return error.TestExpectedPreparedFileMutation,
         .prepared => |value| value,
     };
     defer prepared.deinit(alloc);
@@ -3450,7 +3432,6 @@ test "file mutation kind comes from the registered executor kind, not the tool n
             file_mutation_contract.Kind.edit,
             std.meta.activeTag(input),
         ),
-        .not_file_mutation => return error.TestExpectedDecodedInput,
         .failure => return error.TestExpectedDecodedInput,
     }
 }
@@ -3474,7 +3455,6 @@ test "file mutation decode accepts a registered tool under any name" {
             file_mutation_contract.Kind.write,
             std.meta.activeTag(input),
         ),
-        .not_file_mutation => return error.TestExpectedDecodedInput,
         .failure => return error.TestExpectedDecodedInput,
     }
 }
@@ -3492,7 +3472,6 @@ test "file mutation decode rejects a registered tool that is not a mutation" {
     });
     const reason = switch (decoded) {
         .failure => |value| value,
-        .not_file_mutation => return error.TestExpectedToolFailure,
         .input => return error.TestExpectedToolFailure,
     };
     try std.testing.expectEqualStrings("unsupported file mutation tool", reason);

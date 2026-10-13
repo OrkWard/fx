@@ -700,7 +700,6 @@ test "history snapshot codec round trips every event kind" {
                 .media_type = @constCast("image/png"),
                 .snapshot_path = @constCast("/tmp/s.png"),
                 .snapshot_sha256 = @constCast("abc123"),
-                .source_ref = @constCast("host:original"),
             }},
             .work_id = null,
         } },
@@ -917,7 +916,7 @@ test "history snapshot rejects version two image caches before decoding" {
     defer payload.deinit(alloc);
     try encodeFramePayload(&payload, alloc, envelope, 0, line.len, std.hash.Crc32.hash(line));
     payload.items.len = envelope_seq_offset + 8 + 8 + 1;
-    // Frozen version-2 user payload: the image has no source_ref tag.
+    // Frozen version-2 user payload.
     const legacy_user = "\x0a\x00\x00\x00\x00\x00\x00\x00" ++ "with image" ++
         "\x01\x00\x00\x00\x00\x00\x00\x00" ++ "\x03\x00\x00\x00\x00\x00\x00\x00" ++
         "\x0a\x00\x00\x00\x00\x00\x00\x00" ++ "/tmp/a.png" ++

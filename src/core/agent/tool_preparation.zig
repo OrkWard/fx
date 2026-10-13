@@ -200,15 +200,6 @@ pub fn prepareReadyCall(alloc: Allocator, call: ToolCall, config: Config) !Resul
                     .model_output = @constCast(reason),
                 } };
             },
-            .not_file_mutation => {
-                // A host tool reuses a reserved file-mutation name; it belongs
-                // to ordinary registered-tool dispatch, not the builtin
-                // mutation contract.
-                break :blk switch (try prepareRegisteredApplicableTargets(alloc, config.workspace_root, config.access_scope, call, tool.*)) {
-                    .prepared => |prepared| prepared,
-                    .legacy_candidate => return .{ .candidate = .{ .kind = .legacy_target_resolution } },
-                };
-            },
             .prepared => |*prepared| {
                 defer prepared.deinit(alloc);
                 break :blk try dupeSingleApplicableTarget(alloc, prepared.targetPath(), .file);

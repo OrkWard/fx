@@ -745,16 +745,10 @@ pub fn withholdRequestToolImages(arena: Allocator, messages: []const ChatMessage
             const dimensions = image_data.encodedImageDimensions(image.data);
             if (dimensions) |size| {
                 try notice.writer.print("[Image not sent: {s} is {d}x{d} pixels; this request permits at most {d} per side and 5 MiB encoded per image. ", .{ image.mime_type, size.width, size.height, max_dimension });
-            } else if (image.source_ref != null and image.data.len == 0) {
-                try notice.writer.print("[Image not sent: only a host source reference was supplied; this request permits at most {d} per side and 5 MiB encoded per image. ", .{max_dimension});
             } else {
                 try notice.writer.writeAll("[Image not sent: its dimensions could not be verified. ");
             }
-            if (image.source_ref) |source_ref| {
-                try image_data.writeHostImageRecoveryNotice(&notice.writer, source_ref, max_dimension);
-            } else {
-                try notice.writer.writeAll("If this tool result names a local file, use an available image tool to save a smaller copy, then read_file the copy. If no tool or path is available, ask the user; ask before installing software.]\n");
-            }
+            try notice.writer.writeAll("If this tool result names a local file, use an available image tool to save a smaller copy, then read_file the copy. If no tool or path is available, ask the user; ask before installing software.]\n");
         }
         if (kept.items.len == memory.tool_images.len) continue;
         const output = projected orelse try arena.dupe(ChatMessage, messages);
@@ -857,36 +851,6 @@ test "request image notices preserve UTF-8 at every byte limit" {
             if (limit == full.len) try std.testing.expectEqualStrings(full, output);
         }
     }
-}
-
-test "request image notices keep clipped source references as JSON text" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const source_ref = text_utils.repeat("é", 256);
-    var image = try testPngHeaderToolImage(arena, 8001, 1);
-    image.source_ref = try arena.dupe(u8, source_ref);
-    const images = [_]types.ToolImage{ image, image };
-    const content = "original tool output";
-    const messages = [_]ChatMessage{.{ .role = .tool, .content = content, .tool_result_memory = .{ .tool_images = &images } }};
-    const projected = try withholdRequestToolImages(arena, &messages, 8000, 1079);
-    const output = projected[0].content.?;
-    try std.testing.expect(output.len <= 1079);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(output));
-    try std.testing.expect(std.mem.find(u8, output, source_ref) != null);
-    try std.testing.expectEqual(@as(usize, 0), projected[0].tool_result_memory.?.tool_images.len);
-    try std.testing.expectEqual(@as(usize, 2), messages[0].tool_result_memory.?.tool_images.len);
-    try std.testing.expectEqualStrings(content, messages[0].content.?);
-    for (messages[0].tool_result_memory.?.tool_images) |retained| {
-        try std.testing.expectEqualStrings(source_ref, retained.source_ref.?);
-        try std.testing.expectEqualStrings(image.data, retained.data);
-    }
-
-    var writer: std.Io.Writer.Allocating = .init(arena);
-    try std.json.Stringify.value(output, .{}, &writer.writer);
-    const parsed = try std.json.parseFromSlice(std.json.Value, arena, writer.written(), .{});
-    try std.testing.expect(parsed.value == .string);
-    try std.testing.expectEqualStrings(output, parsed.value.string);
 }
 
 pub fn applyToolResultMemory(

@@ -1289,18 +1289,15 @@ pub const ExecutionMemory = struct {
 
 /// Image bytes returned by a tool; never a grant to read a user file.
 pub const ToolImage = struct {
-    /// Owned encoded bytes; empty only when a valid source_ref is present.
+    /// Owned encoded bytes.
     data: []u8,
     mime_type: []u8,
-    /// Owned opaque host reference, never filesystem or network authority.
-    source_ref: ?[]u8 = null,
 };
 
 pub fn freeToolImages(alloc: std.mem.Allocator, images: []const ToolImage) void {
     for (images) |image| {
         alloc.free(image.data);
         alloc.free(image.mime_type);
-        if (image.source_ref) |source_ref| alloc.free(source_ref);
     }
     alloc.free(images);
 }
@@ -1312,7 +1309,6 @@ pub fn dupeToolImages(alloc: std.mem.Allocator, images: []const ToolImage) ![]To
         for (copies[0..initialized]) |image| {
             alloc.free(image.data);
             alloc.free(image.mime_type);
-            if (image.source_ref) |source_ref| alloc.free(source_ref);
         }
         alloc.free(copies);
     }
@@ -1324,7 +1320,6 @@ pub fn dupeToolImages(alloc: std.mem.Allocator, images: []const ToolImage) ![]To
         copies[index] = .{
             .data = data,
             .mime_type = mime_type,
-            .source_ref = if (image.source_ref) |source_ref| try alloc.dupe(u8, source_ref) else null,
         };
         initialized += 1;
     }
@@ -1388,7 +1383,6 @@ test "dupeToolResultMemory copies survive teardown of every source allocation" {
     source_images[0] = .{
         .data = try alloc.dupe(u8, "aW1hZ2UtZGF0YQ=="),
         .mime_type = try alloc.dupe(u8, "image/png"),
-        .source_ref = try alloc.dupe(u8, "host:original"),
     };
     const source: ToolResultMemory = .{
         .review_feedback = true,
@@ -1416,7 +1410,6 @@ test "dupeToolResultMemory copies survive teardown of every source allocation" {
     try std.testing.expectEqual(@as(usize, 1), copy.tool_images.len);
     try std.testing.expectEqualStrings("aW1hZ2UtZGF0YQ==", copy.tool_images[0].data);
     try std.testing.expectEqualStrings("image/png", copy.tool_images[0].mime_type);
-    try std.testing.expectEqualStrings("host:original", copy.tool_images[0].source_ref.?);
     try std.testing.expectEqualStrings("image-result-1", copy.tool_image_handle.?);
     try std.testing.expectEqualStrings("result-1", copy.output_handle.?);
     try std.testing.expectEqualStrings("preview text", copy.preview.?);
@@ -1439,8 +1432,8 @@ test "dupeToolResultMemory copies survive teardown of every source allocation" {
 test "dupeToolResultMemory frees only its own copies on allocation failure" {
     const source: ToolResultMemory = .{
         .tool_images = &.{
-            .{ .data = @constCast("aW1hZ2U="), .mime_type = @constCast("image/png"), .source_ref = @constCast("host:original") },
-            .{ .data = @constCast(""), .mime_type = @constCast("image/jpeg"), .source_ref = @constCast("host:large") },
+            .{ .data = @constCast("aW1hZ2U="), .mime_type = @constCast("image/png") },
+            .{ .data = @constCast(""), .mime_type = @constCast("image/jpeg") },
         },
         .tool_image_handle = "image-result-1",
         .output_handle = "result-1",
@@ -1475,8 +1468,6 @@ pub const ImageAttachment = struct {
     /// attachment loads from memory instead of `snapshot_path`, and durable
     /// serializers embed the bytes so checkpoint/restore round-trips them.
     inline_data: ?[]u8 = null,
-    /// Owned opaque host reference, never filesystem or network authority.
-    source_ref: ?[]u8 = null,
 };
 
 pub const UserTurn = struct {
@@ -3417,10 +3408,6 @@ pub fn dupeImageAttachmentSlice(alloc: std.mem.Allocator, attachments: []const I
         else
             null;
         errdefer if (inline_data) |value| alloc.free(value);
-        const source_ref = if (attachment.source_ref) |value|
-            try alloc.dupe(u8, value)
-        else
-            null;
         copy[i] = .{
             .id = attachment.id,
             .path = path,
@@ -3428,7 +3415,6 @@ pub fn dupeImageAttachmentSlice(alloc: std.mem.Allocator, attachments: []const I
             .snapshot_path = snapshot_path,
             .snapshot_sha256 = snapshot_sha256,
             .inline_data = inline_data,
-            .source_ref = source_ref,
         };
         copied += 1;
     }
@@ -3442,7 +3428,6 @@ pub fn freeImageAttachment(alloc: std.mem.Allocator, attachment: ImageAttachment
     if (attachment.snapshot_path) |path| alloc.free(path);
     if (attachment.snapshot_sha256) |sha256| alloc.free(sha256);
     if (attachment.inline_data) |data| alloc.free(data);
-    if (attachment.source_ref) |source_ref| alloc.free(source_ref);
 }
 
 pub fn freeImageAttachmentSlice(alloc: std.mem.Allocator, attachments: []ImageAttachment) void {
@@ -3734,47 +3719,6 @@ test "ImageAttachment helpers duplicate empty and populated slices" {
 
     freeImageAttachmentSlice(alloc, copy);
     freeImageAttachmentSlice(alloc, originals);
-}
-
-test "ImageAttachment source references clone independently and clean up allocation failures" {
-    const originals = [_]ImageAttachment{
-        .{
-            .id = 1,
-            .path = @constCast("inline://image-1"),
-            .media_type = @constCast("image/png"),
-            .inline_data = @constCast("pixels"),
-            .snapshot_sha256 = @constCast("digest"),
-            .source_ref = @constCast("host:original"),
-        },
-        .{
-            .id = 2,
-            .path = @constCast("inline://image-2"),
-            .media_type = @constCast("image/jpeg"),
-            .source_ref = @constCast("host:large"),
-        },
-    };
-    const alloc = std.testing.allocator;
-    const source = try dupeImageAttachmentSlice(alloc, &originals);
-    defer freeImageAttachmentSlice(alloc, source);
-    const copy = try dupeImageAttachmentSlice(alloc, source);
-    defer freeImageAttachmentSlice(alloc, copy);
-    for (copy, source) |cloned, original| {
-        try std.testing.expect(cloned.source_ref.?.ptr != original.source_ref.?.ptr);
-        original.source_ref.?[0] = 'X';
-    }
-    source[0].inline_data.?[0] = 'X';
-    try std.testing.expectEqualStrings("host:original", copy[0].source_ref.?);
-    try std.testing.expectEqualStrings("host:large", copy[1].source_ref.?);
-    try std.testing.expectEqualStrings("pixels", copy[0].inline_data.?);
-    try std.testing.expect(copy[1].inline_data == null);
-    try std.testing.expect(copy[1].snapshot_path == null);
-    try std.testing.expect(copy[1].snapshot_sha256 == null);
-    try std.testing.checkAllAllocationFailures(testing_allocator.no_resize, struct {
-        fn check(a: std.mem.Allocator, images: []const ImageAttachment) !void {
-            const cloned = try dupeImageAttachmentSlice(a, images);
-            defer freeImageAttachmentSlice(a, cloned);
-        }
-    }.check, .{&originals});
 }
 
 test "Permission helpers duplicate and free grants rules and rule sets" {
